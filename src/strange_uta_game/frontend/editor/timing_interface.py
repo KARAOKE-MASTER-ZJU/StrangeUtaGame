@@ -1013,6 +1013,13 @@ class EditorInterface(QWidget):
             self._audio_file_path = file_path
             self.toolbar.lbl_audio.setText(Path(file_path).name)
 
+            # 同步音频引擎当前速度到 UI（加载后引擎已重置为 1.0x）
+            if self._timing_service:
+                current_speed = self._timing_service.get_speed()
+                self.transport.edit_speed.blockSignals(True)
+                self.transport.edit_speed.setText(f"{int(current_speed * 100)}%")
+                self.transport.edit_speed.blockSignals(False)
+
             # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
             if hasattr(self, "_store") and self._store:
                 self._store.set_audio_path(file_path)

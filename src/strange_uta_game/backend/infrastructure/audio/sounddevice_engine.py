@@ -144,7 +144,9 @@ class SoundDeviceEngine(IAudioEngine):
                 # 初始 active = 原始 PCM @ 1.0x
                 self._active_pcm = self._original_data
                 self._active_speed = 1.0
-                self._pending_speed = self._speed
+                # 加载新音频时强制恢复速度为 1.0，避免旧速度残留
+                self._speed = 1.0
+                self._pending_speed = 1.0
                 # 把当前位置（原始时间轴）映射到 active PCM
                 self._read_pos_samples = 0
 
