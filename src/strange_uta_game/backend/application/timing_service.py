@@ -581,6 +581,10 @@ class TimingService:
     def set_speed(self, speed: float) -> None:
         """设置播放速度"""
         self._audio_engine.set_speed(speed)
+    
+    def get_speed(self) -> float:
+        """获得播放速度"""
+        return self._audio_engine.get_speed()
 
     def set_render_progress_callback(self, callback) -> None:
         """注册音频渲染进度回调（变速时的后台 WSOLA 渲染）。
