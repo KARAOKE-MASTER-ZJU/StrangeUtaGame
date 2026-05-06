@@ -17,8 +17,10 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -198,15 +200,8 @@ class TSMRenderCache:
 
     def _cancel_worker_and_wait(self) -> None:
         """取消正在进行的渲染任务。"""
-        # 设置取消标志
+        # 设置取消标志，让 worker 自己检测并停止
         self._worker_cancel.set()
-        # 等待之前的 worker 完成
-        worker = self._worker
-        if worker is not None and worker.is_alive():
-            print(f"[TSM] Waiting for previous worker to finish...")
-            worker.join(timeout=5.0)  # 等待 worker 检测到取消信号并完成
-            if worker.is_alive():
-                print(f"[TSM] Warning: Previous worker still alive after timeout")
         self._worker = None
         self._worker_speed = None
 
@@ -222,7 +217,7 @@ class TSMRenderCache:
         使用 Spotify Pedalboard 的 time_stretch，基于 Rubber Band 引擎，
         音质极佳，支持高质量模式和瞬态保护。
 
-        为避免长时间阻塞无进度反馈，将音频分段处理。
+        使用多线程并行处理不同段，充分利用多核 CPU。
         如果指定了 priority_center，优先渲染该位置附近的音频。
         """
         assert self._original is not None
@@ -231,7 +226,6 @@ class TSMRenderCache:
             return np.zeros((0, self._channels), dtype=np.float32)
 
         # stretch_factor: >1 压缩（变快），<1 拉伸（变慢）
-        # speed > 1 表示加快播放，所以 stretch_factor = speed
         stretch_factor = speed
 
         # 分段处理：每段约 5 秒
@@ -241,18 +235,21 @@ class TSMRenderCache:
         # 计算段的顺序：优先渲染 priority_center 附近的段
         if priority_center is not None and 0 <= priority_center < n_in:
             priority_seg = priority_center // segment_samples
-            # 按距离排序：先渲染 priority_center 附近的段
             segment_order = sorted(range(total_segments), key=lambda i: abs(i - priority_seg))
         else:
             segment_order = list(range(total_segments))
 
-        print(f"[TSM] Rendering {n_in} samples at {speed}x, {total_segments} segments, priority={priority_center}")
+        # 使用线程池并行处理（最多 4 个线程）
+        max_workers = min(4, os.cpu_count() or 1)
+        print(f"[TSM] Rendering {n_in} samples at {speed}x, {total_segments} segments, {max_workers} workers")
 
         # 预分配输出数组
         out_segments = [None] * total_segments
         rendered_count = 0
+        rendered_lock = threading.Lock()
 
-        for seg_idx in segment_order:
+        def process_segment(seg_idx: int) -> Optional[Tuple[int, np.ndarray]]:
+            """处理单个段"""
             if self._worker_cancel.is_set():
                 return None
 
@@ -260,28 +257,53 @@ class TSMRenderCache:
             end = min(pos + segment_samples, n_in)
             segment = self._original[pos:end]
 
-            # 处理当前段
             pcm_segment = np.ascontiguousarray(segment, dtype=np.float32)
             stretched = time_stretch(
                 pcm_segment, float(self._sample_rate), stretch_factor=stretch_factor
             )
-            out_segments[seg_idx] = stretched
-            rendered_count += 1
+            return (seg_idx, stretched)
 
-            # 回调通知：当前段已渲染完成
-            if segment_ready_cb is not None:
-                try:
-                    segment_ready_cb(speed, stretched)
-                except Exception as e:
-                    print(f"[TSM] segment_ready_cb error: {e}")
+        # 使用线程池并行处理
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务（按优先级顺序）
+            futures = {}
+            for seg_idx in segment_order:
+                if self._worker_cancel.is_set():
+                    break
+                future = executor.submit(process_segment, seg_idx)
+                futures[future] = seg_idx
 
-            # 更新进度
-            progress = rendered_count / total_segments
-            if progress_cb is not None:
-                try:
-                    progress_cb(speed, min(progress * 0.99, 0.99))
-                except Exception:
-                    pass
+            # 收集结果
+            for future in as_completed(futures):
+                if self._worker_cancel.is_set():
+                    # 取消所有未完成的任务
+                    for f in futures:
+                        f.cancel()
+                    return None
+
+                result = future.result()
+                if result is not None:
+                    seg_idx, stretched = result
+                    out_segments[seg_idx] = stretched
+
+                    with rendered_lock:
+                        rendered_count += 1
+                        current_count = rendered_count
+
+                    # 回调通知：当前段已渲染完成
+                    if segment_ready_cb is not None:
+                        try:
+                            segment_ready_cb(speed, stretched)
+                        except Exception as e:
+                            print(f"[TSM] segment_ready_cb error: {e}")
+
+                    # 更新进度
+                    progress = current_count / total_segments
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(speed, min(progress * 0.99, 0.99))
+                        except Exception:
+                            pass
 
         # 按顺序拼接所有段
         out = np.concatenate([s for s in out_segments if s is not None], axis=0).astype(np.float32)
