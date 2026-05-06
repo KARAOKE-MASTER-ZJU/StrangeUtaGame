@@ -698,6 +698,11 @@ def nicokara_result_to_sentences(
 ) -> List[Sentence]:
     """将 NicokaraParseResult 转换为 Sentence 对象列表
 
+    解析规则（与导出器对齐）：
+    - 每个字符的第一个时间戳是起始时间戳
+    - 如果一个字符有2个时间戳，第二个是句尾释放时间戳（is_sentence_end=True）
+    - 行末的未消费时间戳是最后一个字符的句尾释放时间戳
+
     Args:
         result: Nicokara 解析结果
         singer_key_to_id: singer_key (如 "sv1") → Singer.id 的映射
@@ -720,10 +725,17 @@ def nicokara_result_to_sentences(
             singer_id=line_singer_id,
         )
 
-        # 添加时间标签（含 per-char 演唱者）
+        # 按字符分组时间戳
+        char_ts_map: Dict[int, List[int]] = {}
         for char_idx, timestamp_ms in parsed.timetags:
             if char_idx < 0 or char_idx >= len(sentence.characters):
                 continue
+            if char_idx not in char_ts_map:
+                char_ts_map[char_idx] = []
+            char_ts_map[char_idx].append(timestamp_ms)
+
+        # 添加时间标签（含 per-char 演唱者）
+        for char_idx, ts_list in char_ts_map.items():
             # 获取该字符的演唱者
             char_singer_key = parsed.char_singer_map.get(char_idx, "")
             if char_singer_key and char_singer_key in singer_key_to_id:
@@ -733,7 +745,18 @@ def nicokara_result_to_sentences(
 
             char = sentence.characters[char_idx]
             char.singer_id = tag_singer_id
-            char.add_timestamp(timestamp_ms)
+
+            # 第一个时间戳是起始时间戳
+            char.add_timestamp(ts_list[0])
+
+            # 如果有第二个时间戳，是句尾释放时间戳
+            if len(ts_list) >= 2:
+                char.is_sentence_end = True
+                char.sentence_end_ts = ts_list[1]
+                # 设置 check_count = 1（如果还没有的话）
+                if char.check_count == 0:
+                    char.check_count = 1
+                char.push_to_ruby()
 
         # 应用 @Ruby 注音（基于文本匹配）
         _apply_ruby_entries(sentence, result.ruby_entries)
