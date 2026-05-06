@@ -438,20 +438,8 @@ class KaraokePreview(QWidget):
         delete_end = sel_end + 1 if in_selection else target_char_idx + 1
 
         menu = RoundMenu(parent=self)
-        # 确保菜单背景不透明
-        bg_color = theme.bg_secondary.name()
-        border_color = theme.border_primary.name()
-        menu.setStyleSheet(f"""
-            RoundMenu {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
-            }}
-            MenuActionListWidget {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
-                border-radius: 9px;
-            }}
-        """)
+        # 修复 Windows 上的背景透明问题
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
         delete_action = Action("删除字符", menu)
         delete_action.triggered.connect(
