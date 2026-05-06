@@ -386,6 +386,11 @@ class KaraokePreview(QWidget):
         move_x = int(a0.position().x())
         move_y = int(a0.position().y())
 
+        # 拖动时取消单击定时器，避免拖动过程中触发居中
+        if self._pending_click_pos is not None:
+            self._click_timer.stop()
+            self._pending_click_pos = None
+
         for char_rect, line_idx, char_idx in self._char_hitboxes:
             if char_rect.contains(move_x, move_y) and line_idx == self._focus_line_idx:
                 self._focus_char_range_end = char_idx
