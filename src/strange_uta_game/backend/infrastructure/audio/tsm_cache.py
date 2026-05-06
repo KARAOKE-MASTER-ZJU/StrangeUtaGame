@@ -93,8 +93,37 @@ class TSMRenderCache:
                 return pcm
         return None
 
-    def has(self, speed: float) -> bool:
-        return self.get(speed) is not None
+    def get_partial(self, speed: float, min_samples: int = 0) -> Optional[np.ndarray]:
+        """查询缓存，返回已渲染的部分（即使未完全渲染完）。
+
+        如果已渲染的样本数 >= min_samples，返回已渲染的部分。
+        否则返回 None。
+        """
+        if self._original is None:
+            return None
+        q = _quantize(speed)
+        if abs(q - 1.0) < 1e-9:
+            return self._original
+        key = (self._path or "", q)
+        with self._lock:
+            pcm = self._cache.get(key)
+            if pcm is not None:
+                self._cache.move_to_end(key)
+                if len(pcm) >= min_samples:
+                    return pcm
+        return None
+
+    def get_rendered_length(self, speed: float) -> int:
+        """返回已渲染的样本数（用于检查是否可以开始播放）。"""
+        if self._original is None:
+            return 0
+        q = _quantize(speed)
+        if abs(q - 1.0) < 1e-9:
+            return len(self._original)
+        key = (self._path or "", q)
+        with self._lock:
+            pcm = self._cache.get(key)
+            return len(pcm) if pcm is not None else 0
 
     # ---------- 渲染 ----------
 
@@ -168,10 +197,10 @@ class TSMRenderCache:
     # ---------- 内部 ----------
 
     def _cancel_worker_and_wait(self) -> None:
+        """取消正在进行的渲染任务。"""
         self._worker_cancel.set()
-        worker = self._worker
-        if worker is not None and worker.is_alive():
-            worker.join(timeout=2.0)
+        # 不等待 worker 完成，让它自己检查取消标志并停止
+        # 这样可以避免阻塞调用线程
         self._worker = None
         self._worker_speed = None
 

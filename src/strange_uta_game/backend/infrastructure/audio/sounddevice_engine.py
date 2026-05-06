@@ -503,16 +503,19 @@ class SoundDeviceEngine(IAudioEngine):
             cur_pos = self._read_pos_samples
             cur_speed = self._active_speed
 
-        new_pcm = self._cache.get(pending)
+        # 检查是否已渲染足够的数据（当前播放位置 + 缓冲区）
+        # 至少需要渲染当前播放位置之后的数据
+        min_samples_needed = cur_pos + int(self._sample_rate * 2)  # 当前位置 + 2秒
+        new_pcm = self._cache.get_partial(pending, min_samples=min_samples_needed)
         if new_pcm is None:
-            return  # 还没渲染好，下次再试
+            return  # 还没渲染好足够数据，下次再试
 
         # 计算"当前原始时间轴位置" → 在新 PCM 上的偏移
         if cur_pcm is None or self._sample_rate == 0:
             return
         # pedalboard 输出的 PCM 已经是变速后的，active_speed 始终为 1.0
-        # 位置计算：orig_samples = read_pos * 1.0
-        orig_samples = cur_pos  # 因为 active_speed 始终为 1.0
+        # 位置计算：直接使用 read_pos_samples
+        orig_samples = cur_pos
         new_pos = int(orig_samples)
         new_pos = max(0, min(new_pos, len(new_pcm)))
 
