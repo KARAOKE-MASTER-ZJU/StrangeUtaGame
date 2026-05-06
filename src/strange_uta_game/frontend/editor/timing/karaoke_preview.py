@@ -630,6 +630,24 @@ class KaraokePreview(QWidget):
                 ruby_w = fm_ruby.horizontalAdvance(ruby.text)
                 char_widths[ci] = max(char_widths[ci], ruby_w)
 
+        # 确保字符宽度 >= CP标记总宽度（避免CP标记重叠）
+        fm_checkpoint = self._fm_checkpoint
+        for ci, ch_obj in enumerate(characters):
+            if ch_obj.total_timing_points > 0:
+                total_cp_w = 0
+                for cp_idx in range(ch_obj.total_timing_points):
+                    is_sentence_end_marker = (
+                        ch_obj.is_sentence_end and cp_idx == ch_obj.check_count
+                    )
+                    if is_sentence_end_marker:
+                        marker_char = "  ◉" if ch_obj.global_sentence_end_ts else "  ◎"
+                    elif cp_idx == 0:
+                        marker_char = "▶" if cp_idx < len(ch_obj.global_timestamps) else "▷"
+                    else:
+                        marker_char = "▮" if cp_idx < len(ch_obj.global_timestamps) else "▯"
+                    total_cp_w += fm_checkpoint.horizontalAdvance(marker_char)
+                char_widths[ci] = max(char_widths[ci], total_cp_w)
+
         # ---------- wipe 时间线（离散字符开始时间模型） ----------
         # 每个字符的 wipe 开始时间 = 该字符第一个 cp 的时间戳（global_timestamps[0]）。
         # 字符 wipe 结束时间 = 同句子内下一个有 start_ts 的字符的开始时间；
