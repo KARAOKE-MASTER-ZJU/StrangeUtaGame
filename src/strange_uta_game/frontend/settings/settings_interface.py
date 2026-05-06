@@ -309,10 +309,10 @@ class SettingsInterface(ScrollArea):
 
         self.card_offset = SpinSettingCard(
             FIF.DATE_TIME,
-            "打轴偏移",
-            "建议用下方的offset校正来矫正，补偿反应延迟（负值=提前，正值=延后）",
-            min_val=-1000,
-            max_val=1000,
+            "按键补偿",
+            "建议用下方的offset校正来矫正，用于设备引起的反应延迟（负值=提前，正值=延后）",
+            min_val=-5000,
+            max_val=5000,
             step=10,
             suffix=" ms",
             parent=self.timing_group,
@@ -339,8 +339,8 @@ class SettingsInterface(ScrollArea):
         )
         self.card_export_offset = SpinSettingCard(
             FIF.HISTORY,
-            "Karaoke渲染偏移及导出偏移",
-            "导出时及Karaoke预览渲染的时间偏移（毫秒）",
+            "全局偏移",
+            "全局偏移（原RL内默认为-230补偿）,用于控制本软件内整体轴时间偏移（毫秒），（负值=提前，正值=延后）",
             min_val=-5000,
             max_val=5000,
             step=10,
@@ -1062,7 +1062,7 @@ class SettingsInterface(ScrollArea):
         # 打轴设定
         self.card_offset.setValue(self._settings.get("timing.tag_offset_ms", 0))
         self.card_speed_correction.setValue(
-            self._settings.get("timing.speed_correction", 100)
+            self._settings.get("timing.speed_correction", 80)
         )
         self.card_preview_lines.setValue(
             self._settings.get("timing.show_preview_lines", 5)

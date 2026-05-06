@@ -85,7 +85,7 @@ class EditorToolBar(QFrame):
         layout.addSpacing(10)
 
         # 整体时间戳偏移调整
-        lbl_offset = CaptionLabel("Karaoke渲染以及导出偏移:")
+        lbl_offset = CaptionLabel("全局偏移:")
         layout.addWidget(lbl_offset)
         self.edit_offset = QLineEdit(self)
         self.edit_offset.setText("-100")

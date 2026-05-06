@@ -372,6 +372,17 @@ class Project:
                 tags_ms.extend(ch.all_timestamps)
         return tags_ms
 
+    def collect_all_render_timestamp_ms(self) -> List[int]:
+        """收集所有字符 checkpoint 的渲染时间戳（毫秒），带偏移。
+
+        用于波形显示等需要与渲染时间对齐的场景。
+        """
+        tags_ms: List[int] = []
+        for sentence in self.sentences:
+            for ch in sentence.characters:
+                tags_ms.extend(ch.all_render_timestamps)
+        return tags_ms
+
     def find_prev_line_with_checkpoints(self, current_idx: int) -> int:
         """从 current_idx 之前向上查找第一个存在 checkpoint 的行索引。
 

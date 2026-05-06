@@ -97,11 +97,14 @@ def split_into_moras(text: str) -> List[str]:
     """将日语文本按拍（モーラ）拆分。
 
     小假名 (ゃ, ゅ, ょ, っ 等) 和长音符 (ー) 附属前一拍。
+    逗号是读音分隔符，会被跳过。
     """
     if not text:
         return []
     moras: List[str] = []
     for ch in text:
+        if ch == ',':
+            continue  # 跳过逗号分隔符
         if ch in _SMALL_KANA and moras:
             moras[-1] += ch
         else:
@@ -114,17 +117,19 @@ def split_ruby_for_checkpoints(ruby_text: str, total_cps: int) -> List[str]:
 
     入参: ruby_text 纯读音串（不再支持 `#` 分组标记）; total_cps 节奏点数量。
     出参: 长度为 total_cps 的读音分段列表；优先按 mora 对齐，否则按字符均分。
+    逗号是读音分隔符，会被跳过。
     """
     if total_cps <= 0:
-        return [ruby_text] if ruby_text else []
+        return [ruby_text.replace(',', '')] if ruby_text else []
     if total_cps == 1:
-        return [ruby_text]
+        return [ruby_text.replace(',', '')]
 
     moras = split_into_moras(ruby_text)
     if len(moras) == total_cps:
         return moras
 
-    chars = list(ruby_text)
+    # 按字符拆分时跳过逗号
+    chars = [ch for ch in ruby_text if ch != ',']
     if len(chars) <= total_cps:
         # 字符数 ≤ cp 数: 每个 cp 分一个字符，多余 cp 分空串
         return chars + [""] * (total_cps - len(chars))
