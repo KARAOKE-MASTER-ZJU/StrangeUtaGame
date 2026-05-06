@@ -523,6 +523,8 @@ class SoundDeviceEngine(IAudioEngine):
             self._active_pcm = new_pcm
             self._active_speed = 1.0  # pedalboard 输出已是变速后的 PCM
             self._read_pos_samples = new_pos
+            # 更新 pending_speed 为当前 speed，避免重复 swap
+            self._pending_speed = self._speed
 
         # 丢弃 ring 里的旧速度样本，避免跨速度拼接听感跳变
         if self._ring is not None:
