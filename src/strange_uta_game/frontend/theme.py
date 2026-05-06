@@ -387,11 +387,14 @@ class Theme(QObject):
         """强制刷新所有控件的样式"""
         app = QApplication.instance()
         if app:
-            # 处理待处理的事件
+            # 先处理待处理的事件
             app.processEvents()
             # 遍历所有顶层窗口，强制更新样式
             for widget in app.topLevelWidgets():
                 self._update_widget_style(widget)
+            # 再次应用 qfluentwidgets 主题，确保内部样式（如菜单）也被刷新
+            self._apply_qfluentwidgets_theme()
+            app.processEvents()
 
     def _update_widget_style(self, widget) -> None:
         """递归更新控件及其子控件的样式"""
