@@ -133,7 +133,7 @@ class SoundDeviceEngine(IAudioEngine):
             self._original_data = np.ascontiguousarray(data, dtype=np.float32)
             self._duration_ms = int(len(data) / self._sample_rate * 1000)
 
-            # 重置缓存与状态
+            # 重置缓存与状态（set_source 会清空旧缓存）
             self._cache.set_source(file_path, self._original_data, self._sample_rate)
 
             # 重建 ring（容量随采样率 / 声道）
@@ -152,10 +152,44 @@ class SoundDeviceEngine(IAudioEngine):
 
             self._state = PlaybackState.STOPPED
 
+            # 预渲染常用速度（后台进行，不阻塞加载）
+            self._prewarm_common_speeds()
+
         except FileNotFoundError:
             raise AudioLoadError(f"文件不存在: {file_path}")
         except Exception as e:
             raise AudioLoadError(f"加载音频失败: {e}")
+
+    def _prewarm_common_speeds(self) -> None:
+        """预渲染常用速度（后台进行，不阻塞加载）
+
+        如果预渲染总内存超过 1GB，只预渲染前两个速度。
+        """
+        if self._original_data is None:
+            return
+
+        # 估算原始 PCM 内存占用
+        original_bytes = self._original_data.nbytes
+        # 预渲染速度列表
+        all_speeds = [0.75, 0.5, 0.9, 0.8, 0.7, 0.6]
+
+        # 计算预渲染总内存
+        total_extra_bytes = 0
+        speeds_to_prewarm = []
+        for speed in all_speeds:
+            # 变速后长度 = 原始长度 / speed
+            stretched_bytes = int(original_bytes / speed)
+            total_extra_bytes += stretched_bytes
+            speeds_to_prewarm.append(speed)
+            # 如果超过 1GB，只预渲染前两个
+            if total_extra_bytes > 1024 * 1024 * 1024:
+                speeds_to_prewarm = [0.75, 0.5]
+                print(f"[SoundDeviceEngine] Prewarming limited to {speeds_to_prewarm} (memory limit)")
+                break
+
+        print(f"[SoundDeviceEngine] Prewarming common speeds: {speeds_to_prewarm}")
+        for speed in speeds_to_prewarm:
+            self._cache.ensure(speed)
 
     def release(self) -> None:
         self.stop()
