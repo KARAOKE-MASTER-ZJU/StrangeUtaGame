@@ -185,16 +185,9 @@ class AppSettings:
                 config_dir = Path.home() / ".strange_uta_game"
                 config_dir.mkdir(exist_ok=True)
             self._config_path = config_dir / "config.json"
-            # 迁移：若新位置无配置，检查旧位置
+            # 如果用户配置不存在，从内嵌配置复制
             if not self._config_path.exists():
-                old_config = Path.home() / ".strange_uta_game" / "config.json"
-                if old_config.exists():
-                    try:
-                        import shutil
-
-                        shutil.copy2(str(old_config), str(self._config_path))
-                    except Exception:
-                        pass
+                self._copy_packaged_config()
         else:
             self._config_path = Path(config_path)
 
@@ -229,6 +222,16 @@ class AppSettings:
                 self._save_json(self._dict_path, entries)
         except Exception as e:
             print(f"初始化默认词典失败: {e}")
+
+    def _copy_packaged_config(self) -> None:
+        """从内嵌配置文件复制到用户目录。"""
+        packaged = self._get_packaged_config_path("config.json")
+        if packaged:
+            try:
+                import shutil
+                shutil.copy2(str(packaged), str(self._config_path))
+            except Exception as e:
+                print(f"复制内嵌配置失败: {e}")
 
     def _load_settings(self) -> Dict[str, Any]:
         if self._config_path.exists():
