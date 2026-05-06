@@ -1135,7 +1135,7 @@ class SettingsInterface(ScrollArea):
         self.card_lyrics_alignment.setCurrentIndex(alignment_idx)
 
         # 导出设定
-        fmt = self._settings.get("export.default_format", "LRC (增强型)")
+        fmt = self._settings.get("export.default_format", "Nicokara")
         fmt_idx = {
             "LRC (增强型)": 0,
             "LRC (逐行)": 1,
@@ -1146,7 +1146,7 @@ class SettingsInterface(ScrollArea):
             "ASS": 6,
             "Nicokara": 7,
             "LRC": 0,  # 旧配置兼容
-        }.get(fmt, 0)
+        }.get(fmt, 7)
         self.card_default_format.setCurrentIndex(fmt_idx)
         export_dir = self._settings.get("export.last_export_dir", "")
         if export_dir:
@@ -1276,7 +1276,7 @@ class SettingsInterface(ScrollArea):
         }
         self._settings.set(
             "export.default_format",
-            fmt_map.get(self.card_default_format.currentIndex(), "LRC (增强型)"),
+            fmt_map.get(self.card_default_format.currentIndex(), "Nicokara"),
         )
         export_dir = self.card_export_dir.text()
         if export_dir:
