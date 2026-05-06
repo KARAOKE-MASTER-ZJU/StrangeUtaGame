@@ -526,8 +526,9 @@ class SoundDeviceEngine(IAudioEngine):
             # 更新 pending_speed 为当前 speed，避免重复 swap
             self._pending_speed = self._speed
 
-        # 丢弃 ring 里的旧速度样本，避免跨速度拼接听感跳变
-        if self._ring is not None:
+        # 丢弃 ring 里的旧速度样本，避免跨速度拼接过感跳变
+        # 只在播放状态时 reset，避免暂停时不必要的 reset
+        if self._ring is not None and self._state == PlaybackState.PLAYING:
             self._ring.reset()
 
     def _on_eof(self) -> None:
