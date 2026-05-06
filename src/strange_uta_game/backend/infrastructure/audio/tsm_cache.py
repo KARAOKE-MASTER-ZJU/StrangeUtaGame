@@ -54,6 +54,7 @@ class TSMRenderCache:
         self._worker: Optional[threading.Thread] = None
         self._worker_cancel = threading.Event()
         self._worker_speed: Optional[float] = None
+        self._render_version: int = 0  # 用于控制取消
         self._lock = threading.Lock()
 
     # ---------- 加载 ----------
@@ -166,23 +167,25 @@ class TSMRenderCache:
 
         self._cancel_worker_and_wait()
 
-        self._worker_cancel.clear()
+        # 使用版本号控制取消，避免竞态条件
+        self._render_version += 1
+        current_version = self._render_version
         self._worker_speed = q
-        print(f"[TSM] Starting render for speed {q}x")
+        print(f"[TSM] Starting render for speed {q}x, version={current_version}")
 
         def _target() -> None:
             try:
-                print(f"[TSM] Worker started for speed {q}x, priority={priority_center}")
-                rendered = self._render_full(q, progress_cb, priority_center, segment_ready_cb)
+                print(f"[TSM] Worker started for speed {q}x, version={current_version}")
+                rendered = self._render_full(q, progress_cb, priority_center, segment_ready_cb, current_version)
                 if rendered is None:
-                    print(f"[TSM] Render cancelled for speed {q}x")
+                    print(f"[TSM] Render cancelled for speed {q}x, version={current_version}")
                     return  # 被取消
                 with self._lock:
                     self._cache[(self._path or "", q)] = rendered
                     self._cache.move_to_end((self._path or "", q))
                     while len(self._cache) > _LRU_MAX:
                         self._cache.popitem(last=False)
-                print(f"[TSM] Render complete for speed {q}x, shape={rendered.shape}")
+                print(f"[TSM] Render complete for speed {q}x, shape={rendered.shape}, version={current_version}")
                 if done_cb is not None:
                     try:
                         done_cb(q)
@@ -211,6 +214,7 @@ class TSMRenderCache:
         progress_cb: Optional[ProgressCallback],
         priority_center: Optional[int] = None,
         segment_ready_cb: Optional[SegmentReadyCallback] = None,
+        render_version: int = 0,
     ) -> Optional[np.ndarray]:
         """整文件 TSM 渲染；返回 ``(n_samples, channels)`` float32。
 
@@ -224,6 +228,11 @@ class TSMRenderCache:
         n_in = self._original.shape[0]
         if n_in == 0:
             return np.zeros((0, self._channels), dtype=np.float32)
+
+        # 检查是否被取消
+        if self._render_version != render_version:
+            print(f"[TSM] Render cancelled (version mismatch: {render_version} vs {self._render_version})")
+            return None
 
         # stretch_factor: >1 压缩（变快），<1 拉伸（变慢）
         stretch_factor = speed
@@ -248,9 +257,13 @@ class TSMRenderCache:
         rendered_count = 0
         rendered_lock = threading.Lock()
 
+        def is_cancelled() -> bool:
+            """检查是否被取消（使用版本号）"""
+            return self._render_version != render_version
+
         def process_segment(seg_idx: int) -> Optional[Tuple[int, np.ndarray]]:
             """处理单个段"""
-            if self._worker_cancel.is_set():
+            if is_cancelled():
                 return None
 
             pos = seg_idx * segment_samples
@@ -268,14 +281,14 @@ class TSMRenderCache:
             # 提交所有任务（按优先级顺序）
             futures = {}
             for seg_idx in segment_order:
-                if self._worker_cancel.is_set():
+                if is_cancelled():
                     break
                 future = executor.submit(process_segment, seg_idx)
                 futures[future] = seg_idx
 
             # 收集结果
             for future in as_completed(futures):
-                if self._worker_cancel.is_set():
+                if is_cancelled():
                     # 取消所有未完成的任务
                     for f in futures:
                         f.cancel()
