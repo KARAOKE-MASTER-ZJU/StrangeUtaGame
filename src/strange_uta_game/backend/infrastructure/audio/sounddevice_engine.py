@@ -526,10 +526,8 @@ class SoundDeviceEngine(IAudioEngine):
             # 更新 pending_speed 为当前 speed，避免重复 swap
             self._pending_speed = self._speed
 
-        # 丢弃 ring 里的旧速度样本，避免跨速度拼接过感跳变
-        # 只在播放状态时 reset，避免暂停时不必要的 reset
-        if self._ring is not None and self._state == PlaybackState.PLAYING:
-            self._ring.reset()
+        # 不再 reset ring buffer，让新旧 PCM 平滑过渡
+        # ring buffer 中的旧数据会被新数据自然覆盖
 
     def _on_eof(self) -> None:
         """active PCM 喂完了：等 ring 排空，置 STOPPED。"""
