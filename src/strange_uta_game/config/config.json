@@ -8,7 +8,7 @@
     "default_check_count": 1,
     "auto_advance_after_tag": true,
     "show_preview_lines": 5,
-    "tag_offset_ms": -50,
+    "tag_offset_ms": 0,
     "speed_correction": 100,
     "fast_forward_ms": 5000,
     "rewind_ms": 5000,

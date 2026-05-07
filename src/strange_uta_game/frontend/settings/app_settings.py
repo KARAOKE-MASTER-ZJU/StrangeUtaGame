@@ -26,7 +26,7 @@ class AppSettings:
             "default_check_count": 1,
             "auto_advance_after_tag": True,
             "show_preview_lines": 5,
-            "tag_offset_ms": -130,
+            "tag_offset_ms": 0,
             "speed_correction": 100,
             "fast_forward_ms": 5000,
             "rewind_ms": 5000,
