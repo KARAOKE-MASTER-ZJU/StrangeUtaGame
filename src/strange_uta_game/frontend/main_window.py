@@ -164,7 +164,8 @@ class MainWindow(MSFluentWindow):
 
     def _init_navigation(self):
         """初始化侧边栏导航"""
-        self.addSubInterface(self.homeInterface, FIF.HOME, "主页（待移除）")
+        # 尝试隐藏主页，不能直接删除有些功能被其他模块服用
+        # self.addSubInterface(self.homeInterface, FIF.HOME, "主页（待移除）") 
         self.addSubInterface(self.editorInterface, FIF.PLAY, "打轴")
         self.addSubInterface(self.editViewInterface, FIF.EDIT, "行编辑")
         self.addSubInterface(self.exportInterface, FIF.SHARE, "导出")
