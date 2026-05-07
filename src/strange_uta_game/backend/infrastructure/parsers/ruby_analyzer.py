@@ -357,6 +357,7 @@ class SudachiAnalyzer(RubyAnalyzer):
             (0x4E00 <= code <= 0x9FFF)
             or (0x3400 <= code <= 0x4DBF)
             or (0xF900 <= code <= 0xFAFF)
+            or code == 0x3005  # 々 IDEOGRAPHIC ITERATION MARK
         )
 
     @staticmethod
@@ -445,6 +446,7 @@ class PykakasiAnalyzer(RubyAnalyzer):
             (0x4E00 <= code <= 0x9FFF)
             or (0x3400 <= code <= 0x4DBF)
             or (0xF900 <= code <= 0xFAFF)
+            or code == 0x3005  # 々 IDEOGRAPHIC ITERATION MARK
         )
 
     @staticmethod

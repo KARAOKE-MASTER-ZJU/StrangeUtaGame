@@ -52,11 +52,12 @@ def get_char_type(char: str) -> CharType:
     if "\u30a0" <= char <= "\u30ff":
         return CharType.KATAKANA
 
-    # CJK 统一表意文字（汉字）
+    # CJK 统一表意文字（汉字）+ 迭字 mark
     if (
         "\u4e00" <= char <= "\u9fff"
         or "\u3400" <= char <= "\u4dbf"
         or "\uf900" <= char <= "\ufaff"
+        or char == "\u3005"  # 々 IDEOGRAPHIC ITERATION MARK
     ):
         return CharType.KANJI
 
