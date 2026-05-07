@@ -122,6 +122,18 @@ class AutoCheckService:
         except Exception:
             pass
 
+        # 单字汉字音读字典（KANJIDIC2 派生）
+        self._kanji_dict: Dict[str, Dict[str, List[str]]] = {}
+        try:
+            import json
+            from pathlib import Path
+
+            dict_path = Path(__file__).parent.parent.parent / "config" / "kanji_readings.json"
+            if dict_path.exists():
+                self._kanji_dict = json.loads(dict_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
     def _apply_dictionary(
         self, text: str, ruby_results: List[RubyResult]
     ) -> Tuple[List[RubyResult], set]:
@@ -367,13 +379,37 @@ class AutoCheckService:
             if result is not None:
                 return result
 
-        # ---------- Pass 2: pykakasi 参考分区 ----------
+        # ---------- Pass 2: 单字音读字典匹配 ----------
+        # 利用 KANJIDIC2 派生的单字音读/训读字典，组合匹配拆分。
+        # 例: 傷痕 しょうこん → 傷(ショウ)+痕(コン) = しょう+こん
+        # 处理「々」继承前字候选 + 连浊变体。
+        result = self._split_by_kanji_dict(word, clean_reading)
+        if result is not None:
+            return result
+
+        # ---------- Pass 3: pykakasi 参考分区 ----------
         if any(r for r in pykakasi_refs):
             result = self._partition_reading(clean_reading, n, pykakasi_refs)
             if result is not None:
                 return result
 
-        # ---------- Pass 3: 无约束分区 ----------
+        # ---------- Pass 4: モーラ均分 ----------
+        # 当字典和 pykakasi 都无法匹配时，按モーラ均匀分配。
+        # 局限: 3+1 等不均匀分配会被错分为 2+2，需用户词典修正。
+        moras = split_into_moras(clean_reading)
+        if len(moras) >= n:
+            mora_per = len(moras) // n
+            mora_extra = len(moras) % n
+            mora_result: List[str] = []
+            idx = 0
+            for i in range(n):
+                cnt = mora_per + (1 if i >= n - mora_extra else 0)
+                mora_result.append("".join(moras[idx : idx + cnt]))
+                idx += cnt
+            if "".join(mora_result) == clean_reading:
+                return mora_result
+
+        # ---------- Pass 5: 无约束分区 ----------
         empty_refs = [""] * n
         result = self._partition_reading(clean_reading, n, empty_refs)
         return result
@@ -402,6 +438,98 @@ class AutoCheckService:
             except Exception:
                 pass
         return options
+
+    # ── 连浊清音→浊音映射 ──
+    _DAKUTEN_MAP = str.maketrans(
+        "かきくけこさしすせそたちつてとはひふへほ",
+        "がぎぐげござじずぜぞだぢづでどばびぶべぼ",
+    )
+    _HANDAKUTEN_MAP = str.maketrans(
+        "はひふへほ", "ぱぴぷぺぽ"
+    )
+
+    def _split_by_kanji_dict(
+        self, word: str, reading: str
+    ) -> Optional[List[str]]:
+        """用单字音读字典组合匹配拆分读音。
+
+        遍历每个汉字的音读+训读候选，排列组合找到与 reading 完全匹配的拆分。
+        处理「々」：继承前一个汉字的候选读音（含连浊变体）。
+        """
+        if not self._kanji_dict:
+            return None
+
+        n = len(word)
+        char_options: List[List[str]] = []
+
+        for i, ch in enumerate(word):
+            if ch == "\u3005":  # 々: 继承前一个汉字的候选
+                if i == 0:
+                    return None
+                prev_opts = char_options[-1]
+                opts = list(prev_opts)
+                # 连浊变体: 清音首字母→浊音
+                for opt in prev_opts:
+                    dakuten = opt[0].translate(self._DAKUTEN_MAP)
+                    if dakuten != opt[0]:
+                        variant = dakuten + opt[1:]
+                        if variant not in opts:
+                            opts.append(variant)
+                    handakuten = opt[0].translate(self._HANDAKUTEN_MAP)
+                    if handakuten != opt[0]:
+                        variant = handakuten + opt[1:]
+                        if variant not in opts:
+                            opts.append(variant)
+                char_options.append(opts)
+            elif ch in self._kanji_dict:
+                entry = self._kanji_dict[ch]
+                # 片假名→平假名
+                on = [self._kata_to_hira(r) for r in entry.get("on", [])]
+                kun = []
+                kun_positional = []  # 带 "-" 标记的位置相关读音
+                for r in entry.get("kun", []):
+                    hira = self._kata_to_hira(r)
+                    # 去掉送假名标记 (如 いた.む → いた)
+                    hira = hira.split(".")[0]
+                    if not hira:
+                        continue
+                    if hira.startswith("-"):
+                        # 位置相关读音 (如 -ぎ → 接尾)
+                        kun_positional.append(hira.lstrip("-"))
+                    else:
+                        kun.append(hira)
+                # 合并: 通用读音 + 位置相关读音
+                opts = list(dict.fromkeys(on + kun + kun_positional))
+                if not opts:
+                    return None
+                char_options.append(opts)
+            else:
+                return None
+
+        # 排列组合匹配
+        def _match(idx: int, pos: int) -> Optional[List[str]]:
+            if idx == n:
+                return [] if pos == len(reading) else None
+            for opt in char_options[idx]:
+                end = pos + len(opt)
+                if end <= len(reading) and reading[pos:end] == opt:
+                    rest = _match(idx + 1, end)
+                    if rest is not None:
+                        return [opt] + rest
+            return None
+
+        return _match(0, 0)
+
+    @staticmethod
+    def _kata_to_hira(text: str) -> str:
+        result = []
+        for ch in text:
+            code = ord(ch)
+            if 0x30A1 <= code <= 0x30F6:
+                result.append(chr(code - 0x60))
+            else:
+                result.append(ch)
+        return "".join(result)
 
     def _fallback_split_peel_kana(
         self, word: str, reading: str
@@ -1113,15 +1241,10 @@ class AutoCheckService:
             )
             new_characters.append(character)
 
-        # 设置 linked_to_next: 当下一个字符 check_count==0 时，当前字符连词到下一个
-        # 空格字符不应触发连词（空格 check_count==0 是过滤规则的结果，不代表连读）
-        # #10: 仅当注音来源是「用户词典」或「e2k 英语词典」或「英文词组 fallback」
-        #      时才允许连词；库函数（Sudachi/pykakasi）和自注音的结果一律不连词。
-        # 补丁：library 来源走了「头尾假名剥离」回退（block_source="fallback"）时
-        #      也允许连词（此时连续汉字间必须连词以保证 ruby 正确显示）。
-        # 连词规则：同一 origin_block_id 内相邻字符自动 linked_to_next，
-        # 不再要求 next.check_count == 0。后字继续展示自己的 ruby。
-        # 空格字符不参与连词。
+        # 设置 linked_to_next:
+        # - 干净拆分（origin_block_id == -1，字典逗号分段每段非空）→ 不连词
+        # - 非干净拆分（origin_block_id >= 0，字典有空读音/fallback）→ 后字无 ruby 才连词
+        # - 空格字符不参与连词
         _LINKABLE_SOURCES = {"dict", "e2k", "english_fallback", "fallback"}
         for i in range(len(new_characters) - 1):
             next_ch = new_characters[i + 1]
@@ -1130,18 +1253,36 @@ class AutoCheckService:
             cur_ch = new_characters[i]
             if cur_ch.char and cur_ch.char.isspace():
                 continue
+            # 假名/英文不参与汉字连词（数字保留，如 1人/2人 需要连词）
+            next_ct = get_char_type(next_ch.char) if len(next_ch.char) == 1 else CharType.OTHER
+            if next_ct in (CharType.HIRAGANA, CharType.KATAKANA, CharType.ALPHABET):
+                continue
+            cur_ct = get_char_type(cur_ch.char) if len(cur_ch.char) == 1 else CharType.OTHER
+            if cur_ct == CharType.ALPHABET:
+                continue
             cur_src = results[i].origin_source if i < len(results) else "self"
             next_src = (
                 results[i + 1].origin_source if i + 1 < len(results) else "self"
             )
-            # 仅可连词来源且属于同一个注音块时，才建立连词关系
-            if (
+            # 仅可连词来源且属于同一个注音块时，才考虑连词
+            if not (
                 cur_src in _LINKABLE_SOURCES
                 and next_src in _LINKABLE_SOURCES
                 and results[i].origin_block_id >= 0
                 and results[i].origin_block_id
                 == results[i + 1].origin_block_id
             ):
+                continue
+            # 后字有独立注音 → 读音已拆分，不连词
+            # 后字无注音（ruby 为空）→ 无法拆分，连词
+            next_has_ruby = (
+                next_ch.ruby is not None
+                and (
+                    isinstance(next_ch.ruby, list) and any(next_ch.ruby)
+                    or hasattr(next_ch.ruby, "parts") and next_ch.ruby.parts
+                )
+            )
+            if not next_has_ruby:
                 new_characters[i].linked_to_next = True
 
         # 恢复时间标签
