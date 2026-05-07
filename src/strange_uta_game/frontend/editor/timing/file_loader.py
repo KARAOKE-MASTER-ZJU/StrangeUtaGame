@@ -114,19 +114,19 @@ class FileLoader:
 
         if not has_save_path:
             # 临时项目：提示保存
-            reply = QMessageBox.question(
-                self._editor,
-                "保存当前项目",
-                "当前项目尚未保存，是否保存？",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if reply == QMessageBox.StandardButton.Save:
+            msg = QMessageBox(self._editor)
+            msg.setWindowTitle("保存当前项目")
+            msg.setText("当前项目尚未保存，是否保存？")
+            btn_save = msg.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+            btn_discard = msg.addButton("放弃", QMessageBox.ButtonRole.DestructiveRole)
+            msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(btn_save)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is btn_save:
                 self._editor._on_save()
                 return True
-            elif reply == QMessageBox.StandardButton.Discard:
+            elif clicked is btn_discard:
                 return True
             else:  # Cancel
                 return False

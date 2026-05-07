@@ -319,15 +319,15 @@ class MainWindow(MSFluentWindow):
         if not ProjectStore.has_crash_recovery():
             return
 
-        reply = QMessageBox.question(
-            self,
-            "恢复未保存的项目",
-            "检测到上次异常退出时的未保存项目数据。\n是否加载恢复？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
+        msg = QMessageBox(self)
+        msg.setWindowTitle("恢复未保存的项目")
+        msg.setText("检测到上次异常退出时的未保存项目数据。\n是否加载恢复？")
+        btn_yes = msg.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("否", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_yes)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is btn_yes:
             project = ProjectStore.load_crash_recovery()
             if project:
                 self._store.load_project(project)

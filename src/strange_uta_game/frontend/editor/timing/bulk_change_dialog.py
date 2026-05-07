@@ -354,15 +354,16 @@ class BulkChangeDialog(QDialog):
         same_len = len(new_text) == len(word)
         if not same_len:
             # 丢时间戳确认
-            reply = QMessageBox.question(
-                self,
-                "确认批量替换",
-                f"替换后字符数 ({len(new_text)}) 与搜索词 ({len(word)}) 不同，\n"
-                f"将丢失全部 {total_matches} 处匹配的时间戳。是否继续？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("确认批量替换")
+            msg.setText(f"替换后字符数 ({len(new_text)}) 与搜索词 ({len(word)}) 不同，\n"
+                f"将丢失全部 {total_matches} 处匹配的时间戳。是否继续？")
+            btn_yes = msg.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+            msg.addButton("否", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(btn_yes)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is not btn_yes:
                 return
 
         # 执行前快照（用于 CommandManager 的 undo/redo）

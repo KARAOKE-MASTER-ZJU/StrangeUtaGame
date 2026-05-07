@@ -285,8 +285,8 @@ class SettingsInterface(ScrollArea):
         )
         self.card_jump_before = SpinSettingCard(
             FIF.HISTORY,
-            "双击跳转提前量",
-            "双击字符跳转到该字符时间戳前的毫秒数",
+            "删除节奏点跳转提前量",
+            "删除节奏点时跳转到该时间戳前的毫秒数",
             min_val=0,
             max_val=30000,
             step=500,
@@ -1325,14 +1325,15 @@ class SettingsInterface(ScrollArea):
     def _reset_settings(self):
         from PyQt6.QtWidgets import QMessageBox
 
-        reply = QMessageBox.question(
-            self,
-            "确认重置",
-            "确定要将所有设置重置为默认值吗？\n这将覆盖您当前的设置（用户词典和演唱者预设不受影响）。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
+        msg = QMessageBox(self)
+        msg.setWindowTitle("确认重置")
+        msg.setText("确定要将所有设置重置为默认值吗？\n这将覆盖您当前的设置（用户词典和演唱者预设不受影响）。")
+        btn_yes = msg.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("否", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_yes)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is btn_yes:
             try:
                 if self._settings._config_path.exists():
                     self._settings._config_path.unlink()

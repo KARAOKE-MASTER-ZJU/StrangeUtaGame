@@ -98,6 +98,8 @@ class SingerEditDialog(QDialog):
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         button_box.accepted.connect(self._on_accept)
         button_box.rejected.connect(self.reject)
         layout.addRow("", button_box)
@@ -440,14 +442,15 @@ class SingerManagerInterface(QWidget):
             return
 
         # 确认删除
-        reply = QMessageBox.question(
-            self,
-            "确认删除",
-            f'确定要删除演唱者 "{singer.name}" 吗？\n\n该演唱者的歌词将被转移给默认演唱者。',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
+        msg = QMessageBox(self)
+        msg.setWindowTitle("确认删除")
+        msg.setText(f'确定要删除演唱者 "{singer.name}" 吗？\n\n该演唱者的歌词将被转移给默认演唱者。')
+        btn_yes = msg.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("否", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_yes)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is btn_yes:
             try:
                 # 获取默认演唱者
                 default_singer = self._project.get_default_singer()

@@ -921,14 +921,15 @@ class EditInterface(QWidget):
             return
 
         if len(selected_sentences) > 1:
-            result = QMessageBox.question(
-                self,
-                "确认删除",
-                f"确定要删除选中的 {len(selected_sentences)} 行吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if result != QMessageBox.StandardButton.Yes:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("确认删除")
+            msg.setText(f"确定要删除选中的 {len(selected_sentences)} 行吗？")
+            btn_yes = msg.addButton("是", QMessageBox.ButtonRole.AcceptRole)
+            msg.addButton("否", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(btn_yes)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is not btn_yes:
                 return
 
         for sentence in selected_sentences:

@@ -37,6 +37,7 @@ from qfluentwidgets import (
     InfoBarPosition,
     PrimaryPushButton,
     PushButton,
+    StateToolTip,
 )
 
 from strange_uta_game.backend.application import (
@@ -607,18 +608,18 @@ class EditorInterface(QWidget):
 
             if not has_save_path:
                 # 临时项目：提示保存
-                reply = QMessageBox.question(
-                    self,
-                    "保存当前项目",
-                    "当前项目尚未保存，是否保存？",
-                    QMessageBox.StandardButton.Save
-                    | QMessageBox.StandardButton.Discard
-                    | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Save,
-                )
-                if reply == QMessageBox.StandardButton.Save:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("保存当前项目")
+                msg.setText("当前项目尚未保存，是否保存？")
+                btn_save = msg.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+                msg.addButton("放弃", QMessageBox.ButtonRole.DestructiveRole)
+                btn_cancel = msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(btn_save)
+                msg.exec()
+                clicked = msg.clickedButton()
+                if clicked is btn_save:
                     self._on_save()
-                elif reply == QMessageBox.StandardButton.Cancel:
+                elif clicked is btn_cancel:
                     return
 
         # 创建新项目
@@ -1012,7 +1013,21 @@ class EditorInterface(QWidget):
             return False
 
         try:
-            self._timing_service.load_audio(file_path)
+            # 创建状态提示
+            state_tooltip = StateToolTip("正在加载音频", "正在读取音频文件...", self)
+            state_tooltip.move(state_tooltip.getSuitablePos())
+            state_tooltip.show()
+
+            def on_progress(stage: str, value: float):
+                state_tooltip.setContent(stage)
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+
+            self._timing_service.load_audio(file_path, progress_cb=on_progress)
+            state_tooltip.setState(True)  # 设置为完成状态
+            state_tooltip.setContent("加载完成")
+            state_tooltip.close()
+
             info = self._timing_service.get_audio_info()
             if info:
                 self.transport.set_duration(info.duration_ms)
@@ -1813,23 +1828,20 @@ class EditorInterface(QWidget):
         self._update_status()
 
     def _on_seek_to_char(self, line_idx: int, char_idx: int):
-        """双击字符 → 跳转到该字符的时间戳前指定毫秒数"""
+        """双击字符 → 跳转到该字符的时间戳"""
         if not self._project or line_idx >= len(self._project.sentences):
             return
         sentence = self._project.sentences[line_idx]
         if char_idx >= len(sentence.chars):
             return
 
-        jump_before = getattr(self, "_jump_before_ms", 3000)
         char = sentence.get_character(char_idx)
         if not char:
             return
 
-        # 使用原始时间戳（不带偏移），与 _on_seek_to_checkpoint 保持一致
-        tags = char.all_timestamps
+        tags = char.all_global_timestamps
         if tags:
-            target_ms = max(0, tags[0] - jump_before)
-            self._on_seek(target_ms)
+            self._on_seek(tags[0])
 
         # 同时移动打轴位置到该字符
         if self._timing_service:
@@ -1848,10 +1860,12 @@ class EditorInterface(QWidget):
             # 未开发
             pass
         jump_before = getattr(self, "_jump_before_ms", 3000)
-        tags = sentence.get_timetags_for_char(char_idx)
-        if tags:
-            target_ms = max(0, tags[0] - jump_before)
-            self._on_seek(target_ms)
+        char = sentence.get_character(char_idx)
+        if char:
+            tags = char.all_global_timestamps
+            if tags:
+                target_ms = max(0, tags[0] - jump_before)
+                self._on_seek(target_ms)
 
         # 同时移动打轴位置到该字符
         if self._timing_service:
@@ -1873,10 +1887,12 @@ class EditorInterface(QWidget):
             return
 
         jump_before = getattr(self, "_jump_before_ms", 3000)
-        tags = sentence.get_timetags_for_char(char_idx)
-        if tags:
-            target_ms = max(0, tags[0] - jump_before)
-            self._on_seek(target_ms)
+        char = sentence.get_character(char_idx)
+        if char:
+            tags = char.all_global_timestamps
+            if tags:
+                target_ms = max(0, tags[0] - jump_before)
+                self._on_seek(target_ms)
 
         # 同时移动打轴位置到该字符
         if self._timing_service:
