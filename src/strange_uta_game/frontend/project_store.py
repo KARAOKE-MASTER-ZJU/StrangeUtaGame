@@ -138,8 +138,10 @@ class ProjectStore(QObject):
         各 UI 模块在修改 domain 对象后调用此方法，
         而非自行发射独立信号。
         """
-        self._dirty = True
-        self._schedule_auto_save()
+        # 设置和音频路径变更不算项目内容修改
+        if change_type not in ("settings", "audio"):
+            self._dirty = True
+            self._schedule_auto_save()
         self.data_changed.emit(change_type)
 
     # ── 保存 ─────────────────────────────────────
