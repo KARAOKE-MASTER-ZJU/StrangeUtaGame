@@ -208,3 +208,9 @@ __marimo__/
 
 # OhmyOpencode
 .sisyphus
+
+# example
+example/
+
+# cache
+cache/
