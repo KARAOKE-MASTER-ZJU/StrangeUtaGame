@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox
 from qfluentwidgets import InfoBar, InfoBarPosition
 
 from .lyric_loader import read_lyric_file, parse_lyric_content
+from strange_uta_game.frontend.settings.app_settings import AppSettings
 
 if TYPE_CHECKING:
     from ..timing_interface import EditorInterface
@@ -53,12 +54,21 @@ class FileLoader:
         ext = Path(file_path).suffix.lower()
         if ext in self._AUDIO_EXTENSIONS:
             self._editor.load_audio(file_path)
+            self._save_last_dir(file_path)
         elif ext in self._LYRIC_EXTENSIONS:
             self.load_lyrics(file_path)
+            self._save_last_dir(file_path)
         elif ext in self._PROJECT_EXTENSIONS:
             self.load_project(file_path)
 
     # ── 菜单/按钮触发 ──
+
+    def _save_last_dir(self, file_path: str):
+        """保存文件所在目录到配置，方便后续导出使用"""
+        parent_dir = str(Path(file_path).parent)
+        settings = AppSettings()
+        settings.set("export.last_export_dir", parent_dir)
+        settings.save()
 
     def prompt_load_project(self):
         """弹出文件选择框加载项目"""
@@ -79,6 +89,7 @@ class FileLoader:
         )
         if path:
             self._editor.load_audio(path)
+            self._save_last_dir(path)
 
     def prompt_load_lyrics(self):
         """弹出文件选择框加载歌词"""
@@ -96,6 +107,7 @@ class FileLoader:
         )
         if path:
             self.load_lyrics(path)
+            self._save_last_dir(path)
 
     # ── 实际加载逻辑 ──
 
@@ -155,6 +167,32 @@ class FileLoader:
                 parent=self._editor,
             )
 
+    def can_load_from_clipboard(self) -> bool:
+        """判断是否可以从剪贴板加载歌词。
+
+        仅在未创建项目或项目内不存在任何歌词行时返回 True。
+        """
+        if not self._project:
+            return True
+        return len(self._project.sentences) == 0
+
+    def load_lyrics_from_text(self, content: str):
+        """从文本内容加载歌词（用于剪贴板粘贴）。
+
+        Args:
+            content: 歌词文本内容
+        """
+        if not content or not content.strip():
+            InfoBar.warning(
+                title="剪贴板为空", content="剪贴板中没有文本内容",
+                orient=Qt.Orientation.Horizontal, isClosable=True,
+                position=InfoBarPosition.TOP, duration=3000,
+                parent=self._editor,
+            )
+            return
+
+        self._do_load_lyrics(content)
+
     def load_lyrics(self, path: str):
         """加载歌词文件（自动检测格式并解析）"""
         content = read_lyric_file(path)
@@ -167,6 +205,10 @@ class FileLoader:
             )
             return
 
+        self._do_load_lyrics(content)
+
+    def _do_load_lyrics(self, content: str):
+        """歌词加载的核心逻辑（文件和剪贴板共用）"""
         try:
             from strange_uta_game.backend.application import ProjectService
             from strange_uta_game.backend.domain import Singer

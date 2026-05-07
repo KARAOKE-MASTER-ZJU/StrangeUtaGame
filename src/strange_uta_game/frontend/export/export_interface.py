@@ -304,7 +304,9 @@ class ExportInterface(QWidget):
         return {s.id: s.name for s in self._project.singers}
 
     def _on_browse(self):
-        path = QFileDialog.getExistingDirectory(self, "选择导出目录", "")
+        settings = AppSettings()
+        default_dir = settings.get("export.last_export_dir", "")
+        path = QFileDialog.getExistingDirectory(self, "选择导出目录", default_dir)
         if path:
             self.line_output.setText(path)
 
@@ -347,7 +349,9 @@ class ExportInterface(QWidget):
         output_dir = self.line_output.text()
         if not output_dir:
             # 弹出文件选择
-            output_dir = QFileDialog.getExistingDirectory(self, "选择导出目录", "")
+            settings = AppSettings()
+            default_dir = settings.get("export.last_export_dir", "")
+            output_dir = QFileDialog.getExistingDirectory(self, "选择导出目录", default_dir)
             if not output_dir:
                 return
             self.line_output.setText(output_dir)

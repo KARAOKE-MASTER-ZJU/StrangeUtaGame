@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
@@ -400,6 +400,9 @@ class EditorInterface(QWidget):
         # 应用歌词对齐方式
         lyrics_alignment = settings.get("ui.lyrics_alignment", "center")
         self.preview.set_alignment(lyrics_alignment)
+        # 应用左/右对齐页边距
+        alignment_margin = settings.get("ui.alignment_margin", 168)
+        self.preview.set_alignment_margin(alignment_margin)
         # 应用字体大小设置
         base_font_size = settings.get("ui.font_size", 18)
         current_line_size = settings.get("ui.current_line_font_size", 22)
@@ -416,6 +419,9 @@ class EditorInterface(QWidget):
             self.btn_tag.setText(f"打轴 ({tag_first})")
         # #8：同步模式指示器（首次应用设置时刷新）
         self._update_mode_indicator()
+        # 应用禁用单击跳转设置
+        disable_click_jump = settings.get("timing.disable_click_jump", True)
+        self.preview.set_disable_click_jump(disable_click_jump)
 
     def _update_shortcut_hint(
         self, timing_actions: dict, edit_actions: Optional[dict] = None
@@ -489,6 +495,8 @@ class EditorInterface(QWidget):
         )
         self._update_time_tags_display()
         self._update_status()
+        # 重新应用设置（字体大小、行间距、对齐方式等）
+        self._apply_settings()
 
     def release_resources(self):
         """释放音频资源"""
@@ -1889,8 +1897,64 @@ class EditorInterface(QWidget):
         self._update_time_tags_display()
         self._update_status()
 
+    def _find_previous_timestamp(self, line_idx: int, char_idx: int) -> Optional[int]:
+        """向前查找最近的时间戳（可能在上一行）
+
+        从指定位置向前搜索，返回找到的第一个时间戳。
+        """
+        if not self._project:
+            return None
+
+        # 从当前行往前找
+        for li in range(line_idx, -1, -1):
+            sentence = self._project.sentences[li]
+            # 确定本行搜索的字符范围
+            end_char = char_idx if li == line_idx else len(sentence.characters) - 1
+
+            for ci in range(end_char, -1, -1):
+                char = sentence.get_character(ci)
+                if not char:
+                    continue
+                tags = char.all_global_timestamps
+                if tags:
+                    return tags[-1]  # 返回该字符最后一个时间戳（最近的）
+        return None
+
+    def _find_previous_checkpoint_with_timestamp(
+        self, line_idx: int, char_idx: int
+    ) -> Optional[Tuple[int, int, int]]:
+        """向前查找最近一个有时间戳的cp
+
+        Args:
+            line_idx: 当前行索引
+            char_idx: 当前字符索引
+
+        Returns:
+            找到的 (line_idx, char_idx, cp_idx) 或 None
+        """
+        if not self._project:
+            return None
+
+        # 从当前行往前找
+        for li in range(line_idx, -1, -1):
+            sentence = self._project.sentences[li]
+            # 确定本行搜索的字符范围
+            end_char = char_idx if li == line_idx else len(sentence.characters) - 1
+
+            for ci in range(end_char, -1, -1):
+                char = sentence.get_character(ci)
+                if not char:
+                    continue
+                # 检查该字符是否有时间戳
+                if char.all_global_timestamps:
+                    # 返回该字符的最后一个cp索引
+                    last_cp_idx = len(char.all_global_timestamps) - 1
+                    return (li, ci, last_cp_idx)
+
+        return None
+
     def _on_seek_to_char(self, line_idx: int, char_idx: int):
-        """双击字符 → 跳转到该字符的时间戳"""
+        """双击字符 → 跳转到该字符的时间戳（无时间戳则向前查找）"""
         if not self._project or line_idx >= len(self._project.sentences):
             return
         sentence = self._project.sentences[line_idx]
@@ -1904,34 +1968,43 @@ class EditorInterface(QWidget):
         tags = char.all_global_timestamps
         if tags:
             self._on_seek(tags[0])
+        else:
+            # 向前查找最近的时间戳
+            prev_ts = self._find_previous_timestamp(line_idx, char_idx)
+            if prev_ts is not None:
+                self._on_seek(prev_ts)
 
         # 同时移动打轴位置到该字符
         if self._timing_service:
             self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
             self._update_time_tags_display()
             self._update_status()
-    
+
     def _on_seek_to_checkpoint(self, line_idx: int, char_idx: int, cp_idx: int):
-        """单击字符 → 跳转到 checkpoint 前指定毫秒数"""
+        """双击 checkpoint → 跳转到该 checkpoint 的时间戳（无时间戳则向前查找）"""
         if not self._project or line_idx >= len(self._project.sentences):
             return
         sentence = self._project.sentences[line_idx]
         if char_idx >= len(sentence.chars):
             return
-        if cp_idx:
-            # 未开发
-            pass
-        jump_before = getattr(self, "_jump_before_ms", 3000)
-        char = sentence.get_character(char_idx)
-        if char:
-            tags = char.all_global_timestamps
-            if tags:
-                target_ms = max(0, tags[0] - jump_before)
-                self._on_seek(target_ms)
 
-        # 同时移动打轴位置到该字符
+        char = sentence.get_character(char_idx)
+        if not char:
+            return
+
+        tags = char.all_global_timestamps
+        if tags:
+            target_idx = min(cp_idx, len(tags) - 1)
+            self._on_seek(tags[target_idx])
+        else:
+            # 向前查找最近的时间戳
+            prev_ts = self._find_previous_timestamp(line_idx, char_idx)
+            if prev_ts is not None:
+                self._on_seek(prev_ts)
+
+        # 同时移动打轴位置到该 checkpoint
         if self._timing_service:
-            self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
+            self._timing_service.move_to_checkpoint(line_idx, char_idx, cp_idx)
             self._update_time_tags_display()
             self._update_status()
 
@@ -1963,6 +2036,15 @@ class EditorInterface(QWidget):
             self._update_status()
         # 清除当前字符的时间戳
         self._delete_timestamp(line_idx, char_idx)
+        
+        # 删除后自动移动到前一个有时间戳的cp，方便连续删除
+        prev_cp = self._find_previous_checkpoint_with_timestamp(line_idx, char_idx)
+        if prev_cp:
+            prev_line, prev_char, prev_cp_idx = prev_cp
+            if self._timing_service:
+                self._timing_service.move_to_checkpoint(prev_line, prev_char, prev_cp_idx)
+                self._update_time_tags_display()
+                self._update_status()
 
     def _on_insert_space_after_requested(self, line_idx: int, char_idx: int):
         if not self._project or line_idx < 0 or line_idx >= len(self._project.sentences):

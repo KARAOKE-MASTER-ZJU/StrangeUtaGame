@@ -44,7 +44,7 @@ class KaraokePreview(QWidget):
     checkpoint_clicked = pyqtSignal(int, int, int)  # line_idx, char_idx, checkpoint_idx
     char_edit_requested = pyqtSignal(int, int)  # line_idx, char_idx (F2 key)
     seek_to_char_requested = pyqtSignal(int, int)  # line_idx, char_idx (click)
-    seek_to_checkpoint_requested = pyqtSignal(int, int ,int)  # line_idx, char_idx, checkpoint_idx (click)
+    seek_to_checkpoint_requested = pyqtSignal(int, int ,int)  # line_idx, char_idx, checkpoint_idx (double-click)
     char_selected = pyqtSignal(int, int)  # line_idx, char_idx
     singer_change_requested = pyqtSignal(
         int, int, int, str
@@ -94,6 +94,7 @@ class KaraokePreview(QWidget):
         self._pending_cp_line: int = -1
         self._pending_cp_char: int = -1
         self._pending_cp_idx: int = -1
+        self._disable_click_jump: bool = False  # 禁用单击跳转
 
         # 缓存字体和 QFontMetrics，避免每帧重建
         self._font_current = QFont("Microsoft YaHei", 22, QFont.Weight.Bold)
@@ -110,6 +111,7 @@ class KaraokePreview(QWidget):
 
         # 歌词对齐方式："left" / "center" / "right"
         self._alignment: str = "center"
+        self._alignment_margin: int = 168  # 左/右对齐时的页边距(px)
 
         # 逐句渲染数据缓存（避免每帧重复计算）
         # 每行有自己的版本号，只有数据改变的行才重新计算
@@ -136,6 +138,10 @@ class KaraokePreview(QWidget):
     def set_playing(self, playing: bool):
         """由外部同步播放状态，用于决定 paintEvent 是否旁路缓存。"""
         self._is_playing = bool(playing)
+
+    def set_disable_click_jump(self, disable: bool):
+        """设置是否禁用单击跳转功能。"""
+        self._disable_click_jump = bool(disable)
 
     def set_duration(self, duration_ms: int):
         """设置音频总时长（用于行尾非句尾时的wipe右边界）"""
@@ -276,6 +282,17 @@ class KaraokePreview(QWidget):
             self._alignment = alignment
             self.update()
 
+    def set_alignment_margin(self, margin: int):
+        """设置左/右对齐时的页边距。
+
+        Args:
+            margin: 页边距像素值
+        """
+        margin = max(0, min(500, margin))
+        if self._alignment_margin != margin:
+            self._alignment_margin = margin
+            self.update()
+
     def set_font_sizes(self, base_size: int, current_line_size: int = 0, ruby_size: int = 10, cp_size: int = 8, line_height_factor: float = 1.20):
         """设置字体大小并自动适配预览行数。
 
@@ -363,8 +380,8 @@ class KaraokePreview(QWidget):
         # 优先检查 checkpoint 标记的点击
         for marker_rect, line_idx, char_idx, cp_idx in self._checkpoint_hitboxes:
             if marker_rect.contains(click_x, click_y):
-                # 单击：切换选中的 checkpoint
-                self.checkpoint_clicked.emit(line_idx, char_idx, cp_idx)
+                # 不立即触发 checkpoint_clicked，避免居中导致双击失败
+                # checkpoint_clicked 会在单击超时后触发
 
                 # 记录待处理的 checkpoint 点击，等待双击判断
                 self._pending_cp_click = True
@@ -684,7 +701,7 @@ class KaraokePreview(QWidget):
                         ch_obj.is_sentence_end and cp_idx == ch_obj.check_count
                     )
                     if is_sentence_end_marker:
-                        marker_char = "  ◉" if ch_obj.global_sentence_end_ts else "  ◎"
+                        marker_char = "  ⬟" if ch_obj.global_sentence_end_ts else "  ⬠"
                     elif cp_idx == 0:
                         marker_char = "▶" if cp_idx < len(ch_obj.global_timestamps) else "▷"
                     else:
@@ -814,11 +831,15 @@ class KaraokePreview(QWidget):
         if self._pending_click_pos is None:
             return
 
+        # 如果禁用单击跳转，则不执行任何操作
+        if self._disable_click_jump:
+            self._pending_click_pos = None
+            self._pending_cp_click = False
+            return
+
         if self._pending_cp_click:
-            # 单击 checkpoint：跳转到该 checkpoint 前 x 秒
-            self.seek_to_checkpoint_requested.emit(
-                self._pending_cp_line, self._pending_cp_char, self._pending_cp_idx
-            )
+            # 单击 checkpoint：触发 checkpoint_clicked
+            self.checkpoint_clicked.emit(self._pending_cp_line, self._pending_cp_char, self._pending_cp_idx)
         elif self._pending_click_line >= 0:
             # 单击字符：触发 char_selected（居中）和 line_clicked
             self.char_selected.emit(self._pending_click_line, self._pending_click_char)
@@ -846,7 +867,7 @@ class KaraokePreview(QWidget):
         if not self._project or not self._project.sentences:
             painter.setPen(theme.text_hint)
             painter.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter, "请拖入sug项目或者歌词文件"
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "请拖入sug项目或者歌词文件或ctrl+v粘贴剪贴板上的歌词文件"
             )
             painter.end()
             return
@@ -949,9 +970,9 @@ class KaraokePreview(QWidget):
             available_width = text_area_right - text_area_left
 
             if self._alignment == "left":
-                start_x = text_area_left
+                start_x = text_area_left + self._alignment_margin
             elif self._alignment == "right":
-                start_x = text_area_right - total_text_width
+                start_x = text_area_right - total_text_width - self._alignment_margin
                 # 确保不覆盖行号区域
                 start_x = max(start_x, text_area_left)
             else:  # center
@@ -1199,7 +1220,7 @@ class KaraokePreview(QWidget):
                         )
 
                         if is_sentence_end_marker:
-                            marker_char = "  ◉" if has_timed else "  ◎"
+                            marker_char = "  ⬟" if has_timed else "  ⬠"
                         elif cp_idx == 0:
                             marker_char = "▶" if has_timed else "▷"
                         else:
@@ -1215,23 +1236,19 @@ class KaraokePreview(QWidget):
                     marker_y = int(y_center + main_fm.descent() + 14)
 
                     for cp_idx, (marker_char, has_timed) in enumerate(markers):
-                        # Issue #9 第十六批架构性修复：单管道渲染，不再有"选中分支"。
-                        # 选中态由 Character.selected_checkpoint_idx 承载；渲染时
-                        # 选中 cp 直接用演唱者补色（持久化于 Singer.complement_color），
-                        # 未选中用基色。这样所有 cp 都走同一条 setPen+drawText 路径，
-                        # 从源头消除"选中后大白框"——因为不再有任何路径上的第二次
-                        # drawText、setClipRect、BGMode 切换等副作用。
+                        # checkpoint 颜色逻辑：
+                        # - 未打轴：使用主题当前文字色
+                        # - 已打轴但未选中：使用基色（不填充演唱者颜色，仅通过实心/空心区分）
+                        # - 已打轴且选中：使用演唱者颜色作为高亮
                         is_selected = (
                             ch_obj.selected_checkpoint_idx == cp_idx
                         )
                         if not has_timed:
                             color = theme.karaoke_text_current
                         elif is_selected:
-                            color = _char_complement_colors.get(
-                                char_pos, _char_singer_colors.get(char_pos, highlight_color)
-                            )
-                        else:
                             color = _char_singer_colors.get(char_pos, highlight_color)
+                        else:
+                            color = base_color
 
                         mw = fm_checkpoint.horizontalAdvance(marker_char)
 
