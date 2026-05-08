@@ -14,7 +14,7 @@
     "rewind_ms": 5000,
     "jump_before_ms": 3000,
     "timing_adjust_step_ms": 10,
-    "disable_click_jump": true
+    "disable_click_jump": false
   },
   "auto_check": {
     "hiragana": true,
@@ -47,7 +47,8 @@
     "ruby_size": 10,
     "cp_size": 8,
     "line_height_factor": 1.2,
-    "lyrics_alignment": "left"
+    "lyrics_alignment": "left",
+    "alignment_margin": 168
   },
   "export": {
     "default_format": "LRC (增强型)",
