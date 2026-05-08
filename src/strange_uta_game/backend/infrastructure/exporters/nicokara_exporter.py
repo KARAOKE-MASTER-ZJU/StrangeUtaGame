@@ -34,7 +34,7 @@ def _format_nicokara_ts(timestamp_ms: int, offset_ms: int = 0) -> str:
     timestamp_ms = max(0, timestamp_ms + offset_ms)
     minutes = timestamp_ms // 60000
     seconds = (timestamp_ms % 60000) // 1000
-    centiseconds = (timestamp_ms % 1000) // 10
+    centiseconds = round(timestamp_ms % 1000 / 10)
     return f"[{minutes:02d}:{seconds:02d}:{centiseconds:02d}]"
 
 
@@ -388,7 +388,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             格式: ["漢字,読み[ts],pos1,pos2", ...]
         """
         default_singer_id = self._get_default_singer_id(project)
-        # key: (kanji, reading) → List[{reading_with_ts, first_char_ts}]
+        # key: (kanji, reading) → List[{reading_display, reading_ms_key, first_char_ts}]
         ruby_groups: OrderedDict[tuple[str, str], list[dict]] = OrderedDict()
 
         for sentence in project.sentences:
@@ -408,8 +408,10 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                     key = (kanji, reading)
 
                     # 为每次出现独立构建带时间戳的读音
-                    reading_with_ts = self._build_reading_with_timestamps(
-                        sentence, start_idx, end_idx, reading
+                    reading_display, reading_ms_key = (
+                        self._build_reading_with_timestamps(
+                            sentence, start_idx, end_idx, reading
+                        )
                     )
 
                     # 获取本次出现的首字符时间戳（用于位置标记）
@@ -423,7 +425,8 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                         ruby_groups[key] = []
                     ruby_groups[key].append(
                         {
-                            "reading_with_ts": reading_with_ts,
+                            "reading_display": reading_display,
+                            "reading_ms_key": reading_ms_key,
                             "first_char_ts": first_char_ts,
                         }
                     )
@@ -448,13 +451,13 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             nonlocal group_index
             # 按 first_char_ts 排序
             merged.sort(key=lambda o: o["first_char_ts"] or 0)
-            # 合并连续相同 reading_with_ts 为子组
+            # 合并连续相同 reading_ms_key（毫秒精度）为子组
             sub_groups: List[List[dict]] = []
             for occ in merged:
                 if (
                     sub_groups
-                    and sub_groups[-1][0]["reading_with_ts"]
-                    == occ["reading_with_ts"]
+                    and sub_groups[-1][0]["reading_ms_key"]
+                    == occ["reading_ms_key"]
                 ):
                     sub_groups[-1].append(occ)
                 else:
@@ -462,7 +465,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
 
             n = len(sub_groups)
             for i, sg in enumerate(sub_groups):
-                r_ts = sg[0]["reading_with_ts"]
+                r_ts = sg[0]["reading_display"]
                 this_ts = sg[0].get("first_char_ts")
                 sort_ts = this_ts or 0
 
@@ -515,12 +518,12 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                         merged.extend(occs)
                 _emit_with_ranges(kanji, merged)
             else:
-                # 单一读音：在组内检查 reading_with_ts 是否一致
+                # 单一读音：在组内检查 reading_ms_key（毫秒精度）是否一致
                 distinct_readings = set(
-                    occ["reading_with_ts"] for occ in occurrences
+                    occ["reading_ms_key"] for occ in occurrences
                 )
                 if len(distinct_readings) == 1:
-                    r_ts = occurrences[0]["reading_with_ts"]
+                    r_ts = occurrences[0]["reading_display"]
                     sort_ts = occurrences[0].get("first_char_ts") or 0
                     all_entries.append(
                         ((sort_ts, group_index), f"{kanji},{r_ts}")
@@ -539,7 +542,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
         start_idx: int,
         end_idx: int,
         reading: str,
-    ) -> str:
+    ) -> tuple[str, tuple]:
         """构建带相对时间戳的读音文本
 
         格式: た[00:00:15]か[00:00:27]らばこ
@@ -552,7 +555,9 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             reading:   读音文本
 
         Returns:
-            带内嵌相对时间戳的读音字符串
+            (display_str, ms_key)
+            - display_str: 带厘秒时间戳的显示字符串
+            - ms_key: 毫秒精度的比较元组，用于区分不同 offset 的读音
         """
         # 建立 kana → (char_idx, checkpoint_idx) 的映射
         mapping: List[tuple[str, int, int]] = []
@@ -571,7 +576,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             mapping.append((reading, -1, -1))
 
         if not mapping:
-            return reading
+            return reading, ()
 
         # 获取组起始时间（第一个字符的首个 checkpoint，使用导出时间戳）
         first_char = (
@@ -580,23 +585,28 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             else None
         )
         if not first_char or not first_char.global_timestamps:
-            return reading
+            return reading, ()
         group_start_ms = first_char.global_timestamps[0]
 
         # 拼装读音字符 + 相对时间戳
-        result: List[str] = []
+        display_parts: List[str] = []
+        ms_key_parts: List = []
+
         for i, (group_text, char_idx, cp_idx) in enumerate(mapping):
             if i == 0:
                 # 第一个假名不加时间戳
-                result.append(group_text)
+                display_parts.append(group_text)
+                ms_key_parts.append(group_text)
                 continue
 
             if char_idx >= 0 and cp_idx >= 0:
                 ch = sentence.characters[char_idx]
                 if cp_idx < len(ch.global_timestamps):
                     relative_ms = ch.global_timestamps[cp_idx] - group_start_ms
-                    result.append(_format_nicokara_ts(relative_ms))
+                    display_parts.append(_format_nicokara_ts(relative_ms))
+                    ms_key_parts.append(relative_ms)
 
-            result.append(group_text)
+            display_parts.append(group_text)
+            ms_key_parts.append(group_text)
 
-        return "".join(result)
+        return "".join(display_parts), tuple(ms_key_parts)
