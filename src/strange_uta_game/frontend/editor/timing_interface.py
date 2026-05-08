@@ -257,6 +257,8 @@ class EditorInterface(QWidget):
         )
         # 注册timing_servive焦点时间戳改变回调
         self._timing_service._global_qt._focus_moved_signal.connect(self._handle_foucus_moved)
+        # 注册当前行居中滚动信号
+        self._timing_service._global_qt._center_current_line_signal.connect(self._handle_center_current_line)
 
     def set_store(self, store):
         """接入 ProjectStore 统一数据中心。"""
@@ -420,7 +422,7 @@ class EditorInterface(QWidget):
         # #8：同步模式指示器（首次应用设置时刷新）
         self._update_mode_indicator()
         # 应用禁用单击跳转设置
-        disable_click_jump = settings.get("timing.disable_click_jump", True)
+        disable_click_jump = settings.get("timing.disable_click_jump", False)
         self.preview.set_disable_click_jump(disable_click_jump)
 
     def _update_shortcut_hint(
@@ -2512,6 +2514,9 @@ class EditorInterface(QWidget):
     
     def _handle_foucus_moved(self, line_idx: int, char_idx: int):
         self.preview.set_focus_position(line_idx, char_idx)
+
+    def _handle_center_current_line(self):
+        self.preview.scroll_current_line_to_center()
 
     def _handle_timetag_added(self):
         self._update_time_tags_display()

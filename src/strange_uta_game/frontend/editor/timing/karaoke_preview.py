@@ -81,20 +81,18 @@ class KaraokePreview(QWidget):
         self._focus_char_range_end: int = -1
         self._focus_dragging: bool = False
 
-        # 单击/双击延迟处理（使用系统双击间隔）
-        self._double_click_time = self._get_system_double_click_time()
+        self._disable_click_jump: bool = False  # 禁用单击跳转
+
+        # 单击/双击处理：快照机制
+        # 单击时锁定 hitbox 快照，双击时使用快照判断，避免居中导致 hitbox 变化
+        self._pending_click: Optional[dict] = None  # 按下时记录的待处理点击
+        self._click_snapshot: Optional[dict] = None  # 单击后保存的快照（用于双击判断）
         self._click_timer = QTimer(self)
         self._click_timer.setSingleShot(True)
-        self._click_timer.setInterval(self._double_click_time)
-        self._click_timer.timeout.connect(self._on_single_click_timeout)
-        self._pending_click_pos: Optional[tuple] = None  # (click_x, click_y)
-        self._pending_click_line: int = -1
-        self._pending_click_char: int = -1
-        self._pending_cp_click: bool = False  # 是否是 checkpoint 点击
-        self._pending_cp_line: int = -1
-        self._pending_cp_char: int = -1
-        self._pending_cp_idx: int = -1
-        self._disable_click_jump: bool = False  # 禁用单击跳转
+        self._click_timer.setInterval(300)  # 双击间隔
+        self._click_timer.timeout.connect(self._clear_click_snapshot)
+        self._press_pos: Optional[tuple] = None  # 鼠标按下位置 (x, y)
+        self._CLICK_MOVE_THRESHOLD = 5  # 像素级防抖阈值：移动超过此距离视为划词
 
         # 缓存字体和 QFontMetrics，避免每帧重建
         self._font_current = QFont("Microsoft YaHei", 22, QFont.Weight.Bold)
@@ -122,18 +120,6 @@ class KaraokePreview(QWidget):
 
         # 监听主题变化，触发重绘
         theme.changed.connect(self.update)
-
-    @staticmethod
-    def _get_system_double_click_time() -> int:
-        """获取系统双击间隔（毫秒）"""
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                user32 = ctypes.windll.user32
-                return user32.GetDoubleClickTime()
-            except Exception:
-                pass
-        return 300  # 默认值
 
     def set_playing(self, playing: bool):
         """由外部同步播放状态，用于决定 paintEvent 是否旁路缓存。"""
@@ -184,21 +170,29 @@ class KaraokePreview(QWidget):
         self._update_display()
 
     def set_current_position(self, line_idx: int, char_idx: int = 0):
-        # #9: 幂等保护 —— 多路 caller（UI 点击 + timing_service 回调）可能
-        # 在同一帧内相继调用本方法，若目标 line_idx 已是当前值，仅更新 char_idx
-        # 并触发重绘即可，避免短暂的 scroll_center 跳变导致空白行。
-        new_line = float(line_idx)
-        if new_line == self._scroll_center_line and line_idx == self._current_line_idx:
+        """更新当前打轴位置（行+字符），并居中滚动。"""
+        if line_idx == self._current_line_idx:
             self._current_char_idx = char_idx
             self._update_display()
             return
         self._current_line_idx = line_idx
         self._current_char_idx = char_idx
-        # 自动跟随：当前行始终居中（强制整数，避免其他 float 路径污染）
-        self._scroll_center_line = new_line
+        self.scroll_current_line_to_center()
         # 行切换时重新锚定预热中心（仅播放期间）
         if self._is_playing:
             self._warm_nearby_cache(budget=2)
+        self._update_display()
+
+    def scroll_current_line_to_center(self):
+        """将当前行滚动到视口中央。
+
+        幂等保护：若目标 line_idx 已是当前 scroll_center_line，
+        避免短暂跳变导致空白行。
+        """
+        new_line = float(self._current_line_idx)
+        if new_line == self._scroll_center_line:
+            return
+        self._scroll_center_line = new_line
         self._update_display()
 
     def set_current_time_ms(self, time_ms: int):
@@ -377,19 +371,18 @@ class KaraokePreview(QWidget):
             self._show_context_menu(a0.globalPosition().toPoint(), click_x, click_y)
             return
 
-        # 优先检查 checkpoint 标记的点击
+        # 记录按下位置，用于像素级防抖判断
+        self._press_pos = (click_x, click_y)
+
+        # 检查是否点击在 checkpoint 标记上
         for marker_rect, line_idx, char_idx, cp_idx in self._checkpoint_hitboxes:
             if marker_rect.contains(click_x, click_y):
-                # 不立即触发 checkpoint_clicked，避免居中导致双击失败
-                # checkpoint_clicked 会在单击超时后触发
-
-                # 记录待处理的 checkpoint 点击，等待双击判断
-                self._pending_cp_click = True
-                self._pending_cp_line = line_idx
-                self._pending_cp_char = char_idx
-                self._pending_cp_idx = cp_idx
-                self._pending_click_pos = (click_x, click_y)
-                self._click_timer.start()
+                self._pending_click = {
+                    "type": "cp",
+                    "line_idx": line_idx,
+                    "char_idx": char_idx,
+                    "cp_idx": cp_idx,
+                }
                 return
 
         # 检查字符文本点击 → 开始划词选择
@@ -399,16 +392,11 @@ class KaraokePreview(QWidget):
                 self._focus_char_idx = char_idx
                 self._focus_char_range_end = char_idx
                 self._focus_dragging = True
-                # 不立即触发 char_selected，避免居中导致双击失败
-                # char_selected 会在单击超时后触发
-
-                # 记录待处理的单击位置，等待双击判断
-                self._pending_cp_click = False
-                self._pending_click_pos = (click_x, click_y)
-                self._pending_click_line = line_idx
-                self._pending_click_char = char_idx
-                self._click_timer.start()
-
+                self._pending_click = {
+                    "type": "char",
+                    "line_idx": line_idx,
+                    "char_idx": char_idx,
+                }
                 self.update()
                 return
 
@@ -417,9 +405,7 @@ class KaraokePreview(QWidget):
         self._focus_line_idx = -1
         self._focus_char_idx = -1
         self._focus_char_range_end = -1
-        # 取消待处理的单击
-        self._click_timer.stop()
-        self._pending_click_pos = None
+        self._clear_click_snapshot()
 
         h = self.height()
         line_height = h / self._visible_lines
@@ -434,16 +420,21 @@ class KaraokePreview(QWidget):
 
     def mouseMoveEvent(self, a0: Optional[QMouseEvent]):
         """鼠标拖拽 → 扩展划词选择范围"""
-        if not a0 or not self._focus_dragging:
+        if not a0:
             return
 
         move_x = int(a0.position().x())
         move_y = int(a0.position().y())
 
-        # 拖动时取消单击定时器，避免拖动过程中触发居中
-        if self._pending_click_pos is not None:
-            self._click_timer.stop()
-            self._pending_click_pos = None
+        # 像素级防抖：移动超过阈值时清除待处理点击（说明用户是划词而非单击）
+        if self._press_pos is not None and self._pending_click is not None:
+            dx = move_x - self._press_pos[0]
+            dy = move_y - self._press_pos[1]
+            if dx * dx + dy * dy > self._CLICK_MOVE_THRESHOLD * self._CLICK_MOVE_THRESHOLD:
+                self._pending_click = None
+
+        if not self._focus_dragging:
+            return
 
         for char_rect, line_idx, char_idx in self._char_hitboxes:
             if char_rect.contains(move_x, move_y) and line_idx == self._focus_line_idx:
@@ -452,9 +443,44 @@ class KaraokePreview(QWidget):
                 return
 
     def mouseReleaseEvent(self, a0: Optional[QMouseEvent]):
-        """鼠标释放 → 结束划词"""
-        if a0 and a0.button() == Qt.MouseButton.LeftButton:
-            self._focus_dragging = False
+        """鼠标释放 → 结束划词，或触发单击"""
+        if not a0 or a0.button() != Qt.MouseButton.LeftButton:
+            return
+
+        self._focus_dragging = False
+
+        # 如果已有快照（双击的第二次松开），跳过单击
+        if self._click_snapshot is not None:
+            self._pending_click = None
+            self._press_pos = None
+            return
+
+        # 如果有待处理点击 且 移动距离 < 阈值，立即执行单击
+        if self._pending_click is not None and self._press_pos is not None:
+            click = self._pending_click
+            self._pending_click = None
+            self._press_pos = None
+
+            if not self._disable_click_jump:
+                if click["type"] == "cp":
+                    self.checkpoint_clicked.emit(
+                        click["line_idx"], click["char_idx"], click["cp_idx"]
+                    )
+                elif click["type"] == "char":
+                    self.char_selected.emit(click["line_idx"], click["char_idx"])
+                    self.line_clicked.emit(click["line_idx"])
+
+            # 保存快照用于双击判断，300ms 后清除
+            self._click_snapshot = click
+            self._click_timer.start()
+        else:
+            self._pending_click = None
+            self._press_pos = None
+
+    def _clear_click_snapshot(self):
+        """清除单击快照和相关定时器"""
+        self._click_snapshot = None
+        self._click_timer.stop()
 
     def _show_context_menu(self, global_pos, click_x: int, click_y: int):
         """显示字符上下文菜单。"""
@@ -810,43 +836,34 @@ class KaraokePreview(QWidget):
         click_x = int(a0.position().x())
         click_y = int(a0.position().y())
 
-        # 双击时取消待处理的单击
+        # 双击时停止单击定时器
         self._click_timer.stop()
-        self._pending_click_pos = None
 
-        # 检查是否双击在 checkpoint 标记上
+        # 优先使用快照判断双击目标（快照在单击时锁定，避免居中导致 hitbox 变化）
+        if self._click_snapshot is not None:
+            snapshot = self._click_snapshot
+            self._click_snapshot = None
+            if snapshot["type"] == "cp":
+                self.seek_to_checkpoint_requested.emit(
+                    snapshot["line_idx"], snapshot["char_idx"], snapshot["cp_idx"]
+                )
+                return
+            elif snapshot["type"] == "char":
+                self.seek_to_char_requested.emit(
+                    snapshot["line_idx"], snapshot["char_idx"]
+                )
+                return
+
+        # 快照不存在时（如禁用单击跳转），回退到当前 hitbox 判断
         for marker_rect, line_idx, char_idx, cp_idx in self._checkpoint_hitboxes:
             if marker_rect.contains(click_x, click_y):
                 self.seek_to_checkpoint_requested.emit(line_idx, char_idx, cp_idx)
                 return
 
-        # 检查是否双击在字符上
         for char_rect, line_idx, char_idx in self._char_hitboxes:
             if char_rect.contains(click_x, click_y):
                 self.seek_to_char_requested.emit(line_idx, char_idx)
                 return
-
-    def _on_single_click_timeout(self):
-        """单击超时 → 执行单击操作"""
-        if self._pending_click_pos is None:
-            return
-
-        # 如果禁用单击跳转，则不执行任何操作
-        if self._disable_click_jump:
-            self._pending_click_pos = None
-            self._pending_cp_click = False
-            return
-
-        if self._pending_cp_click:
-            # 单击 checkpoint：触发 checkpoint_clicked
-            self.checkpoint_clicked.emit(self._pending_cp_line, self._pending_cp_char, self._pending_cp_idx)
-        elif self._pending_click_line >= 0:
-            # 单击字符：触发 char_selected（居中）和 line_clicked
-            self.char_selected.emit(self._pending_click_line, self._pending_click_char)
-            self.line_clicked.emit(self._pending_click_line)
-
-        self._pending_click_pos = None
-        self._pending_cp_click = False
 
     # ---- 绘制 ----
 
