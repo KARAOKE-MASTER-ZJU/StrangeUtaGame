@@ -4,8 +4,8 @@
 参考 March7thAssistant 的 UI 架构。
 """
 
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QIcon, QAction, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QThread, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from qfluentwidgets import (
@@ -17,7 +17,7 @@ from qfluentwidgets import (
     Theme,
     FluentIcon as FIF,
 )
-from qfluentwidgets import InfoBar, InfoBarPosition
+from qfluentwidgets import InfoBar, InfoBarPosition, StateToolTip
 
 from typing import Optional
 
@@ -39,6 +39,10 @@ class MainWindow(MSFluentWindow):
         self._timing_service = TimingService(self._audio_engine, self._command_manager)
         self._store = ProjectStore(self)
 
+        # 异步保存相关
+        self._save_thread: Optional[QThread] = None
+        self._save_worker = None
+
         # 跟踪当前界面（用于 switchTo 自动应用修改，必须在 _init_navigation 之前）
         self._current_interface = None
 
@@ -58,6 +62,11 @@ class MainWindow(MSFluentWindow):
 
         # 初始化自动保存配置
         self._apply_auto_save_settings()
+
+        # 异步加载相关
+        self._loading_thread: Optional[QThread] = None
+        self._loading_worker = None
+        self._state_tooltip = None
 
         # 延迟检查闪退恢复（等 UI 显示完毕后再弹窗）
         QTimer.singleShot(500, self._check_crash_recovery)
@@ -377,6 +386,92 @@ class MainWindow(MSFluentWindow):
             # 用户拒绝恢复 → 删除临时文件
             ProjectStore.delete_crash_recovery()
 
+    # ==================== 启动时打开项目 ====================
+
+    def open_initial_project(self, file_path: str) -> None:
+        """启动时通过命令行参数打开 .sug 项目文件（异步）。"""
+        from pathlib import Path
+
+        if not Path(file_path).is_file():
+            InfoBar.error(
+                title="无法打开文件",
+                content=f"文件不存在: {file_path}",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self,
+            )
+            return
+
+        from strange_uta_game.frontend.theme import theme
+        from strange_uta_game.frontend.workers import ProjectLoadWorker
+
+        # 创建状态提示
+        self._state_tooltip = StateToolTip("正在加载项目", "正在解析项目数据...", self)
+        green = theme.status_complete.name()
+        self._state_tooltip.setStyleSheet(f"""
+            StateToolTip {{
+                background-color: {green};
+                border: 1px solid {green};
+                border-radius: 8px;
+            }}
+            StateToolTip QLabel {{
+                color: white;
+            }}
+        """)
+        self._state_tooltip.move(self._state_tooltip.getSuitablePos())
+        self._state_tooltip.show()
+
+        # 创建后台线程
+        self._loading_thread = QThread(self)
+        self._loading_worker = ProjectLoadWorker(file_path)
+        self._loading_worker.moveToThread(self._loading_thread)
+
+        # 连接信号
+        self._loading_thread.started.connect(self._loading_worker.run)
+        self._loading_worker.finished.connect(self._on_initial_project_loaded)
+        self._loading_worker.error.connect(self._on_initial_project_load_error)
+        self._loading_worker.finished.connect(self._cleanup_loading_thread)
+        self._loading_worker.error.connect(self._cleanup_loading_thread)
+
+        # 启动线程
+        self._loading_thread.start()
+
+    def _on_initial_project_loaded(self, project: Project, file_path: str) -> None:
+        """启动时项目加载成功回调"""
+        if self._state_tooltip:
+            self._state_tooltip.setState(True)
+            self._state_tooltip = None
+
+        self._on_project_opened(project, file_path)
+
+    def _on_initial_project_load_error(self, error_msg: str) -> None:
+        """启动时项目加载失败回调"""
+        if self._state_tooltip:
+            self._state_tooltip.setState(True)
+            self._state_tooltip = None
+
+        InfoBar.error(
+            title="打开项目失败",
+            content=error_msg,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self,
+        )
+
+    def _cleanup_loading_thread(self) -> None:
+        """清理加载线程"""
+        if self._loading_thread:
+            self._loading_thread.quit()
+            self._loading_thread.wait()
+            self._loading_thread = None
+        if self._loading_worker:
+            self._loading_worker.deleteLater()
+            self._loading_worker = None
+
     # ==================== 窗口事件 ====================
 
     def _on_save_project(self):
@@ -384,7 +479,7 @@ class MainWindow(MSFluentWindow):
         self._on_global_save()
 
     def _on_global_save(self):
-        """全局 Ctrl+S 保存"""
+        """全局 Ctrl+S 保存（异步）"""
         if not self._store.project:
             InfoBar.warning(
                 title="无项目",
@@ -398,29 +493,7 @@ class MainWindow(MSFluentWindow):
             return
 
         if self._store.save_path:
-            success = self._store.save()
-            if success:
-                # 手动保存成功 → 清理临时文件
-                self._store.cleanup_temp_files()
-                InfoBar.success(
-                    title="保存成功",
-                    content=self._store.save_path,
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=2000,
-                    parent=self,
-                )
-            else:
-                InfoBar.error(
-                    title="保存失败",
-                    content="无法保存到 " + (self._store.save_path or ""),
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=3000,
-                    parent=self,
-                )
+            self._async_save(self._store.save_path)
         else:
             path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -435,32 +508,75 @@ class MainWindow(MSFluentWindow):
 
             # 另存为前先清理旧的 untitled 临时文件
             old_temp = self._store.get_temp_path()
-            if self._store.save(path):
-                # 保存成功 → 清理旧临时文件
-                try:
-                    if old_temp.exists():
-                        old_temp.unlink()
-                except Exception:
-                    pass
-                InfoBar.success(
-                    title="保存成功",
-                    content=path,
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=2000,
-                    parent=self,
-                )
-            else:
-                InfoBar.error(
-                    title="保存失败",
-                    content="无法保存到 " + path,
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=3000,
-                    parent=self,
-                )
+            try:
+                if old_temp.exists():
+                    old_temp.unlink()
+            except Exception:
+                pass
+
+            self._async_save(path)
+
+    def _async_save(self, file_path: str):
+        """异步保存项目"""
+        from copy import deepcopy
+        from strange_uta_game.frontend.workers import ProjectSaveWorker
+
+        # 在主线程创建深拷贝，避免保存过程中 UI 修改 project
+        project_copy = deepcopy(self._store.project)
+
+        self._save_thread = QThread(self)
+        self._save_worker = ProjectSaveWorker(project_copy, file_path)
+        self._save_worker.moveToThread(self._save_thread)
+
+        # 连接信号
+        self._save_thread.started.connect(self._save_worker.run)
+        self._save_worker.finished.connect(lambda path: self._on_save_success(path))
+        self._save_worker.error.connect(self._on_save_error)
+        self._save_worker.finished.connect(self._cleanup_save_thread)
+        self._save_worker.error.connect(self._cleanup_save_thread)
+
+        # 启动线程
+        self._save_thread.start()
+
+    def _on_save_success(self, file_path: str) -> None:
+        """保存成功回调"""
+        self._store._save_path = file_path
+        self._store._dirty = False
+
+        # 手动保存成功 → 清理临时文件
+        self._store.cleanup_temp_files()
+
+        InfoBar.success(
+            title="保存成功",
+            content=file_path,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+            parent=self,
+        )
+
+    def _on_save_error(self, error_msg: str) -> None:
+        """保存失败回调"""
+        InfoBar.error(
+            title="保存失败",
+            content=error_msg,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3000,
+            parent=self,
+        )
+
+    def _cleanup_save_thread(self) -> None:
+        """清理保存线程"""
+        if self._save_thread:
+            self._save_thread.quit()
+            self._save_thread.wait()
+            self._save_thread = None
+        if self._save_worker:
+            self._save_worker.deleteLater()
+            self._save_worker = None
 
     def closeEvent(self, e):
         """关闭窗口时检查未保存变更并退出"""

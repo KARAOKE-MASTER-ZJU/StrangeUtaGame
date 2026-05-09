@@ -66,9 +66,22 @@ from strange_uta_game.frontend.main_window import MainWindow
 
 def main():
     """应用入口"""
+    # 从命令行参数中提取 .sug 文件路径（双击关联打开时传入）
+    initial_project = None
+    for arg in sys.argv[1:]:
+        if arg.lower().endswith(".sug") and Path(arg).is_file():
+            initial_project = str(Path(arg).resolve())
+            break
+
     # 创建主窗口
     window = MainWindow()
     window.show()
+
+    # 如果有命令行传入的项目文件，延迟加载（等事件循环启动后执行）
+    if initial_project:
+        from PyQt6.QtCore import QTimer
+
+        QTimer.singleShot(200, lambda: window.open_initial_project(initial_project))
 
     # 运行应用
     sys.exit(app.exec())
