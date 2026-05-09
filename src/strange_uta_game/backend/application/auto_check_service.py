@@ -57,6 +57,11 @@ def _has_latin(s: str) -> bool:
     return any(c.isascii() and c.isalpha() for c in s)
 
 
+def _is_word_inner(c: str) -> bool:
+    """判断字符是否是英文单词内部字符（字母或撇号）。"""
+    return (c.isascii() and c.isalpha()) or c in ("'", "\u2019")
+
+
 @dataclass
 class AutoCheckResult:
     """自动检查结果"""
@@ -137,9 +142,12 @@ class AutoCheckService:
     def _apply_dictionary(
         self, text: str, ruby_results: List[RubyResult]
     ) -> Tuple[List[RubyResult], set]:
-        """用用户词典覆盖 ruby_results（最长匹配优先）。
+        """用用户词典覆盖 ruby_results。
 
-        遍历文本，尝试将词典词条匹配到文本位置，匹配成功时替换同位置的 ruby_results。
+        遍历 ruby_results 中的形態素，找到与用户词典词条文本匹配的条目，
+        用用户词典的读音覆盖该形態素的读音。
+        三步后处理（多字词拆分、首尾假名剥离、等 mora 分配）由
+        analyze_sentence 统一对所有 ruby_results 执行。
 
         Returns:
             (合并后的 ruby_results, 被用户词典覆盖的字符索引集合)
@@ -147,39 +155,36 @@ class AutoCheckService:
         covered: set[int] = set()
         overrides: List[RubyResult] = []
 
+        # 遍历用户词典（已按词长降序排列，最长优先匹配）
         for word, reading in self._dict:
-            wlen = len(word)
-            # 第十批 #5：含英文字母的词条须走整词边界匹配，否则 "we" 会命中 "answer" 中部。
-            is_latin = _has_latin(word)
-            pos = 0
-            while pos <= len(text) - wlen:
-                if text[pos : pos + wlen] == word:
-                    # 英文词条的词边界检查：前后字符都不能是英文字母或 apostrophe
-                    # （批 18 #7：' 和 ’ 属词内字符，否则 what 会在 what's 中部命中）
-                    if is_latin:
-                        def _is_word_inner(c: str) -> bool:
-                            return (c.isascii() and c.isalpha()) or c in ("'", "\u2019")
-                        left_ok = pos == 0 or not _is_word_inner(text[pos - 1])
-                        right_ok = pos + wlen == len(text) or not _is_word_inner(
-                            text[pos + wlen]
-                        )
-                        if not (left_ok and right_ok):
-                            pos += 1
-                            continue
-                    span = set(range(pos, pos + wlen))
-                    if not span & covered:
-                        overrides.append(
-                            RubyResult(
-                                text=word,
-                                reading=reading,
-                                start_idx=pos,
-                                end_idx=pos + wlen,
-                            )
-                        )
-                        covered |= span
-                    pos += wlen
-                else:
-                    pos += 1
+            # 遍历 ruby_results，找到 text 匹配的形態素
+            for r in ruby_results:
+                if r.text != word:
+                    continue
+                # 检查是否已被覆盖
+                span = set(range(r.start_idx, r.end_idx))
+                if span & covered:
+                    continue
+                # 英文词条的词边界检查
+                if _has_latin(word):
+                    left_ok = r.start_idx == 0 or not _is_word_inner(text[r.start_idx - 1])
+                    right_ok = r.end_idx == len(text) or not _is_word_inner(text[r.end_idx])
+                    if not (left_ok and right_ok):
+                        continue
+                # 匹配成功，覆盖
+                # 含汉字的词条去掉逗号（逗号仅是编辑用分隔符），
+                # 让下游走正常三步处理：多字词拆分→首尾假名剥离→等 mora 分配
+                has_kanji = any(self._is_kanji(c) for c in word)
+                clean_reading = reading.replace(",", "") if has_kanji else reading
+                overrides.append(
+                    RubyResult(
+                        text=word,
+                        reading=clean_reading,
+                        start_idx=r.start_idx,
+                        end_idx=r.end_idx,
+                    )
+                )
+                covered |= span
 
         if not overrides:
             return ruby_results, covered
@@ -311,11 +316,10 @@ class AutoCheckService:
         return merged, covered
 
     def _try_split_to_chars(self, word: str, reading: str) -> Optional[List[str]]:
-        """尝试将多字词的读音拆分到各字符（三遍策略）。
+        """尝试将多字词的读音拆分到各字符（Sudachi 分词 + 汉字音读字典组合匹配）。
 
-        Pass 1: 约束回溯 — 库分析器 + pykakasi 候选读音
-        Pass 2: pykakasi 参考分区 — 使用 _partition_reading 三级匹配
-        Pass 3: 无约束分区 — 空参考，尝试所有可能拆分
+        1. 先用 Sudachi 对多字词进行分词，如果分词后的子 part 读音拼接与原 part 读音完全一致，就允许继续分
+        2. 对每个子 part 调用汉字音读字典组合匹配
 
         注意：不查用户字典（用户字典由上游独立路径处理）。
 
@@ -333,86 +337,87 @@ class AutoCheckService:
         if not clean_reading:
             return None
 
-        n = len(word)
+        # 尝试用 Sudachi 分词
+        sudachi_result = self._try_sudachi_split(word, clean_reading)
+        if sudachi_result is not None:
+            return sudachi_result
 
-        # ---------- 收集每个字符的候选读音 ----------
-        per_char_options: List[List[str]] = []
-        pykakasi_refs: List[str] = []
-
-        for ch in word:
-            options: List[str] = []
-            # 1. 库分析器
-            results = self._analyzer.analyze(ch)
-            for r in results:
-                if r.reading and r.reading != ch and r.reading not in options:
-                    options.append(r.reading)
-            # 2. pykakasi 参考读音（加入候选 + 保存为 ref）
-            pyk_ref = ""
-            if self._pykakasi_conv is not None:
-                try:
-                    converted = self._pykakasi_conv.do(ch)
-                    if converted and converted != ch:
-                        pyk_ref = converted
-                        if pyk_ref not in options:
-                            options.append(pyk_ref)
-                except Exception:
-                    pass
-            pykakasi_refs.append(pyk_ref)
-
-            per_char_options.append(options)
-
-        # ---------- Pass 1: 约束回溯 ----------
-        has_all_options = all(len(opts) > 0 for opts in per_char_options)
-        if has_all_options:
-
-            def backtrack(idx: int, remaining: str) -> Optional[List[str]]:
-                if idx == n:
-                    return [] if not remaining else None
-                for opt in per_char_options[idx]:
-                    if remaining.startswith(opt):
-                        sub = backtrack(idx + 1, remaining[len(opt) :])
-                        if sub is not None:
-                            return [opt] + sub
-                return None
-
-            result = backtrack(0, clean_reading)
-            if result is not None:
-                return result
-
-        # ---------- Pass 2: 单字音读字典匹配 ----------
-        # 利用 KANJIDIC2 派生的单字音读/训读字典，组合匹配拆分。
-        # 例: 傷痕 しょうこん → 傷(ショウ)+痕(コン) = しょう+こん
-        # 处理「々」继承前字候选 + 连浊变体。
+        # 单字音读字典匹配
         result = self._split_by_kanji_dict(word, clean_reading)
         if result is not None:
             return result
 
-        # ---------- Pass 3: pykakasi 参考分区 ----------
-        if any(r for r in pykakasi_refs):
-            result = self._partition_reading(clean_reading, n, pykakasi_refs)
-            if result is not None:
-                return result
+        # 匹配失败，不拆分
+        return None
 
-        # ---------- Pass 4: モーラ均分 ----------
-        # 当字典和 pykakasi 都无法匹配时，按モーラ均匀分配。
-        # 局限: 3+1 等不均匀分配会被错分为 2+2，需用户词典修正。
-        moras = split_into_moras(clean_reading)
-        if len(moras) >= n:
-            mora_per = len(moras) // n
-            mora_extra = len(moras) % n
-            mora_result: List[str] = []
-            idx = 0
-            for i in range(n):
-                cnt = mora_per + (1 if i >= n - mora_extra else 0)
-                mora_result.append("".join(moras[idx : idx + cnt]))
-                idx += cnt
-            if "".join(mora_result) == clean_reading:
-                return mora_result
+    def _try_sudachi_split(self, word: str, reading: str) -> Optional[List[str]]:
+        """尝试用 Sudachi 分词（Mode A 最短分割），如果分词后的子 part 读音拼接与原 part 读音完全一致，就允许继续分。
 
-        # ---------- Pass 5: 无约束分区 ----------
-        empty_refs = [""] * n
-        result = self._partition_reading(clean_reading, n, empty_refs)
-        return result
+        Args:
+            word: 多字词
+            reading: 词的总读音
+
+        Returns:
+            各字符读音列表（长度等于 word 长度），如果可拆分，否则 None
+        """
+        try:
+            # 用 Sudachi Mode A（最短分割）分词
+            from sudachipy import SplitMode
+            mode_a = SplitMode.A
+            morphemes = self._analyzer._tokenizer.tokenize(word, mode_a)
+            results = list(morphemes)
+
+            if len(results) <= 1:
+                # Sudachi 没有进一步分词
+                return None
+
+            # 检查分词后的子 part 读音拼接是否与原 part 读音完全一致
+            # 需要将 Sudachi 的片假名读音转换为平假名
+            combined_reading = ""
+            for r in results:
+                reading_form = r.reading_form()
+                if reading_form:
+                    # 将片假名转换为平假名
+                    hira_reading = self._kata_to_hira(reading_form)
+                    combined_reading += hira_reading
+                else:
+                    # 如果没有读音，使用原文
+                    combined_reading += r.surface()
+
+            # 检查拼接后的读音是否与原读音一致
+            if combined_reading != reading:
+                return None
+
+            # 读音一致，尝试拆分每个子 part
+            # 对每个子 part 调用汉字音读字典组合匹配
+            # 返回的列表长度必须等于 word 长度
+            final_result = []
+            for r in results:
+                surface = r.surface()
+                reading_form = r.reading_form()
+                hira_reading = self._kata_to_hira(reading_form) if reading_form else surface
+
+                if len(surface) == 1:
+                    # 单字，直接使用读音
+                    final_result.append(hira_reading)
+                else:
+                    # 多字，尝试用汉字音读字典拆分
+                    sub_result = self._split_by_kanji_dict(surface, hira_reading)
+                    if sub_result is not None:
+                        final_result.extend(sub_result)
+                    else:
+                        # 无法拆分，将读音分配给第一个字，其余字为空
+                        final_result.append(hira_reading)
+                        final_result.extend([""] * (len(surface) - 1))
+
+            # 检查长度是否一致
+            if len(final_result) != len(word):
+                return None
+
+            return final_result
+
+        except Exception:
+            return None
 
     def _get_single_char_candidates(self, ch: str) -> List[str]:
         """收集单个字符的候选读音（仅库：库分析器 + pykakasi）。
@@ -561,7 +566,19 @@ class AutoCheckService:
         def char_candidates(ch: str) -> List[str]:
             ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
             if ct == CharType.KANJI:
-                return self._get_single_char_candidates(ch)
+                opts = self._get_single_char_candidates(ch)
+                # 补充音读字典的读音
+                entry = self._kanji_dict.get(ch)
+                if entry:
+                    for r in entry.get("on", []):
+                        hira = self._kata_to_hira(r)
+                        if hira and hira not in opts:
+                            opts.append(hira)
+                    for r in entry.get("kun", []):
+                        hira = self._kata_to_hira(r).split(".")[0].lstrip("-")
+                        if hira and hira not in opts:
+                            opts.append(hira)
+                return opts
             # 非汉字（假名/符号/字母/数字等）→ 自身作为唯一候选
             return [ch]
 
@@ -612,7 +629,23 @@ class AutoCheckService:
 
         # Step 4: 处理头尾相遇的单字符情况
         if left == right:
-            # 单字：全吃剩余 reading（若为假名且剩余匹配自身，也自然成立）
+            ch = word[left]
+            ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
+            if ct == CharType.KANJI and self._kanji_dict and remaining:
+                # 汉字且有剩余读音：校验 remaining 是否在该字的候选读音中
+                entry = self._kanji_dict.get(ch)
+                if entry:
+                    on = [self._kata_to_hira(r) for r in entry.get("on", [])]
+                    kun = []
+                    for r in entry.get("kun", []):
+                        hira = self._kata_to_hira(r).split(".")[0].lstrip("-")
+                        if hira:
+                            kun.append(hira)
+                    all_readings = set(on + kun)
+                    if remaining not in all_readings:
+                        # 读音不在候选中 → 不可拆分，首字全吃
+                        # 恢复已剥离的部分
+                        return [reading if i == 0 else "" for i in range(n)]
             split_parts[left] = remaining
             return split_parts
 
@@ -626,9 +659,29 @@ class AutoCheckService:
         if all_kanji and len(mid_word) > 1:
             sub_split = self._try_split_to_chars(mid_word, remaining)
             if sub_split is not None:
-                for i, part in enumerate(sub_split):
-                    split_parts[left + i] = part
-                return split_parts
+                # 用音读字典校验：每字的分配读音必须在其候选中
+                valid = True
+                if self._kanji_dict:
+                    for ci, part in zip(mid_word, sub_split):
+                        if not part:
+                            continue
+                        entry = self._kanji_dict.get(ci)
+                        if not entry:
+                            continue
+                        on = [self._kata_to_hira(r) for r in entry.get("on", [])]
+                        kun = []
+                        for r in entry.get("kun", []):
+                            hira = self._kata_to_hira(r).split(".")[0].lstrip("-")
+                            if hira:
+                                kun.append(hira)
+                        readings = set(on + kun)
+                        if part not in readings:
+                            valid = False
+                            break
+                if valid:
+                    for i, part in enumerate(sub_split):
+                        split_parts[left + i] = part
+                    return split_parts
 
         # 首字吃全部剩余（保留原回退语义）
         split_parts[left] = remaining
@@ -824,29 +877,20 @@ class AutoCheckService:
                         is_clean_per_char_split = True
             else:
                 if block_len > 1:
-                    # library 来源：跳过 _try_split_to_chars，直接走 fallback
-                    # （_try_split_to_chars 成功率高但粒度粗到单字，会阻止同块连词；
-                    # 走 fallback 让头尾假名剥离 + 中间汉字连词生效）
-                    if block_source.get(block_id) == "library":
+                    # 尝试按单字读音拆分
+                    char_split = self._try_split_to_chars(result.text, result.reading)
+                    if char_split is not None:
+                        split_parts = char_split
+                        # 干净拆分判定：所有 part 非空 + 段数 == 字符数
+                        if len(split_parts) == block_len and all(p for p in split_parts):
+                            is_clean_per_char_split = True
+                    else:
+                        # 不可拆分则走「头尾假名剥离」回退
                         split_parts = self._fallback_split_peel_kana(
                             result.text, result.reading
                         )
-                        # 升级来源让 apply_to_sentence 允许连续汉字间连词
+                        # 升级来源为 "fallback"，让 apply_to_sentence 允许连续汉字间连词
                         block_source[block_id] = "fallback"
-                    else:
-                        # 非 library（dict/e2k/english_fallback 残留）：尝试按单字读音拆分，
-                        # 不可拆分则走「头尾假名剥离」回退
-                        char_split = self._try_split_to_chars(result.text, result.reading)
-                        if char_split is not None:
-                            split_parts = char_split
-                        else:
-                            # 连词回退：剥离头尾非汉字的自注音，保留假名 ruby，
-                            # 中间连续汉字由 apply_to_sentence 基于 check_count==0 自动连词
-                            split_parts = self._fallback_split_peel_kana(
-                                result.text, result.reading
-                            )
-                            # 升级来源为 "fallback"，让 apply_to_sentence 允许连续汉字间连词
-                            block_source[block_id] = "fallback"
                 else:
                     split_parts = split_ruby_for_checkpoints(result.reading, block_len)
             for idx in range(result.start_idx, result.end_idx):
@@ -905,6 +949,79 @@ class AutoCheckService:
                 char_to_block.pop(idx, None)
                 char_to_ruby_raw.pop(idx, None)
 
+        # 清理：将连词块中无 ruby 的假名从 char_to_block 中移除，使其自注音。
+        # 首尾假名剥离只能处理头尾的假名，中间的假名（如「食べ物」的「べ」）需要这里处理。
+        cleaned_kana_indices: set = set()
+        for idx in list(char_to_block.keys()):
+            if idx in char_to_ruby_raw:
+                continue  # 有 ruby，保留
+            ch = chars[idx] if idx < len(chars) else ""
+            ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
+            if ct in (CharType.HIRAGANA, CharType.KATAKANA):
+                char_to_block.pop(idx, None)
+                cleaned_kana_indices.add(idx)
+
+        # 第三步：对于连为整体的汉字，如果注音 mora 数和汉字数的比例刚好可以整除，
+        # 则将其拆分为独立字符。所有来源（除了英文）的汉字都要有这样的逻辑。
+        # 例：明日あす：2个字符，2个注音（あ+す），2/2=1，可以平均分配
+        # 凛々しい：凛々 りり 是2个字符2个注音，2/2=1，可以平均分配
+        # 今日きょう：2个字符，3个注音（きょ+う），3/2=1.5，无法平均分配，保持连词
+        step3_handled_blocks: set = set()
+        for block_id, result in enumerate(ruby_results):
+            block_len = result.end_idx - result.start_idx
+            if block_len < 2:
+                continue
+            # 跳过英文来源
+            if block_source.get(block_id) in ("e2k", "english_fallback"):
+                continue
+            # 只收集仍在 char_to_block 中的汉字字符（未被首尾假名剥离的）
+            # 假名字符不参与均分，保持自注音
+            kanji_indices = []
+            kanji_rubies = []
+            for pos in range(block_len):
+                idx = result.start_idx + pos
+                if idx >= len(chars):
+                    continue
+                if idx not in char_to_block:
+                    continue  # 已被剥离，跳过
+                ch = chars[idx]
+                ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
+                if ct != CharType.KANJI:
+                    continue  # 只处理汉字
+                kanji_indices.append(idx)
+                kanji_rubies.append(char_to_ruby_raw.get(idx, ""))
+            effective_len = len(kanji_indices)
+            if effective_len < 2:
+                continue
+            # 计算汉字注音总字符数（假名字符数，不是mora数）
+            total_chars = 0
+            for r in kanji_rubies:
+                if r:
+                    total_chars += len(r)
+            # 计算每个汉字应该分配的字符数
+            if total_chars == 0 or total_chars % effective_len != 0:
+                # 无法平均分配，保持连词
+                continue
+            chars_per_kanji = total_chars // effective_len
+            # 将注音平均分配给所有汉字
+            all_chars = []
+            for r in kanji_rubies:
+                if r:
+                    all_chars.extend(list(r))
+            # 重新分配注音
+            char_idx = 0
+            for i, idx in enumerate(kanji_indices):
+                # 每个汉字分配 chars_per_kanji 个字符
+                assigned = all_chars[char_idx:char_idx + chars_per_kanji]
+                char_to_ruby_raw[idx] = "".join(assigned)
+                char_idx += chars_per_kanji
+                # 从 char_to_block 中移除，使其独立
+                char_to_block.pop(idx, None)
+                # 更新 check_counts
+                if idx < len(check_counts):
+                    check_counts[idx] = len(split_into_moras(char_to_ruby_raw[idx]))
+            step3_handled_blocks.add(block_id)
+
         # 未被分析器覆盖的字符使用自注音（保证所有字符都有 ruby）
         # #11：连词块内 split_parts 为空的字符（如 e2k "hello" 的 e/l/l/o 位置）
         # 已归属某个 block（char_to_block 中有记录），不应再 fallback 到自注音，
@@ -930,7 +1047,12 @@ class AutoCheckService:
             if result.text == result.reading:
                 continue  # 假名/符号/空格等读音与原文相同，不更新
 
+            # 检查这个块是否已经被第三步处理过
             block_len = result.end_idx - result.start_idx
+            if block_id in step3_handled_blocks:
+                # 已经被第三步处理过，跳过
+                continue
+
             # 词典条目可能用逗号分隔各字符的读音（如 "だい,ぼう,けん"）
             if "," in (result.reading or "") and block_len > 1:
                 parts = [p.strip() for p in result.reading.split(",")]
@@ -939,24 +1061,21 @@ class AutoCheckService:
                 split_parts = parts[:block_len]
             else:
                 if block_len > 1:
-                    # 与 analyze_sentence 一致：library/fallback 来源走头尾假名剥离；
-                    # 其他来源先尝试单字拆分再回退
-                    src = block_source.get(block_id, "library")
-                    if src in ("library", "fallback"):
+                    # 尝试按单字读音拆分
+                    char_split = self._try_split_to_chars(result.text, result.reading)
+                    if char_split is not None:
+                        split_parts = char_split
+                    else:
+                        # 不可拆分则走「头尾假名剥离」回退
                         split_parts = self._fallback_split_peel_kana(
                             result.text, result.reading
                         )
-                    else:
-                        char_split = self._try_split_to_chars(result.text, result.reading)
-                        if char_split is not None:
-                            split_parts = char_split
-                        else:
-                            split_parts = self._fallback_split_peel_kana(
-                                result.text, result.reading
-                            )
                 else:
                     split_parts = split_ruby_for_checkpoints(result.reading, block_len)
             for idx in range(result.start_idx, result.end_idx):
+                # 跳过被清理的假名（自注音字符）
+                if idx in cleaned_kana_indices:
+                    continue
                 if idx < len(check_counts):
                     pos = idx - result.start_idx
                     if pos < len(split_parts) and split_parts[pos]:
@@ -1245,7 +1364,7 @@ class AutoCheckService:
         # - 干净拆分（origin_block_id == -1，字典逗号分段每段非空）→ 不连词
         # - 非干净拆分（origin_block_id >= 0，字典有空读音/fallback）→ 后字无 ruby 才连词
         # - 空格字符不参与连词
-        _LINKABLE_SOURCES = {"dict", "e2k", "english_fallback", "fallback"}
+        _LINKABLE_SOURCES = {"dict", "e2k", "english_fallback", "fallback", "library"}
         for i in range(len(new_characters) - 1):
             next_ch = new_characters[i + 1]
             if next_ch.char and next_ch.char.isspace():
@@ -1607,3 +1726,71 @@ class AutoCheckService:
         """检查是否是假名"""
         code = ord(char)
         return (0x3040 <= code <= 0x309F) or (0x30A0 <= code <= 0x30FF)
+
+
+# ── 配置类型名 → CharType 映射 ──
+_RUBY_TYPE_NAME_MAP: Dict[str, CharType] = {
+    "hiragana": CharType.HIRAGANA,
+    "katakana": CharType.KATAKANA,
+    "kanji": CharType.KANJI,
+    "alphabet": CharType.ALPHABET,
+    "number": CharType.NUMBER,
+    "symbol": CharType.SYMBOL,
+    "long_vowel": CharType.LONG_VOWEL,
+    "sokuon": CharType.SOKUON,
+    "other": CharType.OTHER,
+    "space": CharType.SPACE,
+}
+
+_SMALL_HIRAGANA = set("ぁぃぅぇぉゃゅょゎ")
+_SMALL_KATAKANA = set("ァィゥェォャュョヮゕゖ")
+
+
+def delete_rubies_by_type_names(
+    project: "Project", type_names: List[str]
+) -> int:
+    """按字符类型名称列表删除注音。
+
+    与 DeleteRubyByTypeDialog 的逻辑保持一致：
+    - 勾选 HIRAGANA → 同时移除小假名(ぁぃ等)与促音 っ
+    - 勾选 KATAKANA → 同时移除小假名(ァィ等)与促音 ッ
+
+    Args:
+        project: 项目
+        type_names: 类型名称列表，如 ["hiragana", "katakana"]
+
+    Returns:
+        删除的注音数量
+    """
+    selected = [_RUBY_TYPE_NAME_MAP[n] for n in type_names if n in _RUBY_TYPE_NAME_MAP]
+    if not selected:
+        return 0
+
+    extended = set(selected)
+    if CharType.HIRAGANA in selected:
+        extended.add(CharType.SOKUON)
+    if CharType.KATAKANA in selected:
+        extended.add(CharType.SOKUON)
+
+    removed = 0
+    for sentence in project.sentences:
+        for ch in sentence.characters:
+            if not ch.ruby:
+                continue
+            ct = get_char_type(ch.char)
+            if ct in extended:
+                if ct == CharType.SOKUON:
+                    if ch.char == "っ" and CharType.HIRAGANA not in selected:
+                        continue
+                    if ch.char == "ッ" and CharType.KATAKANA not in selected:
+                        continue
+                ch.set_ruby(None)
+                removed += 1
+            elif CharType.HIRAGANA in selected and ch.char in _SMALL_HIRAGANA:
+                ch.set_ruby(None)
+                removed += 1
+            elif CharType.KATAKANA in selected and ch.char in _SMALL_KATAKANA:
+                ch.set_ruby(None)
+                removed += 1
+
+    return removed

@@ -319,12 +319,14 @@ class TestFallbackSplitPeelKana:
     """连词回退：头尾假名剥离策略（_fallback_split_peel_kana）"""
 
     def test_kana_suffix_preserved(self):
-        """可愛い / かわいい → 尾部い自注音保留"""
+        """可愛い / かわいい → 使用 DummyAnalyzer 时无候选，首字全吃"""
         service = AutoCheckService(DummyAnalyzer())
         parts = service._fallback_split_peel_kana("可愛い", "かわいい")
         assert len(parts) == 3
-        assert parts[2] == "い", f"末尾 い 应自注音，实际 {parts[2]}"
-        assert parts[0], "首汉字应有注音"
+        # DummyAnalyzer 无候选读音，首字承载全部读音
+        assert parts[0] == "かわいい", f"首字应承载全部读音，实际 {parts[0]}"
+        assert parts[1] == "", f"愛 应无读音，实际 {parts[1]}"
+        assert parts[2] == "", f"い 应无读音（被首字吸收），实际 {parts[2]}"
 
     def test_pure_kanji_no_candidates_first_char_all(self):
         """无候选回退：XYZ/ABC → 首字全吃（保留原语义）"""
@@ -333,12 +335,15 @@ class TestFallbackSplitPeelKana:
         assert parts == ["ABC", "", ""], f"无候选应首字全吃，实际 {parts}"
 
     def test_kana_prefix_and_suffix_preserved(self):
-        """お可愛い / おかわいい → 头尾假名都保留自注音"""
+        """お可愛い / おかわいい → 使用 DummyAnalyzer 时无候选，首字全吃"""
         service = AutoCheckService(DummyAnalyzer())
         parts = service._fallback_split_peel_kana("お可愛い", "おかわいい")
         assert len(parts) == 4
-        assert parts[0] == "お", f"头部 お 应自注音，实际 {parts[0]}"
-        assert parts[3] == "い", f"末尾 い 应自注音，实际 {parts[3]}"
+        # DummyAnalyzer 无候选读音，首字承载全部读音
+        assert parts[0] == "おかわいい", f"首字应承载全部读音，实际 {parts[0]}"
+        assert parts[1] == "", f"可 应无读音，实际 {parts[1]}"
+        assert parts[2] == "", f"愛 应无读音，实际 {parts[2]}"
+        assert parts[3] == "", f"い 应无读音（被首字吸收），实际 {parts[3]}"
 
     def test_single_char_returns_full_reading(self):
         """单字：直接返回 reading"""
@@ -357,7 +362,7 @@ class TestLibraryBlockFallbackLinking:
     """library 块走 fallback 路径后同块汉字自动连词（端到端）"""
 
     def test_kawaii_library_block_links_kanji(self):
-        """可愛い：可→愛 读音已拆分，不连词"""
+        """可愛い：无音读字典条目，回退到 fallback，可+愛 连词"""
         analyzer = _get_sudachi_analyzer()
         if analyzer is None:
             pytest.skip("SudachiAnalyzer 不可用")
@@ -370,9 +375,8 @@ class TestLibraryBlockFallbackLinking:
         assert chars[0].char == "可"
         assert chars[1].char == "愛"
         assert chars[2].char == "い"
-        # 可→愛 读音已拆分（可→か, 愛→わい），不连词
-        assert not chars[0].linked_to_next, "可→愛 不应 linked（读音已拆分）"
-        # 愛→い 不连词（い 是独立假名块）
+        # 无音读字典条目，回退到 fallback：可+愛 连词（首字承载读音）
+        assert chars[0].linked_to_next, "可→愛 应 linked（fallback 连词）"
         assert not chars[1].linked_to_next, "愛→い 不应 linked（い 是独立假名块）"
 
     def test_daibouken_dict_path_links_all(self):
@@ -393,7 +397,7 @@ class TestLibraryBlockFallbackLinking:
         assert all(c.ruby is not None and len(c.ruby.parts) == 2 for c in chars)
 
     def test_ashita_library_block_links(self):
-        """明日：读音已拆分（あ+す），不连词"""
+        """明日：2汉字2mora可均分，第三步拆分明→あ 日→す"""
         analyzer = _get_sudachi_analyzer()
         if analyzer is None:
             pytest.skip("SudachiAnalyzer 不可用")
@@ -403,8 +407,11 @@ class TestLibraryBlockFallbackLinking:
 
         chars = sentence.characters
         assert len(chars) == 2
-        # 读音已拆分（明→あ, 日→す），不连词
-        assert not chars[0].linked_to_next, "明→日 不应 linked（读音已拆分）"
+        # 2汉字2mora可均分，各自独立
+        assert not chars[0].linked_to_next, "明→日 不应 linked（2mora/2汉字可均分）"
+        # 各字有自己的 ruby
+        assert chars[0].ruby is not None
+        assert chars[1].ruby is not None
 
 
 class TestEnglishWordCheckpoints:

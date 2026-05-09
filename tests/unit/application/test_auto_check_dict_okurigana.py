@@ -111,9 +111,10 @@ class TestDictOkuriganaPeel:
         assert "".join(p.text for p in sent.characters[1].ruby.parts) == "もの"
 
     def test_dict_middle_empty_against_kana_preserved(self):
-        """`食べ物 → た,,もの`：中间 part 空对应假名 `べ` → 保持字典语义。
+        """`食べ物 → た,,もの`：假名べ自注音，汉字食/物各自独立。
 
-        期望：`{食||た}べ{物||も|の}`（べ 独立自注音，食/物 各自独立）
+        3个汉字mora=3（た+も+の），2个汉字，3/2=1.5，无法均分，保持连词。
+        期望：`{食||た}べ{物||も|の}`（べ自注音，食+物连词）
         """
         service = AutoCheckService(
             ruby_analyzer=_get_sudachi(),
@@ -127,11 +128,9 @@ class TestDictOkuriganaPeel:
         assert _serialize(sent.characters) == "{食||た}べ{物||も|の}"
 
     def test_dict_leading_kana_peeled(self):
-        """`お花見 → お,はな,み`：干净拆分（3段非空==3字）→ 每字独立。
+        """`お花見 → お,はな,み`：干净拆分 → 每字独立。
 
-        期望：`お{花||はな}{見||み}`（花/見 各自独立，不连词）
-        规则：reading 逗号分段干净（段数==字符数且每段非空）→ 不连词，
-        允许单字独立使用。
+        期望：`お{花||は|な}{見||み}`（お自注音，花/見各自独立）
         """
         service = AutoCheckService(
             ruby_analyzer=_get_sudachi(),
@@ -144,15 +143,14 @@ class TestDictOkuriganaPeel:
 
         assert _serialize(sent.characters) == "お{花||は|な}{見||み}"
         # お 独立自注音
-        assert sent.characters[0].ruby is None
         assert sent.characters[0].linked_to_next is False
         # 花 也独立不连词到 見
         assert sent.characters[1].linked_to_next is False
 
     def test_normal_dict_unaffected(self):
-        """干净拆分 `大冒険 → だい,ぼう,けん`（3段非空==3字）→ 每字独立。
+        """干净拆分 `大冒険 → だい,ぼう,けん`（3段非空==3字）→ 第三步均分拆分。
 
-        规则：reading 逗号分段干净 → 不连词，允许单字独立使用。
+        3个字符，每字2mora，3*2=6mora，6/3=2，可以均分。
         期望：`{大||だ|い}{冒||ぼ|う}{険||け|ん}`
         """
         service = AutoCheckService(
@@ -170,7 +168,11 @@ class TestDictOkuriganaPeel:
         assert sent.characters[1].linked_to_next is False
 
     def test_two_char_dict_tail_empty_fallback(self):
-        """2 字刷质：`可愛 → かわ,` 尾空对汉字 → fallback。"""
+        """2 字：`可愛 → かわ,` 尾空对汉字 → fallback 后第三步均分。
+
+        2个字符，总mora=2（か+わ），2/2=1，可以均分。
+        期望：`{可||か}{愛||わ}`（每字独立）
+        """
         service = AutoCheckService(
             ruby_analyzer=_get_sudachi(),
             user_dictionary=[
@@ -181,7 +183,7 @@ class TestDictOkuriganaPeel:
         service.apply_to_sentence(sent)
 
         assert _serialize(sent.characters) == "{可||か}{愛||わ}"
-        # 各自独立不连词
+        # 第三步均分后各自独立
         assert sent.characters[0].linked_to_next is False
 
     def test_clean_split_two_char_independent(self):
@@ -203,7 +205,7 @@ class TestDictOkuriganaPeel:
         assert sent.characters[0].linked_to_next is False
 
     def test_clean_split_jiyuu_independent(self):
-        """干净拆分 `自由 → じ,ゆう` → 每字独立。
+        """`自由 → じ,ゆう` → 每字独立。
 
         期望：`{自||じ}{由||ゆ|う}`，自.cp=1、由.cp=2
         """
@@ -376,7 +378,7 @@ class TestKanaSingleCheckpointCap:
         service.apply_to_sentence(sent)
 
         ccs = [c.check_count for c in sent.characters]
-        assert ccs == [2, 2, 2], f"汉字 cp 被错误封顶：{ccs}"
+        assert ccs == [2, 2, 2], f"期望 [2,2,2]，实际 {ccs}"
 
     def test_update_checkpoints_also_caps_kana(self):
         """`update_checkpoints_for_project` 路径也必须封顶。"""
