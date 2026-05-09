@@ -1,6 +1,11 @@
 [
   {
     "enabled": true,
+    "word": "明日",
+    "reading": "あした"
+  },
+  {
+    "enabled": true,
     "word": "乙女心",
     "reading": "おと,め,ごころ"
   },
@@ -2183,11 +2188,6 @@
     "enabled": true,
     "word": "束の間",
     "reading": "つか,の,ま"
-  },
-  {
-    "enabled": true,
-    "word": "明日",
-    "reading": "あ,した"
   },
   {
     "enabled": true,

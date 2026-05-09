@@ -68,8 +68,8 @@
 ### ProjectStore（前端数据中心）
 
 - 集中管理 Project、音频路径、保存路径；`data_changed(change_type)` 信号统一广播。
-- **定时自动保存**：可配置周期（默认 5 分钟），保存到 `{save_path}.temp` 或程序目录 `untitled.sug.temp`。退出清理。
+- **定时自动保存**：可配置周期（默认 5 分钟），保存到程序目录 `.cache` 文件夹下的 `.项目名.sug.temp` 或 `.untitled.sug.temp`。退出清理。
 - **防抖设置保存**：设置项变更 500ms 后写盘。`_loading_settings` 标志防止加载触发写入。
-- **闪退恢复**：启动检查 `untitled.sug.temp` 提示恢复。
+- **闪退恢复**：启动检查 `.cache` 目录下的 `.sug.temp` 文件提示恢复。
 - **配置位置**：默认位于程序目录，通过 `.config_redirect` 重定向到用户自定义目录。配置文件分离为 `config.json`（主配置）、`dictionary.json`（用户词典，首次启动自动种入 1757 条 RL 内置词典）、`singers.json`（演唱者预设）。重置配置不影响字典和演唱者。
 - **配置自动重载**：切换到设置标签页时 `AppSettings.reload()`，确保外部修改（字典添加等）立即可见。
