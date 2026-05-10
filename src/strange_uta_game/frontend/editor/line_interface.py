@@ -43,16 +43,11 @@ def _build_ruby_from_text(
 
     入参: raw 用户输入字符串; check_count 目标分段数; is_sentence_end 是否句尾。
     出参: 构造好的 Ruby，若 raw 为空或 align 后全空返回 None。
+
+    使用 parse_ruby_text 函数统一处理注音分段。
     """
-    text = raw.strip()
-    if not text:
-        return None
-    initial = split_ruby_for_checkpoints(text, max(check_count, 1))
-    aligned = align_ruby_parts_to_checkpoints(initial, check_count, is_sentence_end)
-    parts = [RubyPart(text=p) for p in aligned if p]
-    if not parts:
-        return None
-    return Ruby(parts=parts)
+    from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
+    return parse_ruby_text(raw, check_count)
 
 
 def _fmt_time(ms: int) -> str:

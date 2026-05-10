@@ -76,9 +76,11 @@ def _rebuild_characters(
             if new_text == old_text:
                 # ruby 文本一致，保留 old_ch.ruby 的完整 RubyPart 切分
                 continue
-            # 用户改了注音：用新 parts 覆盖，check_count 同步为 parts 长度
-            ch.set_ruby(Ruby(parts=[RubyPart(text=t) for t in new_parts]))
-            ch.set_check_count(len(new_parts), force=True)
+            # 用户改了注音：使用 parse_ruby_text 统一处理
+            from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
+            ruby_text = ",".join(new_parts)
+            ruby_obj = parse_ruby_text(ruby_text, ch.check_count)
+            ch.set_ruby(ruby_obj)
         return old_sentence.characters
 
     # 构建 old_idx → new_idx 映射
@@ -118,8 +120,10 @@ def _rebuild_characters(
                 new_text = "".join(new_parts)
                 old_text = old_ch.ruby.text if old_ch.ruby else ""
                 if new_text != old_text:
-                    ch.set_ruby(Ruby(parts=[RubyPart(text=t) for t in new_parts]))
-                    ch.set_check_count(len(new_parts), force=True)
+                    from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
+                    ruby_text = ",".join(new_parts)
+                    ruby_obj = parse_ruby_text(ruby_text, old_ch.check_count)
+                    ch.set_ruby(ruby_obj)
         else:
             # 新插入字符：默认 check_count=1，空 ruby
             ch = Character(
@@ -132,8 +136,10 @@ def _rebuild_characters(
             # 仅当用户在文本框里显式给新字符加了 ruby 才应用
             if j in ruby_map:
                 new_parts = ruby_map[j]
-                ch.set_ruby(Ruby(parts=[RubyPart(text=t) for t in new_parts]))
-                ch.set_check_count(len(new_parts), force=True)
+                from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
+                ruby_text = ",".join(new_parts)
+                ruby_obj = parse_ruby_text(ruby_text, ch.check_count)
+                ch.set_ruby(ruby_obj)
 
         characters.append(ch)
 
@@ -144,14 +150,14 @@ def _apply_ruby_map(sentence: Sentence, ruby_map: Dict[int, List[str]]) -> None:
     """将 ruby_map 应用到句子的字符上（用于新插入行）。
 
     仅当 ruby_map[ci] 明确给出时才应用（新行默认保持空 ruby，
-    不触发自动注音）。check_count 同步为 parts 长度。
+    不触发自动注音）。使用 parse_ruby_text 统一处理注音分段。
     """
+    from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
     for ci, parts in ruby_map.items():
         if 0 <= ci < len(sentence.characters) and parts:
-            sentence.characters[ci].set_ruby(
-                Ruby(parts=[RubyPart(text=t) for t in parts])
-            )
-            sentence.characters[ci].set_check_count(len(parts), force=True)
+            ruby_text = ",".join(parts)
+            ruby_obj = parse_ruby_text(ruby_text, sentence.characters[ci].check_count)
+            sentence.characters[ci].set_ruby(ruby_obj)
 
 
 def _is_kanji_char(char: str) -> bool:
