@@ -1,7 +1,7 @@
 """Nicokara (ニコカラ) LRC 格式导出器。
 
 输出 RhythmicaLyrics 风格的 Nicokara 逐字 LRC 格式：
-- 时间戳格式: [MM:SS:CC]（分:秒:厘秒，冒号分隔）
+- 时间戳格式: [MM:SS.CC]（分:秒.厘秒，点号分隔）
 - 每个字符前有独立时间戳
 - 行末附加结束时间戳
 - @Ruby 注音标签（含字内相对时间；多次出现时每次独立条目+位置范围）
@@ -22,14 +22,14 @@ _NICOKARA_TS_RE = re.compile(r'\[\d+:\d+\.\d+\]')
 
 
 def _format_nicokara_ts(timestamp_ms: int, offset_ms: int = 0) -> str:
-    """格式化 Nicokara 时间戳 [MM:SS:CC]
+    """格式化 Nicokara 时间戳 [MM:SS.CC]
 
     Args:
         timestamp_ms: 毫秒时间戳
         offset_ms: 偏移量（毫秒）
 
     Returns:
-        格式化后的字符串，如 [00:12:34]
+        格式化后的字符串，如 [00:12.34]
     """
     timestamp_ms = max(0, timestamp_ms + offset_ms)
     # 四舍五入到厘秒，再提取各分量（避免 995ms→100cs 溢出）
@@ -37,7 +37,7 @@ def _format_nicokara_ts(timestamp_ms: int, offset_ms: int = 0) -> str:
     minutes = total_cs // 6000
     seconds = (total_cs % 6000) // 100
     centiseconds = total_cs % 100
-    return f"[{minutes:02d}:{seconds:02d}:{centiseconds:02d}]"
+    return f"[{minutes:02d}:{seconds:02d}.{centiseconds:02d}]"
 
 
 class NicokaraExporter(BaseExporter):
