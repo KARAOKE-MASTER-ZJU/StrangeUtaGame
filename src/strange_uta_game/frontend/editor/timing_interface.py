@@ -141,7 +141,7 @@ class EditorInterface(QWidget):
         self._auto_scroll_new_line_reached: bool = False
         self._auto_scroll_cooldown_timer = QTimer(self)
         self._auto_scroll_cooldown_timer.setSingleShot(True)
-        self._auto_scroll_cooldown_timer.setInterval(3000)
+        self._auto_scroll_cooldown_timer.setInterval(6000)
         self._auto_scroll_cooldown_timer.timeout.connect(
             self._on_auto_scroll_cooldown_timeout
         )
@@ -1472,12 +1472,13 @@ class EditorInterface(QWidget):
                 self.preview.set_playing(self._timing_service.is_playing())
                 self.lbl_status.setText("播放中")
                 self._update_mode_indicator()
-                # 恢复自动滚动（用户主动回到被动听模式）
-                self._auto_scroll_suspended = False
-                self._auto_scroll_new_line_reached = False
-                self._auto_scroll_cooldown_timer.stop()
                 self.preview._last_auto_scroll_line_idx = -1
-                self.preview.resume_auto_scroll()
+                # 仅 Play 按钮（非键盘）立即恢复自动滚动；
+                # 键盘 play_pause 由 keyPressEvent 已挂起，不覆盖
+                if not getattr(self, "_action_from_keyboard", False):
+                    self._auto_scroll_suspended = False
+                    self._auto_scroll_new_line_reached = False
+                    self._auto_scroll_cooldown_timer.stop()
                 # 启动位置主动拉取定时器
                 self._position_poll_timer.start()
             except Exception as e:
@@ -2581,6 +2582,15 @@ class EditorInterface(QWidget):
     def keyPressEvent(self, a0: Optional[QKeyEvent]):
         if a0 is None:
             return
+        # 所有键盘操作挂起自动滚动（Play 按钮走 _on_play，不经过这里）
+        self._suspend_auto_scroll()
+        self._action_from_keyboard = True
+        try:
+            self._keyPressEvent_impl(a0)
+        finally:
+            self._action_from_keyboard = False
+
+    def _keyPressEvent_impl(self, a0: QKeyEvent):
         key = a0.key()
         modifiers = a0.modifiers()
         playing = bool(self._timing_service and self._timing_service.is_playing())

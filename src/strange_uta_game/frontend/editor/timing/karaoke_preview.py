@@ -165,14 +165,9 @@ class KaraokePreview(QWidget):
             self.user_interaction_during_auto_scroll.emit()
 
     def resume_auto_scroll(self):
-        """恢复自动滚动：将视口同步到当前播放行。"""
+        """恢复自动滚动：将视口同步到当前播放行（不改变编辑光标）。"""
         self._auto_scroll_suspended = False
-        if (
-            self._last_auto_scroll_line_idx >= 0
-            and self._last_auto_scroll_line_idx != self._current_line_idx
-        ):
-            self._current_line_idx = self._last_auto_scroll_line_idx
-            self.scroll_current_line_to_center()
+        self._scroll_to_line(self._last_auto_scroll_line_idx)
 
     def set_duration(self, duration_ms: int):
         """设置音频总时长（用于行尾非句尾时的wipe右边界）"""
@@ -240,6 +235,19 @@ class KaraokePreview(QWidget):
         self._scroll_center_line = new_line
         self._update_display()
 
+    def _scroll_to_line(self, line_idx: int):
+        """纯视觉滚动：将指定行移到视口中央，不改变 _current_line_idx（编辑光标）。
+
+        用于自动滚动，与编辑光标完全解耦。
+        """
+        if line_idx < 0:
+            return
+        new_line = float(line_idx)
+        if new_line == self._scroll_center_line:
+            return
+        self._scroll_center_line = new_line
+        self._update_display()
+
     def _find_line_for_time(self, time_ms: int) -> Optional[int]:
         """查找当前时间对应的歌词行索引（使用快照索引，O(1)判断）。
 
@@ -273,19 +281,15 @@ class KaraokePreview(QWidget):
         if self._is_playing:
             self._warm_nearby_cache(budget=2)
         # 自动滚动：始终检测播放行变化（用于 cooldown 判断），
-        # 仅在未挂起时才真正移动视口
+        # 仅在未挂起时才移动视口（不改变编辑光标 _current_line_idx）
         if self._auto_scroll_enabled and self._is_playing:
             target_line_idx = self._find_line_for_time(time_ms)
             if target_line_idx is not None:
                 if target_line_idx != self._last_auto_scroll_line_idx:
                     self._last_auto_scroll_line_idx = target_line_idx
                     self.auto_scroll_line_changed.emit()
-                if (
-                    not self._auto_scroll_suspended
-                    and target_line_idx != self._current_line_idx
-                ):
-                    self._current_line_idx = target_line_idx
-                    self.scroll_current_line_to_center()
+                if not self._auto_scroll_suspended:
+                    self._scroll_to_line(target_line_idx)
         self.update()
 
     def _prewarm_all_sentences(self) -> None:
@@ -313,7 +317,16 @@ class KaraokePreview(QWidget):
         n = len(sentences)
         if n <= 0:
             return
-        center = max(0, min(self._current_line_idx, n - 1))
+        # 播放+自动滚动时以播放行为中心预热，否则以编辑光标为中心
+        if (
+            self._is_playing
+            and self._auto_scroll_enabled
+            and not self._auto_scroll_suspended
+            and self._last_auto_scroll_line_idx >= 0
+        ):
+            center = max(0, min(self._last_auto_scroll_line_idx, n - 1))
+        else:
+            center = max(0, min(self._current_line_idx, n - 1))
         warmed = 0
         for offset in range(n):
             # 扩散序：0, +1, -1, +2, -2, +3, -3, ...
@@ -1026,6 +1039,16 @@ class KaraokePreview(QWidget):
         first_visible = max(0, int(self._scroll_center_line - half_visible))
         last_visible = min(total - 1, int(self._scroll_center_line + half_visible))
 
+        # 播放+自动滚动时，用播放行做视觉高亮，不污染编辑光标
+        effective_current = (
+            self._last_auto_scroll_line_idx
+            if self._is_playing
+            and self._auto_scroll_enabled
+            and not self._auto_scroll_suspended
+            and self._last_auto_scroll_line_idx >= 0
+            else self._current_line_idx
+        )
+
         for idx in range(first_visible, last_visible + 1):
             # 行中心 y 坐标
             y_center_f = center_y + (idx - self._scroll_center_line) * line_height
@@ -1036,7 +1059,7 @@ class KaraokePreview(QWidget):
                 continue
 
             line = self._project.sentences[idx]
-            is_current = idx == self._current_line_idx
+            is_current = idx == effective_current
 
             # 绘制行号（左侧固定区域）
             painter.setFont(self._font_line_number)
@@ -1077,7 +1100,7 @@ class KaraokePreview(QWidget):
                 main_font = font_current
                 main_fm = fm_current
                 base_color = theme.karaoke_text_current
-            elif idx < self._current_line_idx:
+            elif idx < effective_current:
                 main_font = font_context
                 main_fm = fm_context
                 base_color = theme.karaoke_text_past
