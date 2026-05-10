@@ -276,7 +276,9 @@ class Character:
         self._update_offset_timestamps()
         self.push_to_ruby()
 
-    def set_check_count(self, new_count: int, *, force: bool = False) -> None:
+    def set_check_count(
+        self, new_count: int, *, force: bool = False, ruby_split_mode: str = "mora"
+    ) -> None:
         """权威 setter：变更 check_count 并维护 timestamps / ruby.parts 不变式。
 
         不变式：
@@ -293,9 +295,15 @@ class Character:
               * force=False → 抛 RubyMoraDegradeError（调用方应弹窗告知用户退化）
               * force=True  → 保留 ruby 整段（Nicokara 无 mora 格式，文本不丢失）
 
+        放大行为：
+          - ruby_split_mode="direct"：追加空 RubyPart 以维持不变式
+          - ruby_split_mode="char"：按字符重新拆分现有 ruby 文本
+          - ruby_split_mode="mora"：按 mora 重新拆分现有 ruby 文本（默认）
+
         Args:
             new_count: 新的节奏点数量（>= 0）
             force: 允许 new_count==0 时退化为无 mora 格式
+            ruby_split_mode: 放大时 ruby 分段方式 ("direct"/"char"/"mora")
 
         Raises:
             ValidationError: new_count < 0
@@ -340,8 +348,71 @@ class Character:
                 self.ruby.parts = keep + [merged_part]
             # new_count == 0 且 force=True：ruby 整段保留（Nicokara 无 mora 格式）
 
+        # 放大：按 ruby_split_mode 重新拆分 ruby.parts 以维持不变式
+        if new_count > old_count and self.ruby is not None and self.ruby.parts:
+            existing_text = "".join(p.text for p in self.ruby.parts)
+            if existing_text:
+                new_parts = Character._resplit_ruby(
+                    existing_text, new_count, ruby_split_mode
+                )
+                self.ruby.parts = [RubyPart(text=t) for t in new_parts]
+            elif ruby_split_mode == "direct":
+                # 无文本时仅补齐空 part
+                while len(self.ruby.parts) < new_count:
+                    self.ruby.parts.append(RubyPart(text=""))
+
         self._update_offset_timestamps()
         self.push_to_ruby()
+
+    # ── 内部工具 ──
+
+    _SMALL_KANA = set("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮー")
+
+    @staticmethod
+    def _resplit_ruby(text: str, target_count: int, mode: str) -> List[str]:
+        """按指定模式将 ruby 文本重新拆分为 target_count 段。
+
+        mode:
+          - "direct": 保留原文不分割，不足部分用空字符串补齐
+          - "char": 按字符均分
+          - "mora": 按 mora 均分（小假名附属前一拍）
+
+        Returns:
+            长度为 target_count 的字符串列表
+        """
+        if target_count <= 0:
+            return []
+        if target_count == 1:
+            return [text]
+
+        if mode == "direct":
+            return [text] + [""] * (target_count - 1)
+
+        # char / mora 模式都先去除逗号
+        clean = text.replace(",", "")
+        if not clean:
+            return [""] * target_count
+
+        if mode == "char":
+            chars = list(clean)
+            if len(chars) >= target_count:
+                head = chars[: target_count - 1]
+                tail = "".join(chars[target_count - 1 :])
+                return head + [tail]
+            return chars + [""] * (target_count - len(chars))
+
+        # mode == "mora"
+        moras: List[str] = []
+        for ch in clean:
+            if ch in Character._SMALL_KANA and moras:
+                moras[-1] += ch
+            else:
+                moras.append(ch)
+        if len(moras) >= target_count:
+            head = moras[: target_count - 1]
+            tail = "".join(moras[target_count - 1 :])
+            return head + [tail]
+        return moras + [""] * (target_count - len(moras))
 
     def get_timestamp(self, checkpoint_idx: int) -> Optional[int]:
         """获取指定 checkpoint_idx 的时间戳"""

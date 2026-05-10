@@ -270,14 +270,14 @@ class Sentence:
             char.clear_sentence_end_ts()
         char.is_sentence_end = not char.is_sentence_end
 
-    def add_checkpoint(self, idx: int) -> None:
+    def add_checkpoint(self, idx: int, *, ruby_split_mode: str = "mora") -> None:
         """增加指定字符的普通节奏点。"""
         char = self.get_character(idx)
         if not char:
             raise ValidationError(
                 f"字符索引 {idx} 超出范围 [0, {len(self.characters)})"
             )
-        char.set_check_count(char.check_count + 1)
+        char.set_check_count(char.check_count + 1, ruby_split_mode=ruby_split_mode)
 
     def remove_checkpoint(self, idx: int, *, force: bool = False) -> None:
         """减少指定字符的普通节奏点。
