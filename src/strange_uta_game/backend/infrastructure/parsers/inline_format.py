@@ -306,21 +306,24 @@ def _single_char_to_ruby_node(char: Character) -> str:
 
     # 有时间戳的情况
     if char.timestamps:
-        ruby_portions: List[str] = []
+        mora_portions: List[str] = []  # 存放每一拍的组合字符串
         for cp_idx in range(count):
+            portion_str = ""
             if cp_idx < len(char.timestamps):
                 ts = char.timestamps[cp_idx]
                 # 第一个时间戳前没有 [
                 if cp_idx == 0:
-                    ruby_portions.append(f"{format_timestamp(ts)}]")
+                    portion_str += f"{format_timestamp(ts)}]"
                 else:
-                    ruby_portions.append(f"[{format_timestamp(ts)}]")
+                    portion_str += f"[{format_timestamp(ts)}]"
 
-            # ruby 文本始终输出（即使没有对应的时间戳）
+            # ruby 文本始终输出
             if cp_idx < len(ruby_segments):
-                ruby_portions.append(ruby_segments[cp_idx])
+                portion_str += ruby_segments[cp_idx]
 
-        inner = "".join(ruby_portions)
+            mora_portions.append(portion_str)
+
+        inner = "".join(mora_portions)
         result = f"{{{display}|[{count}|{inner}}}"
     else:
         # 无时间戳的情况: {display|[count]ruby}
@@ -387,36 +390,34 @@ def _linked_group_to_ruby_node(group: List[Character]) -> str:
     """
     display = "".join(c.char for c in group)
 
-    # 找到有注音的字符，获取 count
-    ruby_char = next((c for c in group if c.ruby), None)
-    if ruby_char and ruby_char.ruby:
-        ruby_segments = [p.text for p in ruby_char.ruby.parts]
-        count = min(len(ruby_segments), 9)
-    else:
-        count = 1
-
     # 构建 ruby 部分
     ruby_portions: List[str] = []
     for c in group:
         if c.ruby:
-            # 有注音的字符
             ruby_segments = [p.text for p in c.ruby.parts]
+            # 修复核心：针对当前遍历到的字，计算属于它自己的真实 count
+            char_count = min(len(ruby_segments), 9)
+
             portion_parts: List[str] = []
-            for cp_idx in range(count):
+            for cp_idx in range(char_count):
+                part_str = ""
                 if cp_idx < len(c.timestamps):
                     ts = c.timestamps[cp_idx]
                     # 第一个时间戳前没有 [
                     if cp_idx == 0:
-                        portion_parts.append(f"[{count}|{format_timestamp(ts)}]")
+                        # 写入各自正确的 char_count
+                        part_str += f"[{char_count}|{format_timestamp(ts)}]"
                     else:
-                        portion_parts.append(f"[{format_timestamp(ts)}]")
+                        part_str += f"[{format_timestamp(ts)}]"
                 elif cp_idx == 0:
-                    # 没有时间戳但有注音，输出 [count]
-                    portion_parts.append(f"[{count}]")
+                    part_str += f"[{char_count}]"
 
                 if cp_idx < len(ruby_segments):
-                    portion_parts.append(ruby_segments[cp_idx])
+                    part_str += ruby_segments[cp_idx]
 
+                portion_parts.append(part_str)
+
+            # 直接拼接，不用逗号
             ruby_portions.append("".join(portion_parts))
         else:
             # 无注音的字符，输出空的分隔符

@@ -780,14 +780,10 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
     当条目携带位置范围（positions）时，利用字符时间戳精确定位到正确的出现，
     避免同一词组在不同句子/位置有不同读音时被错误匹配。
     """
-    from strange_uta_game.backend.infrastructure.parsers.inline_format import (
-        split_ruby_for_checkpoints,
-    )
-
     text = sentence.text
     for entry in ruby_entries:
-        # 清除读音中的时间戳（[MM:SS:CC] 格式）
-        clean_reading = re.sub(r"\[\d{1,2}:\d{2}[:.]?\d{2,3}\]", "", entry.reading)
+        # 解析 reading 中的时间戳（保留时间戳信息）
+        reading_parts = _parse_reading_with_timestamps(entry.reading)
 
         # 判断是否有位置范围
         pos_start_ms, pos_end_ms = _parse_position_range(entry.positions)
@@ -824,19 +820,76 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
                 for ci in range(pos, min(end_pos, len(sentence.characters)))
             )
             if not has_existing:
-                # 按字拆分 ruby 到各字符
+                # 按字拆分 ruby 到各字符（保留时间戳信息）
                 block_len = end_pos - pos
-                split_parts = split_ruby_for_checkpoints(clean_reading, block_len)
-                for ci in range(pos, min(end_pos, len(sentence.characters))):
-                    part_idx = ci - pos
-                    if part_idx < len(split_parts) and split_parts[part_idx]:
-                        target_char = sentence.characters[ci]
-                        ruby_segments = split_ruby_for_checkpoints(
-                            split_parts[part_idx], target_char.check_count
-                        )
-                        target_char.set_ruby(Ruby(parts=[RubyPart(text=s) for s in ruby_segments if s]))
+                _distribute_reading_to_chars(
+                    sentence, pos, block_len, reading_parts
+                )
                 break  # 每个 entry 只匹配第一个未标注的出现
             start = end_pos
+
+
+def _distribute_reading_to_chars(
+    sentence: Sentence,
+    start_pos: int,
+    block_len: int,
+    reading_parts: List[Tuple[str, int]],
+) -> None:
+    """将带时间戳的 reading 分配到各个汉字字符
+
+    Args:
+        sentence: 句子对象
+        start_pos: 起始字符位置
+        block_len: 漢字块长度
+        reading_parts: [(text, offset_ms), ...] 解析后的 reading 部分
+    """
+    if block_len <= 0 or not reading_parts:
+        return
+
+    # 计算总 checkpoint 数量
+    total_checkpoints = 0
+    for ci in range(start_pos, min(start_pos + block_len, len(sentence.characters))):
+        total_checkpoints += sentence.characters[ci].check_count
+
+    if total_checkpoints == 0:
+        # 没有 checkpoint，将整个 reading 分配给第一个字符
+        if start_pos < len(sentence.characters):
+            target_char = sentence.characters[start_pos]
+            all_text = "".join(text for text, _ in reading_parts)
+            all_offsets = [offset for _, offset in reading_parts]
+            # 使用第一个非零 offset，或 0
+            offset_ms = next((o for o in all_offsets if o > 0), 0)
+            ruby_parts = [RubyPart(text=all_text, offset_ms=offset_ms)]
+            target_char.set_ruby(Ruby(parts=ruby_parts))
+        return
+
+    # 按 checkpoint 分配 reading_parts
+    # 创建一个全局的 (text, offset_ms) 列表
+    global_parts = list(reading_parts)
+
+    # 按字符分配
+    part_idx = 0
+    for ci in range(start_pos, min(start_pos + block_len, len(sentence.characters))):
+        target_char = sentence.characters[ci]
+        char_check_count = target_char.check_count
+
+        if char_check_count == 0:
+            # 没有 checkpoint 的字符，跳过
+            continue
+
+        # 为该字符分配 char_check_count 个 reading_parts
+        char_ruby_parts: List[RubyPart] = []
+        for cp in range(char_check_count):
+            if part_idx < len(global_parts):
+                text, offset_ms = global_parts[part_idx]
+                char_ruby_parts.append(RubyPart(text=text, offset_ms=offset_ms))
+                part_idx += 1
+            else:
+                # 不够分配，使用空文本
+                char_ruby_parts.append(RubyPart(text="", offset_ms=0))
+
+        if char_ruby_parts:
+            target_char.set_ruby(Ruby(parts=char_ruby_parts))
 
 
 def _parse_nicokara_ts_str(ts_str: str) -> Optional[int]:
@@ -860,6 +913,51 @@ def _parse_nicokara_ts_str(ts_str: str) -> Optional[int]:
     sub = m.group(3)
     millis = int(sub) * 10 if len(sub) == 2 else int(sub)
     return (minutes * 60 + seconds) * 1000 + millis
+
+
+# 用于匹配 reading 中的时间戳 [MM:SS:CC] 或 [MM:SS.CC]
+_READING_TS_RE = re.compile(r"\[(\d{1,2}:\d{2}[:.]\d{2,3})\]")
+
+
+def _parse_reading_with_timestamps(reading: str) -> List[Tuple[str, int]]:
+    """解析带时间戳的 reading 字符串
+
+    Args:
+        reading: 带时间戳的读音，如 "う[00:00:50]ん" 或 "おも,[00:00:50]い"
+
+    Returns:
+        [(text, offset_ms), ...] 序列，如 [("う", 0), ("ん", 500)]
+    """
+    result: List[Tuple[str, int]] = []
+    last_end = 0
+    pending_offset: Optional[int] = None
+
+    for m in _READING_TS_RE.finditer(reading):
+        # 时间戳之前的文本
+        text_before = reading[last_end:m.start()]
+        if text_before:
+            # 移除逗号分隔符（如果有的话）
+            text_before = text_before.replace(",", "")
+            if text_before:
+                result.append((text_before, pending_offset or 0))
+                pending_offset = None
+
+        # 解析时间戳
+        ts_str = m.group(1)
+        ts_ms = _parse_nicokara_ts_str(ts_str)
+        if ts_ms is not None:
+            pending_offset = ts_ms
+
+        last_end = m.end()
+
+    # 处理最后一段文本
+    text_after = reading[last_end:]
+    if text_after:
+        text_after = text_after.replace(",", "")
+        if text_after:
+            result.append((text_after, pending_offset or 0))
+
+    return result
 
 
 def _parse_position_range(
