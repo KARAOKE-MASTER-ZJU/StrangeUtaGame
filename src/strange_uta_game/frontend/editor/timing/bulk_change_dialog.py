@@ -544,6 +544,7 @@ class BulkChangeDialog(QDialog):
             self._register_to_dictionary(new_text, per_char_ruby)
 
         # 保存注音分段方式配置
+        from strange_uta_game.frontend.editor.timing.dialogs import _save_ruby_split_mode
         _save_ruby_split_mode(self._radio_direct, self._radio_by_char, self._radio_by_mora)
 
         # 将本次批量变更登记为一次 CommandManager 快照命令（支持撤销/重做）
