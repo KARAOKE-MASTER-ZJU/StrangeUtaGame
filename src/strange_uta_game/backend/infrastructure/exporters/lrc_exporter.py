@@ -7,9 +7,18 @@ LRC 格式是通用歌词格式：
 - LRC (逐行): [mm:ss.xx]一整行歌词
 - LRC (逐字): [mm:ss.xx]字[mm:ss.xx]字...
 - LRC (增强型): [mm:ss.xx]<mm:ss.xx>字<mm:ss.xx>字...
+
+设计原则（参考 entities.py 重构后契约）：
+1. 时间永远从 char.global_timestamps / char.global_sentence_end_ts 取，
+   领域层已经把偏移量算好了，导出器不再二次叠加 offset。
+2. 每个字符在输出文本里只出现一次。多 checkpoint（一字多拍）的字符
+   只取第一个时间戳 global_timestamps[0]，行尾拖音用句尾字符的
+   global_sentence_end_ts 单独追加一个标签，不再生成重复字符。
+3. 没有时间戳的字符（标点、未打轴字符）原样附在前一个标签之后，
+   不为它单独生成时间标签。
 """
 
-from typing import List
+from typing import List, Optional
 from .base import BaseExporter, ExportError
 from strange_uta_game.backend.domain import Project, Sentence
 
@@ -57,7 +66,7 @@ class LRCExporter(BaseExporter):
 
         lines.append("")  # 空行分隔
 
-        # 导出行（批 18 #6：空行也输出以保留用户排版）
+        # 导出行（空行也输出以保留用户排版）
         for sentence in project.sentences:
             line_text = self._export_sentence(sentence)
             lines.append(line_text)
@@ -69,51 +78,56 @@ class LRCExporter(BaseExporter):
         except Exception as e:
             raise ExportError(f"写入文件失败: {e}")
 
+    # ── 辅助：定位句尾拖音时间戳 ──
+    def _find_sentence_end_ts(self, sentence: Sentence) -> Optional[int]:
+        """取本行最后一个标记为 is_sentence_end 的字符的 global_sentence_end_ts。
+
+        若没有任何 sentence_end 标记，回退到 None（由调用方决定是否兜底）。
+        """
+        for ch in reversed(sentence.characters):
+            if ch.is_sentence_end and ch.global_sentence_end_ts is not None:
+                return ch.global_sentence_end_ts
+        return None
+
     def _export_sentence(self, sentence: Sentence) -> str:
         """导出一行歌词（增强型格式）
 
-        如果该行有时间标签，使用第一个时间标签作为整行时间。
-        如果有多个时间标签，生成增强 LRC 格式。
+        每个字符只输出一次：取 global_timestamps[0] 作为该字时间。
+        多 checkpoint 字符的额外 timestamps 不再生成重复字符（修复字符重影 bug）。
+        行末若有 sentence_end_ts，追加一个不带字符的尾时间标签作为拖音终止点。
         """
         if not sentence.has_timetags:
-            # 没有时间标签，只输出文本
             return sentence.text
 
-        # 收集所有 (timestamp_ms, char_idx, checkpoint_idx) 并排序
-        all_tags: List[tuple[int, int, int]] = []
-        for i, ch in enumerate(sentence.characters):
-            for cp_idx, ts in enumerate(ch.global_timestamps):
-                all_tags.append((ts, i, cp_idx))
-
-        if not all_tags:
+        # 行起始时间：行内最早的全局时间戳
+        line_start_ms = sentence.global_timing_start_ms
+        if line_start_ms is None:
             return sentence.text
 
-        all_tags.sort(key=lambda t: t[0])
+        result: List[str] = [self._format_timestamp(line_start_ms)]
 
-        if len(all_tags) == 1:
-            # 只有一个时间标签，标准 LRC 格式
-            timestamp = self._format_timestamp(all_tags[0][0])
-            return f"{timestamp}{sentence.text}"
-
-        # 多个时间标签，生成增强 LRC 格式
-        # [mm:ss.xx]<mm:ss.xx>字<mm:ss.xx>字...
-        result = []
-
-        # 行起始时间
-        first_time = all_tags[0][0]
-        result.append(self._format_timestamp(first_time))
-
-        # 逐字时间标签
-        for ts, char_idx, _cp_idx in all_tags:
-            time_str = self._format_timestamp(ts)
-            # 去掉方括号，使用尖括号
-            time_str = time_str.replace("[", "<").replace("]", ">")
-
-            # 获取对应的字符
-            if char_idx < len(sentence.characters):
-                char = sentence.characters[char_idx].char
+        # 逐字符输出：每字最多一个时间标签 + 该字字符
+        any_char_with_ts = False
+        for ch in sentence.characters:
+            if ch.global_timestamps:
+                # 取第一个 checkpoint 作为该字时间
+                ts = ch.global_timestamps[0]
+                # 行首字符已经被行级 [mm:ss.xx] 覆盖，仍然再补一个 <mm:ss.xx>
+                # 以便逐字播放器能精确高亮（增强型 LRC 标准）。
+                time_str = self._format_timestamp(ts).replace("[", "<").replace("]", ">")
                 result.append(time_str)
-                result.append(char)
+                result.append(ch.char)
+                any_char_with_ts = True
+            else:
+                # 没有时间戳的字符（如标点、未打轴字符）：原样附着，
+                # 不生成时间标签，避免破坏歌词文本。
+                result.append(ch.char)
+
+        # 行尾拖音：追加 sentence_end 时间戳（不带字符）
+        end_ts = self._find_sentence_end_ts(sentence)
+        if end_ts is not None and any_char_with_ts:
+            end_str = self._format_timestamp(end_ts).replace("[", "<").replace("]", ">")
+            result.append(end_str)
 
         return "".join(result)
 
@@ -134,17 +148,11 @@ class LRCLineExporter(LRCExporter):
         return "LRC 逐行格式，每行一个时间标签"
 
     def _export_sentence(self, sentence: Sentence) -> str:
-        """导出一行歌词（逐行格式，只取第一个时间标签）"""
+        """导出一行歌词（逐行格式，只取行起始时间）"""
         if not sentence.has_timetags:
             return sentence.text
 
-        # 找到最早的时间标签作为行时间
-        first_ts = None
-        for ch in sentence.characters:
-            for ts in ch.global_timestamps:
-                if first_ts is None or ts < first_ts:
-                    first_ts = ts
-
+        first_ts = sentence.global_timing_start_ms
         if first_ts is None:
             return sentence.text
 
@@ -168,29 +176,31 @@ class LRCWordExporter(LRCExporter):
         return "LRC 逐字格式，每个字符一个时间标签"
 
     def _export_sentence(self, sentence: Sentence) -> str:
-        """导出一行歌词（逐字格式，方括号时间标签）"""
+        """导出一行歌词（逐字格式，方括号时间标签）
+
+        每字一个时间标签 + 字符；无时间戳的字符紧贴前字符不插标签；
+        行末若有 sentence_end_ts 追加尾标签作为拖音终止点。
+        """
         if not sentence.has_timetags:
             return sentence.text
 
-        # 收集所有 (timestamp_ms, char_idx, checkpoint_idx) 并排序
-        all_tags: List[tuple[int, int, int]] = []
-        for i, ch in enumerate(sentence.characters):
-            for cp_idx, ts in enumerate(ch.global_timestamps):
-                all_tags.append((ts, i, cp_idx))
+        result: List[str] = []
+        any_char_with_ts = False
+        for ch in sentence.characters:
+            if ch.global_timestamps:
+                ts = ch.global_timestamps[0]
+                result.append(self._format_timestamp(ts))
+                result.append(ch.char)
+                any_char_with_ts = True
+            else:
+                result.append(ch.char)
 
-        if not all_tags:
+        if not any_char_with_ts:
             return sentence.text
 
-        all_tags.sort(key=lambda t: t[0])
-
-        # 逐字格式：[mm:ss.xx]字[mm:ss.xx]字...
-        result = []
-        for ts, char_idx, _cp_idx in all_tags:
-            time_str = self._format_timestamp(ts)
-            if char_idx < len(sentence.characters):
-                char = sentence.characters[char_idx].char
-                result.append(time_str)
-                result.append(char)
+        end_ts = self._find_sentence_end_ts(sentence)
+        if end_ts is not None:
+            result.append(self._format_timestamp(end_ts))
 
         return "".join(result)
 

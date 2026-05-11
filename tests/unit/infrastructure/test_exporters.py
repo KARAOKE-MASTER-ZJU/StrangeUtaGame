@@ -51,7 +51,10 @@ class TestLRCExporter:
             with open(temp_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            assert "[00:12.34]测试歌词" in content
+            # 增强型 LRC: 行级 [mm:ss.xx] + 逐字 <mm:ss.xx>
+            assert "[00:12.34]" in content
+            assert "<00:12.34>测" in content
+            assert "试歌词" in content
         finally:
             os.unlink(temp_path)
 
