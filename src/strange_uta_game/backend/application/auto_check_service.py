@@ -1486,6 +1486,8 @@ class AutoCheckService:
         self,
         sentence: Sentence,
         split_config: Optional[SplitConfig] = None,
+        *,
+        preserve_ruby_segments: bool = False,
     ) -> None:
         """根据现有注音更新节奏点配置（不重新分析注音）
 
@@ -1495,6 +1497,10 @@ class AutoCheckService:
         Args:
             sentence: 句子
             split_config: 拆分配置
+            preserve_ruby_segments: True 时信任 ruby.parts 已有分段（来自 nicokara
+                解析的"连词/非连词"事实），cc 取 len(ruby.parts) 而非按 mora 总数重算，
+                从而避免 set_check_count 重切 parts、丢失 offset_ms。
+                仅由 nicokara 导入"保留原有注音"路径使用。
         """
         if not sentence.characters:
             return
@@ -1519,13 +1525,41 @@ class AutoCheckService:
             if len(char.char) != 1 or get_char_type(char.char) != CharType.KANJI:
                 continue  # 只对汉字按 ruby 重算
             if not char.ruby:
-                # 空 ruby 的汉字：cp 必须为 0（连词块内后字不打拍）
-                check_counts[i] = 0
+                # 空 ruby 的汉字：cp 默认为 0（连词块内后字不打拍）
+                # 但若该字符已持有起始 timestamp（n3 加载后），保留 cp=1
+                # 以避免 set_check_count 不变式截断 timestamps（丢失原文件时间戳）
+                # 例外：若处于连词块内（沿 linked_to_next 链回溯到块首，
+                # 块首带 ruby.parts），则保持 cc=0——这是 nicokara 多 kanji 块
+                # "首字吞 ruby"的语义，后续字虽有 body timestamps 但不参与 ruby 行输出。
+                # 注意：必须沿链回溯，不能只看前一字（前一字本身可能 ruby=None，
+                # 如「高揚感」中「感」前驱「揚」ruby=None，需继续回溯到「高」）。
+                in_ruby_block = False
+                j = i - 1
+                while j >= 0 and sentence.characters[j].linked_to_next:
+                    prev = sentence.characters[j]
+                    if prev.ruby is not None and len(prev.ruby.parts) > 0:
+                        in_ruby_block = True
+                        break
+                    j -= 1
+                if in_ruby_block:
+                    check_counts[i] = 0
+                else:
+                    check_counts[i] = 1 if char.timestamps else 0
                 continue
             ruby_groups = [p.text for p in char.ruby.parts]
             if len(ruby_groups) == 1 and char.char == ruby_groups[0]:
                 continue  # 自注音汉字（罕见），保留默认
-            check_counts[i] = sum(len(split_into_moras(group)) for group in ruby_groups)
+            if preserve_ruby_segments:
+                # 保留原 ruby 分段：cc = parts 段数，这样后续 set_check_count
+                # 走 new_count == old_count 路径，不会触发 _resplit_ruby
+                # 重切 parts、丢失 offset_ms。
+                # 连词块首字示例：友 ruby.parts=[ゆう,じょう] → cc=2；
+                # 块内后字 ruby 为空，上面已处理为 cc=0。
+                check_counts[i] = len(ruby_groups)
+            else:
+                check_counts[i] = sum(
+                    len(split_into_moras(group)) for group in ruby_groups
+                )
 
         # 单一平假名/片假名封顶：最多 1 cp（同 analyze_sentence）
         chars_for_cap = [c.char for c in sentence.characters]
@@ -1663,8 +1697,32 @@ class AutoCheckService:
                 is_sentence_end = True
             if i in english_sentence_end_idx:
                 is_sentence_end = True
+            # 守卫：已持有 timestamps 的字符不可被截断（n3 加载场景）
+            # set_check_count 不变式 len(timestamps) <= check_count；cc=0 会清空 ts
+            # 例外：连词块内 ruby-overridden 后字（前驱 linked_to_next + 有 ruby parts）
+            # 保留 cc=0，由后续 _emit_body 的特殊处理保住 timestamps
+            in_ruby_block_follower = (
+                i > 0
+                and sentence.characters[i - 1].linked_to_next
+                and sentence.characters[i - 1].ruby is not None
+                and len(sentence.characters[i - 1].ruby.parts) > 0
+                and not char.ruby
+            )
+            if char.timestamps and check_counts[i] < len(char.timestamps) and not in_ruby_block_follower:
+                check_counts[i] = len(char.timestamps)
+            # 守卫：n3 加载已携带 sentence_end_ts（句中双 ts 释放）的字符必须保留
+            # （AUTOCHECK 默认规则会把非"行尾/英文词尾/空格前"字符标为非句尾，
+            #   从而清空 release ts，导致 round-trip 丢失 [ts1][ts2] 模式）
+            if char.sentence_end_ts is not None:
+                is_sentence_end = True
             # 自动流程：force=True，允许 cc==0 退化为 Nicokara 无 mora 格式
-            char.set_check_count(check_counts[i], force=True)
+            if in_ruby_block_follower and check_counts[i] == 0:
+                # 连词块内后字：保留 body timestamps，绕过 set_check_count 清空
+                preserved_ts = list(char.timestamps)
+                char.set_check_count(check_counts[i], force=True)
+                char.timestamps = preserved_ts
+            else:
+                char.set_check_count(check_counts[i], force=True)
             char.is_line_end = is_last and add_line_end
             char.is_sentence_end = is_sentence_end
             if not char.is_sentence_end:
@@ -1681,15 +1739,20 @@ class AutoCheckService:
         self,
         project: Project,
         split_config: Optional[SplitConfig] = None,
+        *,
+        preserve_ruby_segments: bool = False,
     ) -> None:
         """根据现有注音更新整个项目的节奏点配置（不重新分析注音）
 
         Args:
             project: 项目
             split_config: 拆分配置
+            preserve_ruby_segments: 透传到 update_checkpoints_from_rubies。
         """
         for sentence in project.sentences:
-            self.update_checkpoints_from_rubies(sentence, split_config)
+            self.update_checkpoints_from_rubies(
+                sentence, split_config, preserve_ruby_segments=preserve_ruby_segments
+            )
 
     def estimate_check_count(self, text: str) -> int:
         """估算文本的节奏点数量

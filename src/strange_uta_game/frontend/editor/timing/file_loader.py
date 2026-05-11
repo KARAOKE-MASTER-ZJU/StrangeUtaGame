@@ -434,6 +434,9 @@ class FileLoader:
             # 添加新演唱者
             for singer in new_singers:
                 self._project.add_singer(singer)
+            # 通知演唱者面板刷新（即使没有新增也要刷新一次，避免遗漏复用场景）
+            if new_singers and self._store:
+                self._store.notify("singers")
 
             if not sentences:
                 InfoBar.warning(
@@ -573,7 +576,9 @@ class FileLoader:
             auto_check = AutoCheckService(
                 auto_check_flags=auto_check_flags, user_dictionary=user_dict
             )
-            auto_check.update_checkpoints_for_project(self._project)
+            auto_check.update_checkpoints_for_project(
+                self._project, preserve_ruby_segments=True
+            )
             self._editor.refresh_lyric_display()
             if hasattr(self._editor, "_store") and self._editor._store:
                 self._editor._store.notify("checkpoints")

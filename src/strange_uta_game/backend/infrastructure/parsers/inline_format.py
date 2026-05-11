@@ -28,6 +28,27 @@ from strange_uta_game.backend.domain.models import (
 from strange_uta_game.backend.domain.entities import Sentence
 
 
+def _export_timestamps(char: Character) -> List[int]:
+    """返回导出用的时间戳列表（带全局偏移，若已计算）。
+
+    若 Character 已通过 set_offset 计算过 global_timestamps（长度匹配 timestamps），
+    则返回 global_timestamps；否则回退到原始 timestamps。
+    """
+    if char.global_timestamps and len(char.global_timestamps) == len(char.timestamps):
+        return char.global_timestamps
+    return char.timestamps
+
+
+def _export_sentence_end_ts(char: Character) -> Optional[int]:
+    """返回导出用的句尾时间戳（带全局偏移，若已计算）。"""
+    if char.sentence_end_ts is None:
+        return None
+    if char.global_sentence_end_ts is not None:
+        return char.global_sentence_end_ts
+    return char.sentence_end_ts
+
+
+
 # ──────────────────────────────────────────────
 # 时间戳
 # ──────────────────────────────────────────────
@@ -262,8 +283,9 @@ def _single_char_to_normal_node(char: Character) -> str:
     if char.check_count == 0:
         # 检查是否有句尾标记
         if char.is_sentence_end:
-            if char.sentence_end_ts is not None:
-                return f"{display_char}[10|{format_timestamp(char.sentence_end_ts)}]"
+            _se = _export_sentence_end_ts(char)
+            if _se is not None:
+                return f"{display_char}[10|{format_timestamp(_se)}]"
             else:
                 return f"{display_char}[10]"
         return display_char
@@ -271,8 +293,9 @@ def _single_char_to_normal_node(char: Character) -> str:
     char_parts: List[str] = []
 
     # 主时间戳
-    if char.timestamps:
-        ts = char.timestamps[0]
+    _ts_list = _export_timestamps(char)
+    if _ts_list:
+        ts = _ts_list[0]
         char_parts.append(f"[1|{format_timestamp(ts)}]")
     else:
         char_parts.append("[1]")
@@ -282,8 +305,9 @@ def _single_char_to_normal_node(char: Character) -> str:
 
     # 句尾标记
     if char.is_sentence_end:
-        if char.sentence_end_ts is not None:
-            char_parts.append(f"[10|{format_timestamp(char.sentence_end_ts)}]")
+        _se = _export_sentence_end_ts(char)
+        if _se is not None:
+            char_parts.append(f"[10|{format_timestamp(_se)}]")
         else:
             char_parts.append("[10]")
 
@@ -307,12 +331,13 @@ def _single_char_to_ruby_node(char: Character) -> str:
     count = min(len(ruby_segments), 9)
 
     # 有时间戳的情况
-    if char.timestamps:
+    _ts_list = _export_timestamps(char)
+    if _ts_list:
         mora_portions: List[str] = []  # 存放每一拍的组合字符串
         for cp_idx in range(count):
             portion_str = ""
-            if cp_idx < len(char.timestamps):
-                ts = char.timestamps[cp_idx]
+            if cp_idx < len(_ts_list):
+                ts = _ts_list[cp_idx]
                 # 第一个时间戳前没有 [
                 if cp_idx == 0:
                     portion_str += f"{format_timestamp(ts)}]"
@@ -334,8 +359,9 @@ def _single_char_to_ruby_node(char: Character) -> str:
 
     # 句尾标记
     if char.is_sentence_end:
-        if char.sentence_end_ts is not None:
-            result += f"[10|{format_timestamp(char.sentence_end_ts)}]"
+        _se = _export_sentence_end_ts(char)
+        if _se is not None:
+            result += f"[10|{format_timestamp(_se)}]"
         else:
             result += "[10]"
 
@@ -363,8 +389,9 @@ def _linked_group_to_normal_node(group: List[Character]) -> str:
 
         if c.check_count > 0:
             # 有 CP 的字符
-            if c.timestamps:
-                ts = c.timestamps[0]
+            _ts_list = _export_timestamps(c)
+            if _ts_list:
+                ts = _ts_list[0]
                 parts.append(f"[1|{format_timestamp(ts)}]{display_char}")
             else:
                 parts.append(f"[1]{display_char}")
@@ -374,8 +401,9 @@ def _linked_group_to_normal_node(group: List[Character]) -> str:
 
         # 句尾标记（无论是否有 CP）
         if c.is_sentence_end:
-            if c.sentence_end_ts is not None:
-                parts.append(f"[10|{format_timestamp(c.sentence_end_ts)}]")
+            _se = _export_sentence_end_ts(c)
+            if _se is not None:
+                parts.append(f"[10|{format_timestamp(_se)}]")
             else:
                 parts.append("[10]")
 
@@ -401,10 +429,11 @@ def _linked_group_to_ruby_node(group: List[Character]) -> str:
             char_count = min(len(ruby_segments), 9)
 
             portion_parts: List[str] = []
+            _ts_list = _export_timestamps(c)
             for cp_idx in range(char_count):
                 part_str = ""
-                if cp_idx < len(c.timestamps):
-                    ts = c.timestamps[cp_idx]
+                if cp_idx < len(_ts_list):
+                    ts = _ts_list[cp_idx]
                     # 第一个时间戳前没有 [
                     if cp_idx == 0:
                         # 写入各自正确的 char_count
@@ -432,8 +461,9 @@ def _linked_group_to_ruby_node(group: List[Character]) -> str:
     # 句尾标记（取最后一个字符的句尾标记）
     last_char = group[-1]
     if last_char.is_sentence_end:
-        if last_char.sentence_end_ts is not None:
-            result += f"[10|{format_timestamp(last_char.sentence_end_ts)}]"
+        _se = _export_sentence_end_ts(last_char)
+        if _se is not None:
+            result += f"[10|{format_timestamp(_se)}]"
         else:
             result += "[10]"
 

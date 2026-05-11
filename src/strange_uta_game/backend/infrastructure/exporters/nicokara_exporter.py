@@ -1,4 +1,4 @@
-"""Nicokara (ニコカラ) LRC 格式导出器。
+﻿"""Nicokara (ニコカラ) LRC 格式导出器。
 
 输出 RhythmicaLyrics 风格的 Nicokara 逐字 LRC 格式：
 - 时间戳格式: [MM:SS.CC]（分:秒:厘秒，冒号分隔）
@@ -124,12 +124,17 @@ class NicokaraExporter(BaseExporter):
                 if end_ms is not None:
                     prev_end_ms = end_ms
 
+            # 空行后重置 prev_singer_id 规则已废弃：
+            # 实际 n3_color 数据显示，空行后若 singer 未变更，则不重复插入
+            # 【svN】标签。先注释保留以便回溯，不作为 fallback。
+            # if is_blank_line:
+            #     prev_singer_id = None
+
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(output_lines))
         except Exception as e:
             raise ExportError(f"写入文件失败: {e}")
-
     @staticmethod
     def _get_default_singer_id(project: Project) -> Optional[str]:
         """获取项目的默认演唱者 ID"""
@@ -204,7 +209,7 @@ class NicokaraExporter(BaseExporter):
 
             # 演唱者标签插入：在演唱者发生变化时插入标签
             if insert_singer_tags and singer_map and effective_singer != prev_singer_id:
-                singer_name = singer_map.get(effective_singer, "")
+                singer_name = singer_map.get(effective_singer, "") if effective_singer else ""
                 if singer_name:
                     parts.append(f"【{singer_name}】")
                 prev_singer_id = effective_singer
@@ -361,6 +366,12 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                 if end_ms is not None:
                     prev_end_ms = end_ms
 
+            # 空行后重置 prev_singer_id 规则已废弃：
+            # 实际 n3_color 数据显示，空行后若 singer 未变更，则不重复插入
+            # 【svN】标签。先注释保留以便回溯，不作为 fallback。
+            # if is_blank_line:
+            #     prev_singer_id = None
+
         # 元数据标签（从 AppSettings 或传入的 tag_data 读取）
         tags = tag_data or {}
         if not tags:
@@ -373,7 +384,13 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             except Exception:
                 tags = {}
 
-        output_lines.append("")
+        # 规整 body 尾部：连续空行折叠为最多 1 个（与 nicokara3 原生格式一致）
+        while len(output_lines) >= 2 and output_lines[-1] == "" and output_lines[-2] == "":
+            output_lines.pop()
+        # 若 body 尾部没有空行，补一个（与 ruby 段隔开）
+        if output_lines and output_lines[-1] != "":
+            output_lines.append("")
+
         if tags.get("title"):
             output_lines.append(f"@Title={tags['title']}")
         if tags.get("artist"):
@@ -389,8 +406,15 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             if custom:
                 output_lines.append(custom)
 
-        # @Offset
-        output_lines.append("@Offset=+0")
+        # @Offset（仅当存在非零偏移时输出，避免污染 round-trip）
+        offset_ms = 0
+        try:
+            offset_ms = int(getattr(project, "offset_ms", 0) or 0)
+        except (TypeError, ValueError):
+            offset_ms = 0
+        if offset_ms != 0:
+            sign = "+" if offset_ms >= 0 else "-"
+            output_lines.append(f"@Offset={sign}{abs(offset_ms)}")
 
         # @Ruby 注音标签（也按演唱者过滤）
         ruby_entries = self._collect_ruby_entries(project, singer_ids)
@@ -398,8 +422,9 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             output_lines.append(f"@Ruby{idx}={entry}")
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(output_lines))
+            # 与 nicokara3 原生格式一致：UTF-8-BOM + CRLF 行尾 + 末尾 newline
+            with open(file_path, "w", encoding="utf-8-sig", newline="") as f:
+                f.write("\r\n".join(output_lines) + "\r\n")
         except Exception as e:
             raise ExportError(f"写入文件失败: {e}")
 
@@ -410,169 +435,147 @@ class NicokaraWithRubyExporter(NicokaraExporter):
     def _collect_ruby_entries(
         self, project: Project, singer_ids: Optional[Set[str]] = None
     ) -> List[str]:
-        """收集所有注音并生成 @Ruby 条目列表
+        """收集所有注音并生成 @Ruby 条目列表（朴素版 — 每段独立 entry）
 
-        每次出现的 (汉字, 读音) 组都生成独立的 @Ruby 条目，
-        每个条目有各自的字内相对时间戳和出现位置范围。
-        对于没有内部时间戳的读音（如单假名）且多次出现时，
-        合并为一个全局条目，不附加位置信息。
+        策略（用户指定，2026-05-11）：
+          - 按 body 顺序扫描 sentence，遇到连续的有 ruby 的 char 即为一段。
+          - 每段独立输出一个 @RubyN，N 严格递增，不复用、不去重、不按 kanji 合并。
+          - 作用域写死在该段自身的时间范围内：
+              pos1 = 段首字第一个 global timestamp
+              pos2 = 段尾字 sentence_end_ts（若是句尾）或最后一个 timestamp
+          - reading 由 _build_reading_with_timestamps 按段内 char.ruby.parts 原样拼出。
+
+        这一版**不做任何省略**：每个 entry 都完整写 kanji,reading,pos1,pos2，
+        即使作用域只覆盖两三个字符。语义最清晰，不依赖任何 substring 消歧或
+        kanji+reading 折叠规则。
 
         Args:
             project: 项目数据
             singer_ids: 要输出的演唱者 ID 集合（None 表示全部）
 
         Returns:
-            格式: ["漢字,読み[ts],pos1,pos2", ...]
+            格式: ["漢字,読み[ts],pos1,pos2", ...]，调用方加 @RubyN= 前缀
         """
         default_singer_id = self._get_default_singer_id(project)
-        # key: (kanji, reading) → List[{reading_display, reading_ms_key, first_char_ts}]
-        ruby_groups: OrderedDict[tuple[str, str], list[dict]] = OrderedDict()
+        result: List[str] = []
 
-        for sentence in project.sentences:
+        for sent_idx, sentence in enumerate(project.sentences):
             if singer_ids is not None:
                 if not self._sentence_has_singer(
                     sentence, singer_ids, default_singer_id
                 ):
                     continue
 
-            char_offset = 0
-            for word in sentence.words:
-                if word.has_ruby:
-                    kanji = word.text
-                    reading = word.ruby_text
-                    start_idx = char_offset
-                    end_idx = char_offset + word.char_count
-                    key = (kanji, reading)
+            chars = sentence.characters
+            n = len(chars)
+            i = 0
+            while i < n:
+                if chars[i].ruby is None:
+                    i += 1
+                    continue
+                # 扫一段连续 ruby char [start_idx, end_idx)
+                # 终止条件：
+                #   1. 下一个 char 无 ruby
+                #   2. 当前 char 是句尾（is_sentence_end=True）—— 句子边界天然切段，
+                #      避免把同一 lrc 行中跨"释放 ts"的两句 ruby 合并（如 乙女|心）
+                start_idx = i
+                while i < n and chars[i].ruby is not None:
+                    if chars[i].is_sentence_end:
+                        i += 1
+                        break
+                    i += 1
+                end_idx = i
 
-                    # 为每次出现独立构建带时间戳的读音
-                    reading_display, reading_ms_key = (
-                        self._build_reading_with_timestamps(
-                            sentence, start_idx, end_idx, reading
-                        )
-                    )
-
-                    # 获取本次出现的首字符时间戳（用于位置标记）
-                    first_char_ts: Optional[int] = None
-                    if start_idx < len(sentence.characters):
-                        ch = sentence.characters[start_idx]
-                        if ch.global_timestamps:
-                            first_char_ts = ch.global_timestamps[0]
-
-                    if key not in ruby_groups:
-                        ruby_groups[key] = []
-                    ruby_groups[key].append(
-                        {
-                            "reading_display": reading_display,
-                            "reading_ms_key": reading_ms_key,
-                            "first_char_ts": first_char_ts,
-                        }
-                    )
-                char_offset += word.char_count
-
-        # --- 第二步：生成 @Ruby 条目 ---
-        # 按出现顺序收集所有条目，最终按首字符时间戳排序实现跨组交错
-        # 每个条目: (sort_key, entry_string)
-        #   sort_key = (first_char_ts, insertion_order) 用于稳定排序
-        all_entries: List[tuple[tuple[int, int], str]] = []
-        group_index = 0
-
-        # 判断每个 kanji（词组）是否有多种不同读音，需要位置消歧
-        kanji_readings: dict[str, set[str]] = {}
-        for (kanji, reading) in ruby_groups:
-            kanji_readings.setdefault(kanji, set()).add(reading)
-
-        def _emit_with_ranges(
-            kanji: str, merged: List[dict]
-        ) -> None:
-            """将合并后的出现列表按时间分组并生成带位置范围的条目"""
-            nonlocal group_index
-            # 按 first_char_ts 排序
-            merged.sort(key=lambda o: o["first_char_ts"] or 0)
-            # 合并连续相同 reading_ms_key（毫秒精度）为子组
-            sub_groups: List[List[dict]] = []
-            for occ in merged:
-                if (
-                    sub_groups
-                    and sub_groups[-1][0]["reading_ms_key"]
-                    == occ["reading_ms_key"]
-                ):
-                    sub_groups[-1].append(occ)
-                else:
-                    sub_groups.append([occ])
-
-            n = len(sub_groups)
-            for i, sg in enumerate(sub_groups):
-                r_ts = sg[0]["reading_display"]
-                this_ts = sg[0].get("first_char_ts")
-                sort_ts = this_ts or 0
-
-                if n == 1:
-                    entry = f"{kanji},{r_ts}"
-                elif i == 0:
-                    next_ts = sub_groups[i + 1][0].get("first_char_ts")
-                    if next_ts is not None:
-                        entry = f"{kanji},{r_ts},,{_format_nicokara_ts(next_ts)}"
-                    else:
-                        entry = f"{kanji},{r_ts}"
-                elif i == n - 1:
-                    if this_ts is not None:
-                        entry = f"{kanji},{r_ts},{_format_nicokara_ts(this_ts)}"
-                    else:
-                        entry = f"{kanji},{r_ts}"
-                else:
-                    next_ts = sub_groups[i + 1][0].get("first_char_ts")
-                    p1 = (
-                        _format_nicokara_ts(this_ts)
-                        if this_ts is not None
-                        else ""
-                    )
-                    p2 = (
-                        _format_nicokara_ts(next_ts)
-                        if next_ts is not None
-                        else ""
-                    )
-                    entry = f"{kanji},{r_ts},{p1},{p2}"
-
-                all_entries.append(((sort_ts, group_index), entry))
-                group_index += 1
-
-        # 已处理的 kanji 集合（用于跨读音消歧的情况）
-        processed_kanji: set[str] = set()
-
-        for (kanji, _reading), occurrences in ruby_groups.items():
-            if kanji in processed_kanji:
-                continue
-
-            # 该词组是否需要跨读音消歧（有多种不同读音）
-            needs_cross_reading_range = len(kanji_readings.get(kanji, set())) > 1
-
-            if needs_cross_reading_range:
-                # 合并该 kanji 所有 (kanji, *) 组的出现，统一按时间分配位置范围
-                processed_kanji.add(kanji)
-                merged: List[dict] = []
-                for r, occs in ruby_groups.items():
-                    if r[0] == kanji:
-                        merged.extend(occs)
-                _emit_with_ranges(kanji, merged)
-            else:
-                # 单一读音：在组内检查 reading_ms_key（毫秒精度）是否一致
-                distinct_readings = set(
-                    occ["reading_ms_key"] for occ in occurrences
+                kanji = "".join(c.char for c in chars[start_idx:end_idx])
+                reading_fallback = "".join(
+                    p.text
+                    for c in chars[start_idx:end_idx]
+                    if c.ruby
+                    for p in c.ruby.parts
                 )
-                if len(distinct_readings) == 1:
-                    r_ts = occurrences[0]["reading_display"]
-                    sort_ts = occurrences[0].get("first_char_ts") or 0
-                    all_entries.append(
-                        ((sort_ts, group_index), f"{kanji},{r_ts}")
-                    )
-                    group_index += 1
+                reading_display, _ = self._build_reading_with_timestamps(
+                    sentence, start_idx, end_idx, reading_fallback
+                )
+
+                # pos1: 段首字第一个 global ts；若段首字无 ts（linked group 头字 如 死/高），
+                # 严格向上就近找：先在本句段前 char 找最近 ts，再跨 sentence 向上找。
+                first_ch = chars[start_idx]
+                pos1_ts: Optional[int] = None
+                if first_ch.global_timestamps:
+                    pos1_ts = first_ch.global_timestamps[0]
+                if pos1_ts is None:
+                    # 向前在本句找最近 ts（优先句尾释放 ts，否则最后一个 ts）
+                    for k in range(start_idx - 1, -1, -1):
+                        if chars[k].global_sentence_end_ts is not None:
+                            pos1_ts = chars[k].global_sentence_end_ts
+                            break
+                        if chars[k].global_timestamps:
+                            pos1_ts = chars[k].global_timestamps[-1]
+                            break
+                if pos1_ts is None:
+                    # 向前跨 sentence 找最近 ts
+                    for ps in reversed(project.sentences[:sent_idx]):
+                        found = False
+                        for pc in reversed(ps.characters):
+                            if pc.global_sentence_end_ts is not None:
+                                pos1_ts = pc.global_sentence_end_ts
+                                found = True
+                                break
+                            if pc.global_timestamps:
+                                pos1_ts = pc.global_timestamps[-1]
+                                found = True
+                                break
+                        if found:
+                            break
+                # pos2: 段尾字"作用结束"时刻
+                #   - 若段尾字是句尾 → 句尾释放 ts（global_sentence_end_ts）
+                #   - 否则 → 下一个有 ts 的 char 的起始 ts（下字开始 = 本字结束）
+                #   - 找不到下一字（全文末尾且用户未标句尾）→ pos2 省略
+                last_ch = chars[end_idx - 1]
+                pos2_ts: Optional[int] = None
+                pos2_omit = False
+                if last_ch.is_sentence_end and last_ch.global_sentence_end_ts is not None:
+                    pos2_ts = last_ch.global_sentence_end_ts
                 else:
-                    _emit_with_ranges(kanji, occurrences)
+                    # 先在本句剩余 char 找下一个有 ts 的
+                    for k in range(end_idx, n):
+                        if chars[k].global_timestamps:
+                            pos2_ts = chars[k].global_timestamps[0]
+                            break
+                    if pos2_ts is None:
+                        # 本句后续无 ts char → 找后续 sentence 第一个有 ts 的 char
+                        sent_idx_in_proj = sent_idx
+                        for ns in project.sentences[sent_idx_in_proj + 1:]:
+                            found = False
+                            for nc in ns.characters:
+                                if nc.global_timestamps:
+                                    pos2_ts = nc.global_timestamps[0]
+                                    found = True
+                                    break
+                            if found:
+                                break
+                    if pos2_ts is None:
+                        # 全文最后一字且未标句尾 → pos2 省略
+                        pos2_omit = True
 
-        # 按首字符时间戳排序，同时间戳按出现顺序（insertion_order）
-        all_entries.sort(key=lambda x: x[0])
-        return [entry for _, entry in all_entries]
+                pos1_str = _format_nicokara_ts(pos1_ts) if pos1_ts is not None else ""
+                if pos2_omit:
+                    # 全文最后一字未标句尾 → 省略 pos2 字段
+                    result.append(f"{kanji},{reading_display},{pos1_str}")
+                else:
+                    pos2_str = _format_nicokara_ts(pos2_ts) if pos2_ts is not None else ""
+                    result.append(f"{kanji},{reading_display},{pos1_str},{pos2_str}")
 
+        return result
+
+    def _collect_ruby_entries_OLD_DO_NOT_USE(
+        self, project: Project, singer_ids: Optional[Set[str]] = None
+    ) -> List[str]:
+        """[DEPRECATED 2026-05-11] 旧实现，基于错误的 spec（按 kanji 字符串聚合 + 子串消歧）。
+        本体已删除（用户要求：先注释/删除，免得之后忘了，但是不要留做 fallback）。
+        若需参考子串干扰逻辑（阶段 C），见 git history。
+        """
+        raise NotImplementedError("旧实现已废弃，请使用 _collect_ruby_entries")
     def _build_reading_with_timestamps(
         self,
         sentence: Sentence,
@@ -610,8 +613,8 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             # 以确保 mapping 中包含所有 checkpoint
             check_count = ch.check_count
             if check_count > 0 and len(groups) < check_count:
-                # 补充空格条目到 check_count 个
-                groups = groups + [" "] * (check_count - len(groups))
+                # 补充空字符串条目到 check_count 个
+                groups = groups + [""] * (check_count - len(groups))
 
             for cp_idx, group_text in enumerate(groups):
                 mapping.append((group_text, char_idx, cp_idx))

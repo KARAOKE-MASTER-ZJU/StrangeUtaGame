@@ -31,10 +31,13 @@ class NicokaraParsedLine:
     """Nicokara 解析后的歌词行数据（含演唱者信息）"""
 
     text: str
-    timetags: List[Tuple[int, int]]  # (char_idx, timestamp_ms) 列表
+    timetags: List[Tuple[int, int]]  # (char_idx, timestamp_ms) 列表 - 仅起始 ts
     # char_idx → singer_key 映射（singer_key 如 "sv1"、"sv9"）
     char_singer_map: Dict[int, str] = field(default_factory=dict)
     line_singer_key: str = ""  # 行级别默认演唱者 key
+    line_end_ts: Optional[int] = None  # 行末未消费的时间戳（句尾释放 ts）
+    # char_idx → 释放 ts（句中双 ts 模式，绑给 linked group 尾字符）
+    release_ts_map: Dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -495,12 +498,12 @@ class NicokaraParser:
         metadata: Dict[str, str] = {}
 
         for raw_line in raw_lines:
-            raw_line = raw_line.strip()
-            if not raw_line:
-                continue
+            # 去掉行尾 \r（Windows 换行），但保留有意义的 trailing 空格作为 body 排版
+            raw_line = raw_line.rstrip("\r")
+            stripped = raw_line.strip()
 
             # 解析 @Ruby 元数据
-            ruby_match = self.RUBY_PATTERN.match(raw_line)
+            ruby_match = self.RUBY_PATTERN.match(stripped) if stripped else None
             if ruby_match:
                 entry = self._parse_ruby_entry(ruby_match.group(2))
                 if entry:
@@ -508,14 +511,14 @@ class NicokaraParser:
                 continue
 
             # 解析 @Emoji 元数据（演唱者定义）
-            emoji_match = self.EMOJI_PATTERN.match(raw_line)
+            emoji_match = self.EMOJI_PATTERN.match(stripped) if stripped else None
             if emoji_match:
                 defs = self._parse_emoji_line(emoji_match.group(1))
                 singer_definitions.update(defs)
                 continue
 
             # 解析其他 @ 元数据
-            meta_match = self.META_PATTERN.match(raw_line)
+            meta_match = self.META_PATTERN.match(stripped) if stripped else None
             if meta_match:
                 key = meta_match.group(1)
                 value = meta_match.group(2)
@@ -523,14 +526,29 @@ class NicokaraParser:
                     metadata[key] = value
                 continue
 
-            # 正文歌词行
-            body_lines.append(raw_line)
+            # 非元数据：进入 body（含空行，作为用户排版意图保留）
+            # 但 body 开始前的纯空行/BOM 行跳过
+            if not stripped and not body_lines:
+                continue
+            # body 用原始行（保留 trailing 空格），但开头空行已剥
+            body_lines.append(raw_line if stripped else "")
 
         # 解析正文行
         parsed_lines = []
         for line_text in body_lines:
+            if not line_text:
+                # 空行：保留作为用户排版意图
+                parsed_lines.append(
+                    NicokaraParsedLine(
+                        text="",
+                        timetags=[],
+                        line_singer_key="",
+                        char_singer_map={},
+                    )
+                )
+                continue
             parsed = self._parse_body_line(line_text)
-            if parsed and parsed.text.strip():
+            if parsed is not None:
                 parsed_lines.append(parsed)
 
         return NicokaraParseResult(
@@ -588,6 +606,7 @@ class NicokaraParser:
         # 分段处理文本
         prev_end = 0
         pending_ts: Optional[int] = None
+        release_ts_map: Dict[int, int] = {}
 
         for start, end, token_type, value in tokens:
             # 处理 token 之前的纯文本字符
@@ -595,13 +614,23 @@ class NicokaraParser:
             for ch in text_between:
                 lyric_chars.append(ch)
                 if pending_ts is not None:
-                    timetags.append((char_idx, pending_ts))
-                    pending_ts = None
+                    # 空格不接收起始 ts：将 pending_ts 转为前一字符的句尾释放 ts
+                    if ch.isspace() and len(lyric_chars) >= 2:
+                        release_ts_map[len(lyric_chars) - 2] = pending_ts
+                        pending_ts = None
+                    else:
+                        timetags.append((char_idx, pending_ts))
+                        pending_ts = None
                 if current_singer:
                     char_singer_map[char_idx] = current_singer
                 char_idx += 1
 
             if token_type == "ts":
+                # 若上一个 pending_ts 未被任何字符消费（即连续两个 ts 中间无文字），
+                # 它是"句中双 ts 模式"的释放 ts，绑给紧邻其前的最后一个字符
+                # （即 linked group 的尾字符，不论该字符是否有起始 ts）
+                if pending_ts is not None and lyric_chars:
+                    release_ts_map[len(lyric_chars) - 1] = pending_ts
                 pending_ts = int(value)
             elif token_type == "singer":
                 current_singer = value
@@ -615,19 +644,45 @@ class NicokaraParser:
         for ch in remaining:
             lyric_chars.append(ch)
             if pending_ts is not None:
-                timetags.append((char_idx, pending_ts))
-                pending_ts = None
+                if ch.isspace() and len(lyric_chars) >= 2:
+                    release_ts_map[len(lyric_chars) - 2] = pending_ts
+                    pending_ts = None
+                else:
+                    timetags.append((char_idx, pending_ts))
+                    pending_ts = None
             if current_singer:
                 char_singer_map[char_idx] = current_singer
             char_idx += 1
 
-        # 如果最后有未消费的时间戳（行末时间戳），添加为最后一个字符的附加 tag
-        if pending_ts is not None and lyric_chars:
-            timetags.append((len(lyric_chars) - 1, pending_ts))
+        # 如果最后有未消费的时间戳（行末时间戳），作为整行的句尾释放 ts
+        # 由 nicokara_result_to_sentences 绑定到最后一个有起始 ts 的字符
+        line_end_ts: Optional[int] = pending_ts if pending_ts is not None else None
 
-        text = "".join(lyric_chars).strip()
+        # 注意：仅做空判断，不能 strip 掉尾随空格（行末空格是用户有意保留的排版/停顿）
+        raw = "".join(lyric_chars)
+        text = raw.strip()
         if not text:
-            return None
+            # 纯空格 + ts 的"停顿行"（如 `[ts1] [ts2]`）：
+            # - 若包含 ts，保留为含 1 个空格字符的 Sentence，携带起始 ts + 行末释放 ts，
+            #   使导出回原文 `[ts1] [ts2]`。
+            # - 完全空行（无 ts、无字符）：text="" stub 以保留行号。
+            if timetags or line_end_ts is not None or raw:
+                return NicokaraParsedLine(
+                    text=raw,  # 保留原始空格（通常 " "）
+                    timetags=timetags,
+                    char_singer_map=char_singer_map,
+                    line_singer_key=line_singer_key,
+                    line_end_ts=line_end_ts,
+                    release_ts_map=release_ts_map,
+                )
+            return NicokaraParsedLine(
+                text="",
+                timetags=[],
+                line_singer_key=line_singer_key,
+                char_singer_map={},
+            )
+        # 保留尾随空格，仅前导空白稍后单独处理
+        text = raw.rstrip("\r\n")
 
         # 重新计算索引（去除前导空白）
         leading_spaces = len("".join(lyric_chars)) - len("".join(lyric_chars).lstrip())
@@ -640,12 +695,19 @@ class NicokaraParser:
                 if ci >= leading_spaces:
                     new_singer_map[ci - leading_spaces] = sk
             char_singer_map = new_singer_map
+            release_ts_map = {
+                ci - leading_spaces: ts
+                for ci, ts in release_ts_map.items()
+                if ci >= leading_spaces
+            }
 
         return NicokaraParsedLine(
             text=text,
             timetags=timetags,
             char_singer_map=char_singer_map,
             line_singer_key=line_singer_key,
+            line_end_ts=line_end_ts,
+            release_ts_map=release_ts_map,
         )
 
     def _parse_nicokara_timestamp(self, match: re.Match) -> int:
@@ -725,18 +787,37 @@ def nicokara_result_to_sentences(
         Sentence 对象列表
     """
     sentences: List[Sentence] = []
+    # 行级 singer 在 nicokara 中跨行延续（空行不重置，与导出器 prev_singer_id 行为对齐）
+    # 跟踪上一非空行**末字符**的 singer（与导出器 prev_singer_id 同步）：
+    #   - 行内混合 singer 切换时，行尾 singer 决定下一无标签行的继承值
+    #   - 无显式 【svN】 标签的行继承此值；首行无标签 → default
+    last_emitted_singer_id: str = default_singer_id
 
     for parsed in result.lines:
-        # 确定行级别演唱者
-        line_singer_id = default_singer_id
+        # 确定行级别演唱者（显式标签 > 继承上一非空行末字符 singer > default）
         if parsed.line_singer_key and parsed.line_singer_key in singer_key_to_id:
             line_singer_id = singer_key_to_id[parsed.line_singer_key]
+        else:
+            line_singer_id = last_emitted_singer_id
+        # 空 Sentence 不更新 last_emitted_singer_id；非空行在末尾按其末字符 singer 更新
+
+        # 空行：保留为空 Sentence（用户排版意图）
+        if not parsed.text:
+            sentences.append(Sentence(singer_id=line_singer_id, characters=[]))
+            continue
 
         # 创建句子（from_text 设置默认 checkpoint 配置）
         sentence = Sentence.from_text(
             text=parsed.text,
             singer_id=line_singer_id,
         )
+
+        # 先为所有字符按 char_singer_map 设置 singer_id（含无 ts 的字符：空格、英文词中间字符等）
+        # 这样导出时能正确识别 singer 切换边界
+        for char_idx, char_singer_key in parsed.char_singer_map.items():
+            if 0 <= char_idx < len(sentence.characters):
+                if char_singer_key and char_singer_key in singer_key_to_id:
+                    sentence.characters[char_idx].singer_id = singer_key_to_id[char_singer_key]
 
         # 按字符分组时间戳
         char_ts_map: Dict[int, List[int]] = {}
@@ -771,8 +852,40 @@ def nicokara_result_to_sentences(
                     char.check_count = 1
                 char.push_to_ruby()
 
+        # 句中双 ts 模式的释放 ts：绑给 linked group 尾字符（可能无起始 ts）
+        for char_idx, release_ts in parsed.release_ts_map.items():
+            if 0 <= char_idx < len(sentence.characters):
+                ch_obj = sentence.characters[char_idx]
+                ch_obj.is_sentence_end = True
+                ch_obj.sentence_end_ts = release_ts
+                if ch_obj.check_count == 0:
+                    ch_obj.check_count = 1
+                ch_obj.push_to_ruby()
+
+        # 行末释放 ts：绑定到 sentence 的最后一个字符（对齐导出器的行末单 ts 语义）
+        # 即使最后字符是 linked group 的尾字符（无起始 ts），也绑在它上面
+        if parsed.line_end_ts is not None and sentence.characters:
+            last_char = sentence.characters[-1]
+            last_char.is_sentence_end = True
+            last_char.sentence_end_ts = parsed.line_end_ts
+            if last_char.check_count == 0:
+                last_char.check_count = 1
+            last_char.push_to_ruby()
+
         # 应用 @Ruby 注音（基于文本匹配）
         _apply_ruby_entries(sentence, result.ruby_entries)
+
+        # 触发 global_timestamps / global_sentence_end_ts 派生：
+        # exporter 读取的是 global_* 字段，未调用 set_offset 时它们为空，
+        # 导致 sentence-end ts 与逐字 ts 全部丢失。以 offset=0 派生与原始 ts 等价。
+        for _ch in sentence.characters:
+            _ch.set_offset(0)
+
+        # 更新 last_emitted_singer_id：与导出器 prev_singer_id 同步 = 行末字符的有效 singer
+        if sentence.characters:
+            tail = sentence.characters[-1]
+            tail_singer = tail.singer_id or sentence.singer_id or last_emitted_singer_id
+            last_emitted_singer_id = tail_singer
 
         sentences.append(sentence)
 
@@ -792,6 +905,8 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
 
     当条目携带位置范围（positions）时，利用字符时间戳精确定位到正确的出现，
     避免同一词组在不同句子/位置有不同读音时被错误匹配。
+    严格区间 [pos_start, pos_end) 匹配失败的 entry 直接忽略——
+    源文件手写偏差视为可接受的数据噪声，不做容差回退。
     """
     text = sentence.text
     for entry in ruby_entries:
@@ -802,7 +917,8 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
         pos_start_ms, pos_end_ms = _parse_position_range(entry.positions)
         has_position_filter = pos_start_ms is not None or pos_end_ms is not None
 
-        # 在文本中查找漢字位置
+        # 在文本中查找漢字位置：按 text.find 顺序，遇到第一个通过过滤
+        # 且未被占用的出现就 break（与原版一致）
         start = 0
         while True:
             pos = text.find(entry.kanji, start)
@@ -833,12 +949,20 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
                 for ci in range(pos, min(end_pos, len(sentence.characters)))
             )
             if not has_existing:
-                # 按字拆分 ruby 到各字符（保留时间戳信息）
                 block_len = end_pos - pos
-                _distribute_reading_to_chars(
-                    sentence, pos, block_len, reading_parts
-                )
-                break  # 每个 entry 只匹配第一个未标注的出现
+                _distribute_reading_to_chars(sentence, pos, block_len, reading_parts)
+                actual_end = min(end_pos, len(sentence.characters))
+                # linked_to_next 判定（双条件，缺一不可）：
+                #   (1) 两字处于同一 @Ruby tag 内
+                #       —— 由本循环 range(pos, actual_end - 1) 限定边界天然保证
+                #   (2) 后字 body 没有独立 timestamp（沿用前字 ts，正文未被切开）
+                # 仅满足 (1) 不足以判 linked：同一 ruby tag 内若后字有独立 ts，
+                # 说明用户在正文里把两字切开了，两字不构成连词。
+                for ci in range(pos, actual_end - 1):
+                    next_char = sentence.characters[ci + 1]
+                    sentence.characters[ci].linked_to_next = not bool(next_char.timestamps)
+                # 不 break：n3 spec 中一个 @Ruby entry 的 [pos1, pos2) 区间可覆盖
+                # 区间内 kanji 的全部出现（同 reading）。继续向后扫描。
             start = end_pos
 
 
@@ -848,61 +972,100 @@ def _distribute_reading_to_chars(
     block_len: int,
     reading_parts: List[Tuple[str, int]],
 ) -> None:
-    """将带时间戳的 reading 分配到各个汉字字符
+    """将带时间戳的 reading parts 按 body ts 边界分配到每个汉字字符。
 
-    Args:
+    新规则（per-char ruby）：
+      - 每个 kanji 字符独立持有自己的 ruby（不再"首字承载全部"）。
+      - 分配依据 reading parts 的绝对时间戳与各字 body ts 区间的重叠关系。
+      - 任一字落空（没分到 part）→ 触发整段重均分（按字符均分 reading 文本）。
+
+    参数:
         sentence: 句子对象
-        start_pos: 起始字符位置
-        block_len: 漢字块长度
-        reading_parts: [(text, offset_ms), ...] 解析后的 reading 部分
+        start_pos: 起始字符位置（句内 char 索引）
+        block_len: 该 @Ruby 块覆盖的字符数（kanji 字数）
+        reading_parts: [(text, offset_ms), ...]，其中 offset_ms 是该 part
+                       起始相对基准 ts 的偏移（首 part offset=0）。
     """
     if block_len <= 0 or not reading_parts:
         return
 
-    # 计算总 checkpoint 数量
-    total_checkpoints = 0
-    for ci in range(start_pos, min(start_pos + block_len, len(sentence.characters))):
-        total_checkpoints += sentence.characters[ci].check_count
-
-    if total_checkpoints == 0:
-        # 没有 checkpoint，将整个 reading 分配给第一个字符
-        if start_pos < len(sentence.characters):
-            target_char = sentence.characters[start_pos]
-            all_text = "".join(text for text, _ in reading_parts)
-            all_offsets = [offset for _, offset in reading_parts]
-            # 使用第一个非零 offset，或 0
-            offset_ms = next((o for o in all_offsets if o > 0), 0)
-            ruby_parts = [RubyPart(text=all_text, offset_ms=offset_ms)]
-            target_char.set_ruby(Ruby(parts=ruby_parts))
+    end_pos = min(start_pos + block_len, len(sentence.characters))
+    k = end_pos - start_pos
+    if k <= 0:
         return
 
-    # 按 checkpoint 分配 reading_parts
-    # 创建一个全局的 (text, offset_ms) 列表
-    global_parts = list(reading_parts)
+    first_char = sentence.characters[start_pos]
+    base_ts = first_char.timestamps[0] if first_char.timestamps else 0
 
-    # 按字符分配
-    part_idx = 0
-    for ci in range(start_pos, min(start_pos + block_len, len(sentence.characters))):
-        target_char = sentence.characters[ci]
-        char_check_count = target_char.check_count
+    # ── Step 1: 按 body ts 区间分配 parts ──
+    # 计算每字的 ts 区间起点（无 body ts 的字沿用前字）
+    char_starts: List[int] = []
+    inherited = base_ts
+    for i in range(k):
+        ch = sentence.characters[start_pos + i]
+        if ch.timestamps:
+            inherited = ch.timestamps[0]
+        char_starts.append(inherited)
+    # 每字 ts 区间右端 = 下一字起点；最后一字 = 无穷大
+    INF = 10**18
+    char_ends: List[int] = char_starts[1:] + [INF]
 
-        if char_check_count == 0:
-            # 没有 checkpoint 的字符，跳过
-            continue
+    per_char_parts: List[List[Tuple[str, int]]] = [[] for _ in range(k)]
+    for text, offset_ms in reading_parts:
+        abs_ts = base_ts + offset_ms
+        target_i = 0
+        for i in range(k):
+            if char_starts[i] <= abs_ts < char_ends[i]:
+                target_i = i
+                break
+        per_char_parts[target_i].append((text, abs_ts))
 
-        # 为该字符分配 char_check_count 个 reading_parts
-        char_ruby_parts: List[RubyPart] = []
-        for cp in range(char_check_count):
-            if part_idx < len(global_parts):
-                text, offset_ms = global_parts[part_idx]
-                char_ruby_parts.append(RubyPart(text=text, offset_ms=offset_ms))
-                part_idx += 1
+    # ── Step 2: 检查落空 → 整段均分回退 ──
+    any_empty = any(len(p) == 0 for p in per_char_parts)
+    if any_empty:
+        # 整段 reading 文本拼接后按字均分
+        full_text = "".join(t for t, _ in reading_parts)
+        n_chars_text = len(full_text)
+        per_char_parts = [[] for _ in range(k)]
+        # 文本均分（末字承担余数）
+        for i in range(k):
+            seg_start = (i * n_chars_text) // k
+            seg_end = ((i + 1) * n_chars_text) // k if i < k - 1 else n_chars_text
+            seg_text = full_text[seg_start:seg_end]
+            # ts 均分：首段 abs_ts=base_ts；其余按 reading 总时长均分
+            # reading 总时长 = 最后一个 part 的 offset_ms（首 part offset=0）
+            total_duration = reading_parts[-1][1] if len(reading_parts) > 1 else 0
+            seg_abs_ts = base_ts + (i * total_duration) // k
+            per_char_parts[i].append((seg_text, seg_abs_ts))
+
+    # ── Step 3: 写入每字 ruby + timestamps ──
+    for i in range(k):
+        ch = sentence.characters[start_pos + i]
+        parts = per_char_parts[i]
+        # parts 至少有 1 个（均分回退保证；正常分配若 any_empty=False 也保证每字非空）
+        local_base = ch.timestamps[0] if ch.timestamps else parts[0][1]
+        ruby_parts = [
+            RubyPart(text=text, offset_ms=abs_ts - local_base)
+            for text, abs_ts in parts
+        ]
+        ch.check_count = len(ruby_parts)
+        # timestamps 同步：cp=0 保留 body ts（若有）；cp>=1 用 abs_ts 注入
+        preserved = list(ch.timestamps)
+        new_ts: List[int] = []
+        for j, (_, abs_ts) in enumerate(parts):
+            if j == 0:
+                if preserved:
+                    new_ts.append(preserved[0])
+                else:
+                    # 该字无 body ts（沿用前字）：cp=0 不强行注入 ts，
+                    # 否则会在导出 body 行时输出伪 ts。
+                    # 但 check_count >= 1 要求 timestamps 长度可达 check_count，
+                    # 此处选择留空（render 时会沿用前字）。
+                    pass
             else:
-                # 不够分配，使用空文本
-                char_ruby_parts.append(RubyPart(text="", offset_ms=0))
-
-        if char_ruby_parts:
-            target_char.set_ruby(Ruby(parts=char_ruby_parts))
+                new_ts.append(abs_ts)
+        ch.timestamps = new_ts
+        ch.set_ruby(Ruby(parts=ruby_parts))
 
 
 def _parse_nicokara_ts_str(ts_str: str) -> Optional[int]:
@@ -937,9 +1100,12 @@ def _parse_reading_with_timestamps(reading: str) -> List[Tuple[str, int]]:
 
     Args:
         reading: 带时间戳的读音，如 "う[00:00:50]ん" 或 "おも,[00:00:50]い"
+                  或连续时间戳 "いっ[00:00:13][00:00:25]しょ"（中间空段对应导出器
+                  补的空白 part / 空 mora）
 
     Returns:
-        [(text, offset_ms), ...] 序列，如 [("う", 0), ("ん", 500)]
+        [(text, offset_ms), ...] 序列；连续时间戳之间会插入 (" ", first_ts) 占位，
+        确保 reading_parts 总数与导出器写入的 mapping 长度一致。
     """
     result: List[Tuple[str, int]] = []
     last_end = 0
@@ -953,6 +1119,13 @@ def _parse_reading_with_timestamps(reading: str) -> List[Tuple[str, int]]:
             text_before = text_before.replace(",", "")
             if text_before:
                 result.append((text_before, pending_offset or 0))
+                pending_offset = None
+        else:
+            # 连续时间戳之间无文本：保留前一个 ts 作为占位空 part
+            # 使用空字符串（""）而非空格——空段语义上无读音字符，
+            # 不应在 round-trip 时被序列化为字面空格（避免出现 `いっ[ts1] [ts2]しょ`）
+            if pending_offset is not None:
+                result.append(("", pending_offset))
                 pending_offset = None
 
         # 解析时间戳
@@ -969,6 +1142,9 @@ def _parse_reading_with_timestamps(reading: str) -> List[Tuple[str, int]]:
         text_after = text_after.replace(",", "")
         if text_after:
             result.append((text_after, pending_offset or 0))
+    elif pending_offset is not None:
+        # 末尾还残留一个 pending ts，作为占位空 part
+        result.append(("", pending_offset))
 
     return result
 
