@@ -370,6 +370,7 @@ class EditorInterface(QWidget):
             "analyze_rubies",
             "delete_rubies_by_type",
             "set_singer_by_line",
+            "timestamps_to_sentence_end",
         ]
         # 默认值兜底（当设置未写入新 schema 时使用）
         defaults = {
@@ -403,6 +404,7 @@ class EditorInterface(QWidget):
             "analyze_rubies": "",
             "delete_rubies_by_type": "",
             "set_singer_by_line": "",
+            "timestamps_to_sentence_end": "",
         }
 
         def _normalize_trigger(raw: str) -> str:
@@ -1994,6 +1996,27 @@ class EditorInterface(QWidget):
             ),
         )
 
+    def _convert_timestamps_to_sentence_end(self):
+        """取消当前字符所有节奏点、清除时间戳并标记为句尾。"""
+        if not self._project:
+            return
+        line_idx, char_idx = self._resolve_target_char()
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
+            return
+        sentence = self._project.sentences[line_idx]
+        if char_idx < 0 or char_idx >= len(sentence.characters):
+            return
+
+        def _mutate():
+            char = sentence.characters[char_idx]
+            char.clear_timestamps()
+            char.set_check_count(0, force=True)
+            if not char.is_sentence_end:
+                char.is_sentence_end = True
+            return line_idx, char_idx, 0, "checkpoints"
+
+        self._execute_structural_edit("时间戳转句尾", _mutate)
+
     def _change_checkpoint(self, delta: int):
         """增加或减少"当前选中字符"的节奏点数量。
 
@@ -2562,6 +2585,8 @@ class EditorInterface(QWidget):
             self._on_delete_rubies_by_type()
         elif action == "set_singer_by_line":
             self._on_set_singer_by_line()
+        elif action == "timestamps_to_sentence_end":
+            self._convert_timestamps_to_sentence_end()
 
     def _on_long_press_timeout(self):
         """长按定时器超时，执行 long 动作。"""

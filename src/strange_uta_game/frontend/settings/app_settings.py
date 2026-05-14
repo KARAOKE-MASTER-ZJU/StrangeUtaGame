@@ -128,6 +128,7 @@ class AppSettings:
                 "delete_rubies_by_type": "",
                 "set_singer_by_line": "",
                 "clear_timestamp": "",
+                "timestamps_to_sentence_end": "",
             },
             # 编辑模式：音乐暂停/停止时生效（以歌词/注音编辑为主）
             "edit_mode": {
@@ -164,6 +165,7 @@ class AppSettings:
                 "delete_rubies_by_type": "",
                 "set_singer_by_line": "",
                 "clear_timestamp": "",
+                "timestamps_to_sentence_end": "",
             },
         },
     }

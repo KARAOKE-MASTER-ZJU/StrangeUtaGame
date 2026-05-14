@@ -123,7 +123,8 @@
       "undo": "CTRL+Z:short",
       "redo": "CTRL+Y:short",
       "save": "CTRL+S:short",
-      "paste_lyrics": "CTRL+V:short"
+      "paste_lyrics": "CTRL+V:short",
+      "timestamps_to_sentence_end": ""
     },
     "edit_mode": {
       "play_pause": "D:short",
@@ -161,7 +162,8 @@
       "undo": "CTRL+Z:short",
       "redo": "CTRL+Y:short",
       "save": "CTRL+S:short",
-      "paste_lyrics": "CTRL+V:short"
+      "paste_lyrics": "CTRL+V:short",
+      "timestamps_to_sentence_end": ""
     },
     "play_pause": "D",
     "stop": "S",
