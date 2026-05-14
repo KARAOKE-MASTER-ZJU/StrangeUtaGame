@@ -131,6 +131,9 @@ class EditorInterface(QWidget):
         # 当 cp 标记被点击时，沿 _on_checkpoint_clicked → move_to_checkpoint →
         # on_checkpoint_moved (signal) → _handle_checkpoint_moved →
         # _apply_checkpoint_position 链路同步执行；此标志使后者跳过
+        # set_current_position，从而不污染"选中字符"光标 (_current_char_idx)。
+        # 区分：selected_cp（cp 标记选中态）vs selected_char（光标/选中字符态）。
+        self._suppress_cp_cursor_move = False
         self._file_loader = FileLoader(self)
         self._mini_singer_manager: Optional[MiniSingerManager] = None
         self._init_ui()
@@ -1783,14 +1786,27 @@ class EditorInterface(QWidget):
         return self._current_line_idx, self.preview._current_char_idx
 
     def _on_checkpoint_clicked(self, line_idx: int, char_idx: int, cp_idx: int):
-        """点击 checkpoint 标记：切换 selected_cp，同步光标到该字符。
+        """点击 checkpoint 标记：仅切换 selected_cp 与音频跳转，不移动光标。
 
         selected_cp（Character.selected_checkpoint_idx + preview._current_checkpoint_idx）
-        与 selected_char（preview._current_char_idx + _focus_*）同步更新。
+        与 selected_char（preview._current_char_idx + _focus_*）是两个独立状态：
+        - 点击 cp 标记 → 仅 selected_cp 改变；selected_char（光标）保持
+        - 点击字符文本 / 方向键 → selected_char（光标）改变
+        - F4/F5/F6/Alt+←→ 等编辑/循环操作 → 作用于 selected_char
+
+        通过临时设置 _suppress_cp_cursor_move 阻止
+        _apply_checkpoint_position 调用 set_current_position。
         """
         if not self._timing_service:
             return
-        self._timing_service.move_to_checkpoint(line_idx, char_idx, cp_idx)
+        self._suppress_cp_cursor_move = True
+        try:
+            self._timing_service.move_to_checkpoint(line_idx, char_idx, cp_idx)
+        finally:
+            self._suppress_cp_cursor_move = False
+        # 同步 focus 和 current 字符到 cp 对应的字符
+        self.preview.set_current_position(line_idx, char_idx)
+        self.preview.set_focus_position(line_idx, char_idx)
         self._update_time_tags_display()
         self._update_status()
 
@@ -2297,7 +2313,14 @@ class EditorInterface(QWidget):
             cand = self._project.find_next_line_with_characters(line_idx)
         if cand < 0:
             return
-        new_line, new_char = cand, 0
+        # 继承当前 char_idx，越界则 clamp 到目标行行尾
+        cur_char = self.preview._focus_char_idx if self.preview._focus_char_idx >= 0 else self.preview._current_char_idx
+        target_chars = sentences[cand].characters
+        if target_chars:
+            new_char = min(cur_char, len(target_chars) - 1)
+        else:
+            new_char = 0
+        new_line = cand
         # 行切换前校验当前行的时间戳
         if new_line != line_idx:
             self._validate_line_timestamps(line_idx)
@@ -2481,6 +2504,8 @@ class EditorInterface(QWidget):
             self._timing_service.move_to_checkpoint(line_idx, char_idx, cp_idx)
             self._update_time_tags_display()
             self._update_status()
+        # 同步 focus 字符到 cp 对应的字符
+        self.preview.set_focus_position(line_idx, char_idx)
 
     def _on_delete_chars_requested(self, line_idx: int, start: int, end: int):
         self._execute_structural_edit(
@@ -3281,9 +3306,12 @@ class EditorInterface(QWidget):
                 self._validate_line_timestamps(self._current_line_idx)
         self._current_line_idx = new_line_idx
         self._update_selected_checkpoint(new_line_idx, position.char_idx, position.checkpoint_idx)
-        # 同步 current 和 focus 到 cp 对应的字符
-        self.preview.set_current_position(new_line_idx, position.char_idx)
-        self.preview.set_focus_position(new_line_idx, position.char_idx)
+        # cp 标记点击路径：跳过光标移动，保持 selected_char 不被污染。
+        # 仍需要刷新 preview 显示以反映新的 selected_cp 高亮。
+        if self._suppress_cp_cursor_move:
+            self.preview._update_display()
+        else:
+            self.preview.set_current_position(new_line_idx, position.char_idx)
         self._update_line_info()
 
     def _show_runtime_error(self, message: str):
