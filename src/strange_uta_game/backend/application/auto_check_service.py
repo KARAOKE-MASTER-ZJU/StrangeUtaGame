@@ -1321,24 +1321,28 @@ class AutoCheckService:
         # find_english_words 基于 sentence.text 的字符索引，与 results 一一对应
         # （analyze_sentence 内 chars 由 split_text(text) 产出，逐字符英文路径保持索引对齐）。
         english_sentence_end_idx: set = set()
+        english_word_end_idx: set = set()  # 所有英文单词结尾索引（不受开关控制）
         check_english_word_end = self._flags.get("check_english_word_end", True)
-        if check_english_word_end:
-            for _start, _end, _word in find_english_words(sentence.text):
-                if _end - _start <= 1:
-                    continue  # 单字母词不强制
-                if _end - 1 < len(results):
+        for _start, _end, _word in find_english_words(sentence.text):
+            if _end - _start <= 1:
+                continue  # 单字母词不强制
+            if _end - 1 < len(results):
+                english_word_end_idx.add(_end - 1)
+                if check_english_word_end:
                     english_sentence_end_idx.add(_end - 1)
 
         new_characters: List[Character] = []
         for i, result in enumerate(results):
             is_last = i == len(results) - 1
             # 空格视为句尾：当前字符后面紧跟空格时额外+1
+            # 当英文单词结尾句尾关闭时，英文单词结尾不受空格规则影响
             is_before_space = (
                 not is_last
                 and check_space_as_line_end
                 and i + 1 < len(results)
                 and len(results[i + 1].char) == 1
                 and results[i + 1].char.isspace()
+                and not (i in english_word_end_idx and not check_english_word_end)
             )
             extra = 0
             is_sentence_end = False
@@ -1788,6 +1792,7 @@ class AutoCheckService:
         # find_english_words 基于 sentence.text 的字符索引，与 sentence.characters 一一对应
         # （文本拆分器对英文走逐字符路径，保持字符-文本索引对齐）。
         english_sentence_end_idx: set[int] = set()
+        english_word_end_idx: set[int] = set()  # 所有英文单词结尾索引（不受开关控制）
         check_english_word_end = self._flags.get("check_english_word_end", True)
         for start, end, word in find_english_words(sentence.text):
             if end - start <= 1:
@@ -1795,8 +1800,10 @@ class AutoCheckService:
             for idx in range(start, end):
                 if idx < len(check_counts):
                     check_counts[idx] = 1 if idx == start else 0
-            if check_english_word_end and end - 1 < len(sentence.characters):
-                english_sentence_end_idx.add(end - 1)
+            if end - 1 < len(sentence.characters):
+                english_word_end_idx.add(end - 1)
+                if check_english_word_end:
+                    english_sentence_end_idx.add(end - 1)
 
         # 更新字符属性
         # 空行（text.strip() 为空）不应被 check_line_end/check_space_as_line_end 强制打句尾 CP
@@ -1808,12 +1815,14 @@ class AutoCheckService:
         for i, char in enumerate(sentence.characters):
             is_last = i == len(sentence.characters) - 1
             # 空格视为句尾：当前字符后面紧跟空格时额外+1
+            # 当英文单词结尾句尾关闭时，英文单词结尾不受空格规则影响
             is_before_space = (
                 not is_last
                 and check_space_as_line_end
                 and i + 1 < len(sentence.characters)
                 and len(chars[i + 1]) == 1
                 and chars[i + 1].isspace()
+                and not (i in english_word_end_idx and not check_english_word_end)
             )
             extra = 0
             is_sentence_end = False
