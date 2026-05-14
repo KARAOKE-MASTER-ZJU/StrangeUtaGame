@@ -2774,9 +2774,15 @@ class EditorInterface(QWidget):
         ext = exporter.file_extension
         file_filter = exporter.file_filter
 
-        base_name = self._project.metadata.title or "untitled"
-        suggested_dir = ""
         store = getattr(self, "_store", None)
+        audio_path = getattr(store, "audio_path", None) if store else None
+        if audio_path:
+            base_name = Path(audio_path).stem
+        elif self._project.metadata.title:
+            base_name = self._project.metadata.title
+        else:
+            base_name = "untitled"
+        suggested_dir = ""
         if store:
             suggested_dir = store.working_dir
         if not suggested_dir:
