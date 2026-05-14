@@ -977,7 +977,7 @@ class SettingsInterface(ScrollArea):
         about_card = SettingCard(
             FIF.INFO,
             "StrangeUtaGame - 歌词打轴软件",
-            "版本 0.3.0 | 由 RhythmicaLyrics 启发",
+            "版本 0.3.1 | 由 RhythmicaLyrics 启发",
             self.about_group,
         )
         self.about_group.addSettingCard(about_card)
