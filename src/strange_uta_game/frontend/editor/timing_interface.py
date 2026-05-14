@@ -2508,24 +2508,27 @@ class EditorInterface(QWidget):
 
         jump_before = getattr(self, "_jump_before_ms", 3000)
         char = sentence.get_character(char_idx)
-        if char:
-            tags = char.all_global_timestamps
-            if tags:
-                target_ms = max(0, tags[0] - jump_before)
-                self._on_seek(target_ms)
 
-        # 同时移动打轴位置到该字符
-        if self._timing_service:
-            self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
-            self._update_time_tags_display()
-            self._update_status()
-        # 清除当前字符的时间戳
-        self._delete_timestamp(line_idx, char_idx)
-        
-        # 删除后自动移动到前一个有时间戳的cp，方便连续删除
-        prev_char = self._find_prev_char_with_cp(line_idx, char_idx)
-        if prev_char:
+        if char and char.all_global_timestamps:
+            # 当前字符有时间戳：删除当前字符时间戳，音频回退3秒，结束
+            target_ms = max(0, char.all_global_timestamps[0] - jump_before)
+            self._on_seek(target_ms)
+            self._delete_timestamp(line_idx, char_idx)
+            if self._timing_service:
+                self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
+                self._update_time_tags_display()
+                self._update_status()
+        else:
+            # 当前字符没有时间戳：找前一个有节奏点的字符
+            prev_char = self._find_prev_char_with_cp(line_idx, char_idx)
+            if not prev_char:
+                return
             prev_line, prev_char_idx, prev_cp_idx = prev_char
+            prev = self._project.sentences[prev_line].get_character(prev_char_idx)
+            if prev and prev.all_global_timestamps:
+                target_ms = max(0, prev.all_global_timestamps[0] - jump_before)
+                self._on_seek(target_ms)
+            self._delete_timestamp(prev_line, prev_char_idx)
             if self._timing_service:
                 self._timing_service.move_to_checkpoint(prev_line, prev_char_idx, prev_cp_idx)
                 self._update_time_tags_display()
