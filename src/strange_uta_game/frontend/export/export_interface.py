@@ -81,7 +81,6 @@ class ExportInterface(QWidget):
 
         self.format_list = QListWidget()
         self.format_list.setMinimumHeight(200)
-        self._populate_formats()
         left_layout.addWidget(self.format_list)
 
         content.addWidget(left_card, 1)
@@ -174,6 +173,9 @@ class ExportInterface(QWidget):
         content.addWidget(right_card, 1)
 
         layout.addLayout(content, 1)
+
+        # 所有控件创建完毕后再填充格式列表（_populate_formats 会访问 btn_tags 等控件）
+        self._populate_formats()
 
     @staticmethod
     def _strip_extension_hint(name: str) -> str:

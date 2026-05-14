@@ -227,6 +227,9 @@ class MainWindow(MSFluentWindow):
         # 切换到设置界面时从磁盘重新加载配置（用户可能通过其他途径修改了配置）
         if hasattr(self, "settingInterface") and interface is self.settingInterface:
             self.settingInterface.reload_from_disk()
+        # 切换到导出界面时同步默认格式及专属控件状态
+        if hasattr(self, "exportInterface") and interface is self.exportInterface:
+            self.exportInterface._sync_default_format()
         # 从打轴界面切换到行编辑界面时，自动跳转到当前行
         if (
             hasattr(self, "editorInterface")
