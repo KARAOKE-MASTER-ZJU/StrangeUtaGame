@@ -67,12 +67,21 @@ class AppSettings:
             "font_size": 24,
             "lyrics_alignment": "left",
             "alignment_margin": 168,
+            "checkpoint_markers": {
+                "cp_first_timed": "▶",
+                "cp_first_empty": "▷",
+                "cp_multi_timed": "▮",
+                "cp_multi_empty": "▯",
+                "cp_sentence_end_timed": "⬟",
+                "cp_sentence_end_empty": "⬠",
+            },
         },
         "export": {
             "default_format": "Nicokara (带注音)",
             "auto_add_extension": True,
             "last_export_dir": "",
             "offset_ms": -230,
+            "software_compensation_ms": -90,
         },
         "ruby_split_mode": "mora",  # 注音分段方式: "direct", "char", "mora"
         "ruby_dictionary": {

@@ -45,6 +45,7 @@ from qfluentwidgets import (
 
 from .app_settings import AppSettings, _parse_rl_dictionary
 from .calibration_dialog import CalibrationCanvas, CalibrationDialog
+from .checkpoint_marker_dialog import CheckpointMarkerDialog
 from .cards import (
     BrowseSettingCard,
     ComboSettingCard,
@@ -584,6 +585,15 @@ class SettingsInterface(ScrollArea):
             new_entries = dialog.get_entries()
             self._settings.save_dictionary(new_entries)
 
+    def _on_open_checkpoint_markers(self):
+        current = self._settings.get("ui.checkpoint_markers", {})
+        dialog = CheckpointMarkerDialog(current, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            markers = dialog.get_markers()
+            self._settings.set("ui.checkpoint_markers", markers)
+            self._settings.save()
+            self.settings_changed.emit()
+
     # ── 界面设定 ──
 
     def _init_ui_group(self):
@@ -675,6 +685,18 @@ class SettingsInterface(ScrollArea):
             items=["左对齐", "居中对齐", "右对齐"],
             parent=self.ui_group,
         )
+        self.card_checkpoint_markers = SettingCard(
+            FIF.FONT_SIZE,
+            "Checkpoint 字符设定",
+            "自定义节奏点标记的显示字符（首节奏点 / 后续 / 句尾，已打轴 / 未打轴）",
+            self.ui_group,
+        )
+        self.btn_cp_markers = PushButton("设置字符", self.card_checkpoint_markers)
+        self.btn_cp_markers.clicked.connect(self._on_open_checkpoint_markers)
+        self.card_checkpoint_markers.hBoxLayout.addWidget(
+            self.btn_cp_markers, 0, Qt.AlignmentFlag.AlignRight
+        )
+        self.card_checkpoint_markers.hBoxLayout.addSpacing(16)
 
         self.ui_group.addSettingCard(self.card_theme)
         self.ui_group.addSettingCard(self.card_font_size)
@@ -685,6 +707,7 @@ class SettingsInterface(ScrollArea):
         self.ui_group.addSettingCard(self.card_line_height_factor)
         self.ui_group.addSettingCard(self.card_alignment_margin)
         self.ui_group.addSettingCard(self.card_lyrics_alignment)
+        self.ui_group.addSettingCard(self.card_checkpoint_markers)
         self.expandLayout.addWidget(self.ui_group)
 
     # ── 导出设定 ──
@@ -717,9 +740,20 @@ class SettingsInterface(ScrollArea):
             "导出文件的默认保存位置",
             parent=self.export_group,
         )
+        self.card_software_compensation = SpinSettingCard(
+            FIF.HISTORY,
+            "软件导出补偿",
+            "导出时给时间戳加上此补偿值（除.sug外的所有格式），负值=提前，正值=延后",
+            min_val=-5000,
+            max_val=5000,
+            step=10,
+            suffix=" ms",
+            parent=self.export_group,
+        )
 
         self.export_group.addSettingCard(self.card_default_format)
         self.export_group.addSettingCard(self.card_export_dir)
+        self.export_group.addSettingCard(self.card_software_compensation)
         self.expandLayout.addWidget(self.export_group)
 
     # ── 快捷键 ──
@@ -1205,6 +1239,7 @@ class SettingsInterface(ScrollArea):
         if export_dir:
             self.card_export_dir.setText(export_dir)
         self.card_export_offset.setValue(self._settings.get("export.offset_ms", 0))
+        self.card_software_compensation.setValue(self._settings.get("export.software_compensation_ms", -90))
 
         # 自动保存
         self.card_auto_save_enabled.setChecked(
@@ -1310,6 +1345,7 @@ class SettingsInterface(ScrollArea):
         if export_dir:
             self._settings.set("export.last_export_dir", export_dir)
         self._settings.set("export.offset_ms", self.card_export_offset.value())
+        self._settings.set("export.software_compensation_ms", self.card_software_compensation.value())
 
         # 自动保存
         self._settings.set("auto_save.enabled", self.card_auto_save_enabled.isChecked())

@@ -530,6 +530,10 @@ class EditorInterface(QWidget):
         cp_size = settings.get("ui.cp_size", 8)
         line_height_factor = settings.get("ui.line_height_factor", 1.20)
         self.preview.set_font_sizes(base_font_size, current_line_size, ruby_size, cp_size, line_height_factor)
+        # 应用 checkpoint 标记字符
+        checkpoint_markers = settings.get("ui.checkpoint_markers", {})
+        if checkpoint_markers:
+            self.preview.set_checkpoint_markers(checkpoint_markers)
         # 更新快捷键提示（#6：只保留 9 项核心）
         self._update_shortcut_hint(timing_actions, edit_actions)
         # #7：打轴按钮文字联动 shortcuts.timing_mode.tag_now
@@ -2525,13 +2529,14 @@ class EditorInterface(QWidget):
 
         if char and char.all_global_timestamps:
             # 当前字符有时间戳：删除当前字符时间戳，音频回退3秒，结束
-            target_ms = max(0, char.all_global_timestamps[0] - jump_before)
-            self._on_seek(target_ms)
-            self._delete_timestamp(line_idx, char_idx)
-            if self._timing_service:
-                self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
-                self._update_time_tags_display()
-                self._update_status()
+            seek_ms = max(0, char.all_global_timestamps[0] - jump_before)
+
+            def _mutate():
+                self._delete_timestamp(line_idx, char_idx)
+                return line_idx, char_idx, 0, "timetags"
+
+            self._execute_structural_edit("删除时间戳", _mutate)
+            self._on_seek(seek_ms)
         else:
             # 当前字符没有时间戳：找前一个有节奏点的字符
             prev_char = self._find_prev_char_with_cp(line_idx, char_idx)
@@ -2539,15 +2544,15 @@ class EditorInterface(QWidget):
                 return
             prev_line, prev_char_idx, prev_cp_idx = prev_char
             prev = self._project.sentences[prev_line].get_character(prev_char_idx)
-            if prev and prev.all_global_timestamps:
-                target_ms = max(0, prev.all_global_timestamps[0] - jump_before)
-                self._on_seek(target_ms)
-            self._delete_timestamp(prev_line, prev_char_idx)
-            if self._timing_service:
-                self._timing_service.move_to_checkpoint(prev_line, prev_char_idx, prev_cp_idx)
-                self._update_time_tags_display()
-                self._update_status()
-            self.preview.set_focus_position(prev_line, prev_char_idx)
+            seek_ms = max(0, prev.all_global_timestamps[0] - jump_before) if prev and prev.all_global_timestamps else None
+
+            def _mutate():
+                self._delete_timestamp(prev_line, prev_char_idx)
+                return prev_line, prev_char_idx, prev_cp_idx, "timetags"
+
+            self._execute_structural_edit("删除时间戳", _mutate)
+            if seek_ms is not None:
+                self._on_seek(seek_ms)
 
     def _on_insert_space_after_requested(self, line_idx: int, char_idx: int):
         if not self._project or line_idx < 0 or line_idx >= len(self._project.sentences):

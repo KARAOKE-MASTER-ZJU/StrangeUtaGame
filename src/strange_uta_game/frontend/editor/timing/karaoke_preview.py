@@ -176,6 +176,16 @@ class KaraokePreview(QWidget):
         self._alignment: str = "center"
         self._alignment_margin: int = 168  # 左/右对齐时的页边距(px)
 
+        # Checkpoint 标记字符（可配置）
+        self._checkpoint_markers: dict[str, str] = {
+            "cp_first_timed": "▶",
+            "cp_first_empty": "▷",
+            "cp_multi_timed": "▮",
+            "cp_multi_empty": "▯",
+            "cp_sentence_end_timed": "⬟",
+            "cp_sentence_end_empty": "⬠",
+        }
+
         # 逐句渲染数据缓存（避免每帧重复计算）
         # 每行有自己的版本号，只有数据改变的行才重新计算
         self._sentence_cache: dict = {}
@@ -483,6 +493,14 @@ class KaraokePreview(QWidget):
         self._visible_lines = max(3, min(15, int(h / line_h)))
 
         # 清除缓存并重绘
+        self._sentence_cache.clear()
+        self._line_versions.clear()
+        self._global_version += 1
+        self.update()
+
+    def set_checkpoint_markers(self, markers: dict[str, str]):
+        """设置 checkpoint 标记字符并刷新缓存。"""
+        self._checkpoint_markers.update(markers)
         self._sentence_cache.clear()
         self._line_versions.clear()
         self._global_version += 1
@@ -913,9 +931,9 @@ class KaraokePreview(QWidget):
                     if is_sentence_end_marker:
                         continue  # 句尾marker不计入普通CP宽度
                     elif cp_idx == 0:
-                        marker_char = "▶" if cp_idx < len(ch_obj.global_timestamps) else "▷"
+                        marker_char = self._checkpoint_markers["cp_first_timed"] if cp_idx < len(ch_obj.global_timestamps) else self._checkpoint_markers["cp_first_empty"]
                     else:
-                        marker_char = "▮" if cp_idx < len(ch_obj.global_timestamps) else "▯"
+                        marker_char = self._checkpoint_markers["cp_multi_timed"] if cp_idx < len(ch_obj.global_timestamps) else self._checkpoint_markers["cp_multi_empty"]
                     total_cp_w += fm_checkpoint.horizontalAdvance(marker_char)
                 char_widths[ci] = max(char_widths[ci], total_cp_w)
             # 句尾字符扩展该字符自身宽度的一半用于放置句尾marker（单独追踪，不混入 char_widths）
@@ -1619,9 +1637,9 @@ class KaraokePreview(QWidget):
                     for cp_idx in range(ch_obj.check_count):
                         has_timed = cp_idx < len(ch_obj.global_timestamps)
                         if cp_idx == 0:
-                            marker_char = "▶" if has_timed else "▷"
+                            marker_char = self._checkpoint_markers["cp_first_timed"] if has_timed else self._checkpoint_markers["cp_first_empty"]
                         else:
-                            marker_char = "▮" if has_timed else "▯"
+                            marker_char = self._checkpoint_markers["cp_multi_timed"] if has_timed else self._checkpoint_markers["cp_multi_empty"]
                         regular_markers.append((cp_idx, marker_char, has_timed))
 
                     # 居中排列普通marker（在原始字符宽度内）
@@ -1663,7 +1681,7 @@ class KaraokePreview(QWidget):
                     if ch_obj.is_sentence_end:
                         se_cp_idx = ch_obj.check_count
                         has_timed = ch_obj.global_sentence_end_ts is not None
-                        marker_char = "⬟" if has_timed else "⬠"
+                        marker_char = self._checkpoint_markers["cp_sentence_end_timed"] if has_timed else self._checkpoint_markers["cp_sentence_end_empty"]
 
                         is_selected = (
                             ch_obj.selected_checkpoint_idx == se_cp_idx

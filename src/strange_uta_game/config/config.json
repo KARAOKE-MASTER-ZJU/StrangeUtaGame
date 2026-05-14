@@ -61,7 +61,15 @@
     "cp_size": 8,
     "line_height_factor": 1.2,
     "lyrics_alignment": "left",
-    "alignment_margin": 168
+    "alignment_margin": 168,
+    "checkpoint_markers": {
+      "cp_first_timed": "▶",
+      "cp_first_empty": "▷",
+      "cp_multi_timed": "▮",
+      "cp_multi_empty": "▯",
+      "cp_sentence_end_timed": "⬟",
+      "cp_sentence_end_empty": "⬠"
+    }
   },
   "export": {
     "default_format": "Nicokara (带注音)",
