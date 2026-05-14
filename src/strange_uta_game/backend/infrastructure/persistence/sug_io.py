@@ -73,7 +73,7 @@ class SugMigrator:
     处理不同版本之间的数据迁移。
     """
 
-    CURRENT_VERSION = "0.3.0" # 实际已更新至0.3.1，但是没有更改数据因此不更改
+    CURRENT_VERSION = "0.3.0" # 实际已更新至0.3.2，但是没有更改数据因此不更改
 
     @classmethod
     def migrate(cls, data: Dict[str, Any], from_version: str) -> Dict[str, Any]:
