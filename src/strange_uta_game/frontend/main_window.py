@@ -155,6 +155,7 @@ class MainWindow(MSFluentWindow):
         self.homeInterface.project_created.connect(self._on_project_created)
         self.homeInterface.project_opened.connect(self._on_project_opened)
         self.homeInterface.project_save_requested.connect(self._on_save_project)
+        self.homeInterface.hide()  # 已废弃，仅保留信号连接
 
         self.editorInterface = EditorInterface(self)
         self.editorInterface.setObjectName("editorInterface")
@@ -168,15 +169,18 @@ class MainWindow(MSFluentWindow):
 
         self.rubyInterface = RubyInterface(self)
         self.rubyInterface.setObjectName("rubyInterface")
+        self.rubyInterface.hide()  # 已废弃，仅保留与 Timing 共用的功能
 
         self.settingInterface = SettingsInterface(self)
         self.settingInterface.setObjectName("settingInterface")
 
         self.editViewInterface = EditInterface(self)
         self.editViewInterface.setObjectName("editViewInterface")
+        self.editViewInterface.hide()  # 已废弃，仅保留与 Timing 共用的功能
 
         self.onlineInterface = OnlineQueryInterface(self)
         self.onlineInterface.setObjectName("onlineInterface")
+        self.onlineInterface.hide()  # 已废弃，占位界面
 
         # 将 store 传递给所有子界面
         self.homeInterface.set_store(self._store)
@@ -192,15 +196,10 @@ class MainWindow(MSFluentWindow):
 
     def _init_navigation(self):
         """初始化侧边栏导航"""
-        # 尝试隐藏主页，不能直接删除有些功能被其他模块服用
-        # self.addSubInterface(self.homeInterface, FIF.HOME, "主页（待移除）") 
+        # 以下 interface 已废弃，仅保留初始化（部分功能被 Timing 界面复用），不注册到侧边栏
         self.addSubInterface(self.editorInterface, FIF.PLAY, "打轴")
-        self.addSubInterface(self.editViewInterface, FIF.EDIT, "行编辑")
         self.addSubInterface(self.exportInterface, FIF.SHARE, "导出")
         self.addSubInterface(self.singerInterface, FIF.PEOPLE, "演唱者")
-        # 尝试废弃掉全文本编辑，不能直接删除有些功能被其他模块服用
-        self.addSubInterface(self.rubyInterface, FIF.FONT, "（已废弃）")
-        self.addSubInterface(self.onlineInterface, FIF.GLOBE, "在线查询")
 
         # 底部
         self.addSubInterface(
@@ -216,57 +215,15 @@ class MainWindow(MSFluentWindow):
     # ==================== 标签页切换 ====================
 
     def switchTo(self, interface):
-        """切换标签页，离开全文本编辑界面时自动应用修改"""
-        if (
-            hasattr(self, "rubyInterface")
-            and self._current_interface is self.rubyInterface
-            and interface is not self.rubyInterface
-            and self.rubyInterface.is_dirty()
-        ):
-            self.rubyInterface._on_apply_changes()
-        # 切换到设置界面时从磁盘重新加载配置（用户可能通过其他途径修改了配置）
+        """切换标签页"""
+        # 切换到设置界面时从磁盘重新加载配置
         if hasattr(self, "settingInterface") and interface is self.settingInterface:
             self.settingInterface.reload_from_disk()
-        # 切换到导出界面时同步默认格式及专属控件状态
+        # 切换到导出界面时同步默认格式
         if hasattr(self, "exportInterface") and interface is self.exportInterface:
             self.exportInterface._sync_default_format()
-        # 从打轴界面切换到行编辑界面时，自动跳转到当前行
-        if (
-            hasattr(self, "editorInterface")
-            and hasattr(self, "editViewInterface")
-            and self._current_interface is self.editorInterface
-            and interface is self.editViewInterface
-        ):
-            line_idx = self.editorInterface._current_line_idx
-            self.editViewInterface.scroll_to_line(line_idx)
-        # #1：从打轴界面切换到全文本编辑界面时，将输入光标跳转到对应字符
-        if (
-            hasattr(self, "editorInterface")
-            and hasattr(self, "rubyInterface")
-            and self._current_interface is self.editorInterface
-            and interface is self.rubyInterface
-        ):
-            line_idx = self.editorInterface._current_line_idx
-            char_idx = 0
-            preview = getattr(self.editorInterface, "preview", None)
-            if preview is not None:
-                char_idx = max(0, int(getattr(preview, "_current_char_idx", 0) or 0))
-            # 注意：rubyInterface 在切换"进入"时会调用 _refresh_display 重置文本，
-            # 因此需要在 super().switchTo 之后再定位光标。
-            self._pending_ruby_jump = (line_idx, char_idx)
-        else:
-            self._pending_ruby_jump = None
         self._current_interface = interface
         super().switchTo(interface)
-        # #1：切到 rubyInterface 之后再定位光标（保证 QPlainTextEdit 已显示）
-        pending = getattr(self, "_pending_ruby_jump", None)
-        if pending is not None and interface is getattr(self, "rubyInterface", None):
-            line_idx, char_idx = pending
-            try:
-                self.rubyInterface.scroll_to_line(line_idx, char_idx)
-            except Exception:
-                pass
-            self._pending_ruby_jump = None
 
     # ==================== 项目操作 ====================
 
