@@ -1032,7 +1032,8 @@ class EditorInterface(QWidget):
                 cmd.redo_position = cursor_pos
                 command_manager.execute(cmd)
 
-            # Rebuild global checkpoints
+            # Reapply global offset & rebuild global checkpoints
+            self._reapply_global_offset()
             if self._timing_service:
                 self._timing_service.rebuild_global_checkpoints()
             self.refresh_lyric_display()
@@ -1094,6 +1095,7 @@ class EditorInterface(QWidget):
                 cmd.redo_position = cursor_pos
                 command_manager.execute(cmd)
 
+            self._reapply_global_offset()
             if self._timing_service:
                 self._timing_service.rebuild_global_checkpoints()
             self.refresh_lyric_display()
@@ -1450,7 +1452,8 @@ class EditorInterface(QWidget):
                 cmd.redo_position = cursor_pos
                 command_manager.execute(cmd)
 
-            # Rebuild global checkpoints
+            # Reapply global offset & rebuild global checkpoints
+            self._reapply_global_offset()
             if self._timing_service:
                 self._timing_service.rebuild_global_checkpoints()
             self.refresh_lyric_display()
@@ -2199,6 +2202,20 @@ class EditorInterface(QWidget):
             else:
                 self._timing_service.rebuild_global_checkpoints()
 
+    def _reapply_global_offset(self) -> None:
+        """将当前全局偏移重新应用到所有字符。
+
+        结构编辑（修改字符、插入导唱符等）会创建新的 Character 对象，
+        其 _global_offset_ms 默认为 0。此方法从 preview 读取当前偏移值
+        并写入所有字符，确保 global_timestamps 与渲染/导出一致。
+        """
+        if not self._project:
+            return
+        offset = self.preview._global_offset_ms
+        for sentence in self._project.sentences:
+            for ch in sentence.characters:
+                ch.set_offset(offset)
+
     def _sync_after_structure_change(
         self,
         change_type: str = "lyrics",
@@ -2209,6 +2226,7 @@ class EditorInterface(QWidget):
         if not self._project:
             return
 
+        self._reapply_global_offset()
         self._rebuild_checkpoints()
 
         total_lines = len(self._project.sentences)
