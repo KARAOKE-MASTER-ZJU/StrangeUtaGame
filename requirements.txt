@@ -1,22 +1,36 @@
-# StrangeUtaGame 开发依赖
+# StrangeUtaGame - 锁定版本（与本地环境一致）
+# 更新方式: pip freeze → 筛选相关包 → 更新此文件
 
-# 核心依赖
-PyQt6>=6.6.0
-PyQt6-Fluent-Widgets>=1.5.0
-sounddevice>=0.4.6
-soundfile>=0.12.1
-pedalboard>=0.9.0
-pykakasi>=2.2.1
-sudachipy>=0.6.0
-sudachidict_core
-av>=12.0.0
+# ── 核心依赖 ──
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.0
+PyQt6_sip==13.11.1
+PyQt6-Fluent-Widgets==1.11.2
+sounddevice==0.5.5
+soundfile==0.13.1
+pedalboard==0.9.22
+numpy==2.4.4
+pykakasi==2.3.0
+sudachipy==0.6.11
+sudachidict-core==20260116
+av==17.0.1
+jaconv==0.5.0
+requests==2.32.5
+urllib3==2.6.1
+charset-normalizer==3.4.4
+certifi==2025.11.12
+idna==3.11
 
-# 测试依赖
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-qt>=4.2.0
+# ── 打包 ──
+pyinstaller==6.19.0
+pyinstaller-hooks-contrib==2026.4
 
-# 代码质量
-black>=23.12.0
-ruff>=0.1.9
-mypy>=1.7.1
+# ── 测试 ──
+pytest==9.0.3
+pytest-cov==7.1.0
+pytest-qt==4.5.0
+
+# ── 代码质量 ──
+black==26.3.1
+ruff==0.15.10
+mypy==1.20.1

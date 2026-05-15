@@ -1,16 +1,5 @@
 name: Release
 
-# 触发条件：推送 ``SUGv*`` tag（如 ``SUGv0.3.3``）即自动出 Release。
-#
-# 工作流职责：
-#   1) 在 Windows runner 上还原 Python + 依赖
-#   2) 同步版本号到 __version__.py
-#   3) 跑 scripts/release.py build（构建 Updater + 主程序 + 打包 + 自检）
-#   4) 从 CHANGELOG.md 抽取对应版本段落
-#   5) 创建 GitHub Release 并上传 zip
-#
-# 如果你只想本地发布，跑 ``python scripts/release.py all X.Y.Z``，不需要本工作流。
-
 on:
   push:
     tags:
@@ -18,27 +7,20 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 X.Y.Z（用于本地手动触发）'
+        description: '版本号 X.Y.Z（用于手动触发）'
         required: true
 
-# 全局 UTF-8：Windows runner 上 Python stdout 默认是 cp1252，会让我们脚本里的
-# 中文 print 直接抛 UnicodeEncodeError。这两个环境变量让 Python 在所有子步骤
-# 里都用 UTF-8 处理 stdout/stderr/打开文件。
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: '1'
 
-# 显式声明本工作流需要的最小权限。
-# 自 2023 年起，GitHub 新建仓库的默认 GITHUB_TOKEN 是「只读」，``softprops/action-gh-release``
-# 创建 Release / 上传 Asset 会被 GitHub API 以 ``403 Resource not accessible by integration``
-# 拒绝。这里显式声明 ``contents: write`` 即可解锁。
 permissions:
   contents: write
 
 jobs:
   build-and-release:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -53,7 +35,6 @@ jobs:
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $v = "${{ inputs.version }}"
           } else {
-            # tag 形如 refs/tags/SUGv0.3.3
             $tag = "${{ github.ref_name }}"
             $v = $tag -replace '^SUGv', ''
           }
@@ -65,17 +46,16 @@ jobs:
           echo "tag=SUGv$v"  >> $env:GITHUB_OUTPUT
           Write-Host "version=$v tag=SUGv$v"
 
-      - name: Set up Python
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
           cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
 
       - name: Sync version
         shell: pwsh
