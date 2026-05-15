@@ -99,13 +99,13 @@ def _write_version(new_version: str) -> None:
 
 _CHANGELOG_PLACEHOLDER = """## [{version}] - {date}
 
-### Added
+### 新增功能
 - *（待补充）*
 
-### Changed
+### 特性改变
 - *（待补充）*
 
-### Fixed
+### 修复项目
 - *（待补充）*
 
 """
@@ -301,6 +301,11 @@ def _verify_release_assets(version: str, dist_root: Path, full_zip: Path) -> Non
     if not updater_in_dist.exists():
         missing.append(str(updater_in_dist.relative_to(ROOT)))
 
+    # strange_uta_game.updater 子包必须被 PyInstaller 收集到位
+    updater_pkg = dist_root / "_internal" / "strange_uta_game" / "updater"
+    if not updater_pkg.is_dir():
+        missing.append(str(updater_pkg.relative_to(ROOT)) + "/  (updater 子包缺失)")
+
     if missing:
         print("  ✗ 自检失败，以下文件缺失：")
         for m in missing:
@@ -319,6 +324,8 @@ def _verify_release_assets(version: str, dist_root: Path, full_zip: Path) -> Non
         print(f"      • {rel}  ({size_mb:.2f} MB)")
     print(f"      • {installed_manifest.relative_to(ROOT)}  (出厂本地清单)")
     print(f"      • {updater_in_dist.relative_to(ROOT)}  (Updater.exe 已就位)")
+    updater_pkg = dist_root / "_internal" / "strange_uta_game" / "updater"
+    print(f"      • {updater_pkg.relative_to(ROOT)}/  (updater 子包，{len(list(updater_pkg.iterdir()))} 文件)")
 
 
 def _run_main_build() -> None:

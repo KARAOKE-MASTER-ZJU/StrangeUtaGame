@@ -43,6 +43,8 @@ from qfluentwidgets import (
     SettingCardGroup,
 )
 
+from strange_uta_game.__version__ import __version__ as _app_version
+
 from .app_settings import AppSettings, _parse_rl_dictionary
 from .calibration_dialog import CalibrationCanvas, CalibrationDialog
 from .checkpoint_marker_dialog import CheckpointMarkerDialog
@@ -1057,7 +1059,7 @@ class SettingsInterface(ScrollArea):
         about_card = SettingCard(
             FIF.INFO,
             "StrangeUtaGame - 歌词打轴软件",
-            "版本 0.3.2 | 由 RhythmicaLyrics 启发",
+            f"版本 v{_app_version}  |  由 RhythmicaLyrics 启发",
             self.about_group,
         )
         self.about_group.addSettingCard(about_card)

@@ -132,6 +132,9 @@ args = [
     # ``ModuleNotFoundError: No module named 'colorsys'`` 的 PyInstaller bootloader
     # 弹窗，对发布是灾难性的。显式声明做兜底。
     "--hidden-import=colorsys",
+    # ── 自动更新模块：settings_interface / main_window 中以 try/except 导入，
+    # PyInstaller 静态分析无法追踪，必须显式收集整个子包。
+    "--collect-submodules=strange_uta_game.updater",
     # 注：不使用 --exclude-module 手动裁剪，让 PyInstaller 自行决定，
     # 避免遗漏运行时通过 importlib / 反射间接加载的模块。
     # 项目使用 PyQt6 + PyQt6-Fluent-Widgets，环境内不应再有 PyQt5。
@@ -201,22 +204,42 @@ print(f"可执行文件位于: {PROJECT_ROOT / 'dist' / 'StrangeUtaGame'}")
 # ── 复制 Updater.exe（如已构建） ───────────────────────────────
 # Updater.exe 由 `python updater_app/build_updater.py` 独立打包，输出至
 # `updater_app/dist/Updater.exe`。本步骤幂等：若产物存在则复制到主程序 dist
-# 同级目录；否则给出提示但不视为打包失败。
+# 同级目录；否则视为打包失败（缺少 Updater 会被用户发现为"没有自动更新"）。
 _updater_src = PROJECT_ROOT / "updater_app" / "dist" / "Updater.exe"
 _updater_dst_dir = PROJECT_ROOT / "dist" / "StrangeUtaGame"
 _updater_dst = _updater_dst_dir / "Updater.exe"
-if _updater_src.exists() and _updater_dst_dir.exists():
-    try:
-        import shutil as _shutil
-        _shutil.copy2(str(_updater_src), str(_updater_dst))
-        print(f"✓ 已复制 Updater.exe → {_updater_dst}")
-    except Exception as _e:
-        print(f"! 复制 Updater.exe 失败: {_e}")
+_updater_found = False
+if _updater_dst_dir.exists():
+    if _updater_src.exists():
+        try:
+            import shutil as _shutil
+            _shutil.copy2(str(_updater_src), str(_updater_dst))
+            print(f"✓ 已复制 Updater.exe → {_updater_dst}")
+            _updater_found = True
+        except Exception as _e:
+            print(f"✗ 复制 Updater.exe 失败: {_e}")
+    else:
+        print(
+            "✗ 未找到 updater_app/dist/Updater.exe。\n"
+            "  自动更新功能不可用。请先运行:\n"
+            "    python updater_app/build_updater.py\n"
+            "  再重新打包主程序。\n"
+            "  若无需自动更新功能，可忽略此警告。"
+        )
+        _updater_found = False
+else:
+    print("! dist/StrangeUtaGame/ 目录不存在，跳过 Updater.exe 复制")
+
+# ── 验证 updater 子包是否被 PyInstaller 收集 ──────────────────────
+_updater_pkg = PROJECT_ROOT / "dist" / "StrangeUtaGame" / "_internal" / "strange_uta_game" / "updater"
+if _updater_pkg.is_dir():
+    _n = len(list(_updater_pkg.iterdir()))
+    print(f"✓ strange_uta_game.updater 子包已收集（{_n} 文件）")
 else:
     print(
-        "! 未找到 updater_app/dist/Updater.exe；"
-        "如需启用自动更新功能，请先运行 `python updater_app/build_updater.py`，"
-        "再重新打包主程序。"
+        "✗ strange_uta_game.updater 子包未被打包！\n"
+        "  这将导致设置界面的"代理"和"更新"卡片消失，版本号不会刷新。\n"
+        "  请确认 build.py 中包含 --collect-submodules=strange_uta_game.updater。"
     )
 
 # 打包后的说明
