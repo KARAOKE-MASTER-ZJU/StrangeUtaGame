@@ -90,6 +90,27 @@ def _anchor_segment(anchors: list[int], current_time: int) -> tuple[int, float, 
     return (n - 1, 1.0, n)
 
 
+def _ink_bounds(fm: QFontMetrics, text: str) -> tuple[int, int]:
+    """返回 ``text`` 在给定字体度量下的墨水边界：``(ink_left, ink_width)``。
+
+    - ``ink_left``：墨水最左像素相对于 ``drawText(x, y, text)`` 中 ``x`` 的偏移
+      （即 ``tightBoundingRect`` 的 ``x()`` 字段）。
+    - ``ink_width``：墨水实际占用的水平像素宽度（即 ``tightBoundingRect.width()``）。
+
+    Qt 的 ``tightBoundingRect`` 返回紧贴墨水的最小包围盒：
+    - x 可能为负（字形墨水越过 origin 左侧，例如斜体 ``f``）；
+    - width 一般 ≤ ``horizontalAdvance(text)``，但极少数斜体场景可能略大；
+    - 对空白字符（U+0020 / U+3000 / NBSP / Tab）通常返回零宽 → 此处保留为 (0, 0)，
+      由调用方决定回退策略（一般直接跳过 wipe 绘制）。
+
+    返回为 int；底层 Qt API 已是 int。
+    """
+    if not text:
+        return (0, 0)
+    rect = fm.tightBoundingRect(text)
+    return (int(rect.x()), int(rect.width()))
+
+
 class KaraokePreview(QWidget):
     """多行歌词预览，带逐字高亮、注音显示和滚动支持。
 
@@ -876,13 +897,23 @@ class KaraokePreview(QWidget):
         characters = sentence.characters
         n_chars = len(chars)
 
-        # 字符像素宽度（初始为字符本身的宽度）
+        # 字符像素宽度（初始为字符本身的 advance width，含侧 bearings/字间距）
+        # 同时计算字符的"墨水"边界（tightBoundingRect）—— wipe 严格按墨水边界裁剪，
+        # 不再扫过字形周围的透明像素或句尾扩展区，确保 wipe 的视觉起止与时间戳一致。
         fm_ruby = self._fm_ruby
         avg_char_w = main_fm.averageCharWidth()
         char_widths = []
+        # char_ink_offsets[ci] = ink_left（相对 drawText 的 x）
+        # char_ink_widths[ci]  = ink 实际像素宽度
+        # 空白字符 ink_width = 0，wipe 时跳过裁剪绘制（视觉上保留空白等待）。
+        char_ink_offsets: list[int] = []
+        char_ink_widths: list[int] = []
         for ci, ch in enumerate(chars):
             char_w = main_fm.horizontalAdvance(ch) if ch != ' ' else avg_char_w
             char_widths.append(char_w)
+            ink_off, ink_w = _ink_bounds(main_fm, ch)
+            char_ink_offsets.append(ink_off)
+            char_ink_widths.append(ink_w)
 
         # ---------- 连词组（仅用于视觉层，与 wipe 计算无关） ----------
         char_groups: list = []
@@ -1095,11 +1126,35 @@ class KaraokePreview(QWidget):
             group_char_pixel_starts[leader_ci] = offsets
             group_char_total_w[leader_ci] = cum
 
+        # ---------- Ruby 整串墨水边界缓存 ----------
+        # 单字符 ruby：以 ruby.text 整串的 tightBoundingRect 为准
+        # 连词组 ruby：以组内所有 ruby.text 拼接后整串的 tightBoundingRect 为准
+        # 返回 (ink_left, ink_width)，wipe 时把 clip 的左边界从 ruby_x 收缩到
+        # ruby_x + ink_left，宽度由 ink_width × ratio 决定。
+        char_ruby_ink: dict[int, tuple[int, int]] = {}
+        group_ruby_ink: dict[int, tuple[int, int]] = {}
+        for ci, ch_obj in enumerate(characters):
+            if ci in linked_leader_groups or ci in linked_non_leader:
+                continue
+            ruby = ch_obj.ruby
+            if ruby and ruby.text:
+                char_ruby_ink[ci] = _ink_bounds(fm_ruby, ruby.text)
+        for leader_ci, group in linked_leader_groups.items():
+            merged_text = ""
+            for _gci in group:
+                _r = characters[_gci].ruby
+                if _r:
+                    merged_text += _r.text
+            if merged_text:
+                group_ruby_ink[leader_ci] = _ink_bounds(fm_ruby, merged_text)
+
         entry = {
             "v": line_version,
             "gv": self._global_version,
             "fk": font_key,
             "char_widths": char_widths,
+            "char_ink_offsets": char_ink_offsets,
+            "char_ink_widths": char_ink_widths,
             "end_sentence_w": end_sentence_w,
             "total_text_width": sum(char_widths) + sum(end_sentence_w.values()),
             "char_wipe_times": char_wipe_times,
@@ -1109,6 +1164,8 @@ class KaraokePreview(QWidget):
             "group_anchors": group_anchors,
             "group_char_pixel_starts": group_char_pixel_starts,
             "group_char_total_w": group_char_total_w,
+            "char_ruby_ink": char_ruby_ink,
+            "group_ruby_ink": group_ruby_ink,
         }
         self._sentence_cache[idx] = entry
         return entry
@@ -1276,6 +1333,8 @@ class KaraokePreview(QWidget):
                 idx, line, main_fm, "cur" if is_current else "ctx"
             )
             char_widths = _rd["char_widths"]
+            _char_ink_offsets = _rd["char_ink_offsets"]
+            _char_ink_widths = _rd["char_ink_widths"]
             _end_sentence_w = _rd["end_sentence_w"]
             total_text_width = _rd["total_text_width"]
             char_wipe_times = _rd["char_wipe_times"]
@@ -1285,6 +1344,8 @@ class KaraokePreview(QWidget):
             _group_anchors = _rd["group_anchors"]
             _group_char_pixel_starts = _rd["group_char_pixel_starts"]
             _group_char_total_w = _rd["group_char_total_w"]
+            _char_ruby_ink = _rd["char_ruby_ink"]
+            _group_ruby_ink = _rd["group_ruby_ink"]
             # 反查表：组员 ci -> leader_ci（用于主文字段判断是否走组总轴）
             _ci_to_leader: dict[int, int] = {}
             for _l_ci, _grp in _linked_leader_groups.items():
@@ -1370,6 +1431,10 @@ class KaraokePreview(QWidget):
                         ruby_text_w = fm_ruby.horizontalAdvance(_merged)
                         ruby_x = curr_x + (_grp_w - ruby_text_w) // 2
                         ruby_y = int(y_center - main_fm.ascent() - self._ruby_spacing)
+                        # Ruby 整串墨水边界（合并后整体 tightBoundingRect）：
+                        # wipe 按墨水起止点裁剪，不再扫过 ruby 首尾的透明侧 bearings。
+                        _r_ink_off, _r_ink_w = _group_ruby_ink.get(char_pos, (0, ruby_text_w))
+                        _r_ink_x = ruby_x + _r_ink_off
                         painter.setFont(font_ruby)
                         painter.setPen(base_color)
                         painter.drawText(int(ruby_x), ruby_y, _merged)
@@ -1388,6 +1453,7 @@ class KaraokePreview(QWidget):
                                 for _r in _grp_rubies:
                                     if _r.parts:
                                         _all_parts.extend(_r.parts)
+                                # 计算整体进度比例 _ratio ∈ [0,1]，再乘 ink 宽度
                                 if len(_all_parts) == _n and _n > 0:
                                     _part_ws = [
                                         fm_ruby.horizontalAdvance(p.text)
@@ -1397,21 +1463,20 @@ class KaraokePreview(QWidget):
                                     if _total_pw > 0:
                                         _cum = sum(_part_ws[:_i])
                                         _local = _part_ws[_i] * _sr
-                                        _rww = int(
-                                            ruby_text_w * (_cum + _local) / _total_pw
-                                        )
+                                        _ratio = (_cum + _local) / _total_pw
                                     else:
-                                        _rww = int(ruby_text_w * (_i + _sr) / _n)
+                                        _ratio = (_i + _sr) / _n
                                 else:
-                                    _rww = int(ruby_text_w * (_i + _sr) / _n)
-                                if _rww >= ruby_text_w:
+                                    _ratio = (_i + _sr) / _n
+                                _rww = int(_r_ink_w * _ratio) if _r_ink_w > 0 else 0
+                                if _ratio >= 1.0:
                                     painter.setPen(_rh)
                                     painter.drawText(int(ruby_x), ruby_y, _merged)
                                 elif _rww > 0:
                                     painter.save()
                                     painter.setClipRect(
                                         QRect(
-                                            int(ruby_x),
+                                            int(_r_ink_x),
                                             ruby_y - fm_ruby.ascent() - 2,
                                             _rww,
                                             fm_ruby.height() + 4,
@@ -1431,12 +1496,12 @@ class KaraokePreview(QWidget):
                                     if _rd > 0
                                     else 1.0
                                 )
-                                if _rr > 0:
+                                if _rr > 0 and _r_ink_w > 0:
                                     painter.save()
-                                    _rww = int(ruby_text_w * _rr)
+                                    _rww = int(_r_ink_w * _rr)
                                     painter.setClipRect(
                                         QRect(
-                                            int(ruby_x),
+                                            int(_r_ink_x),
                                             ruby_y - fm_ruby.ascent() - 2,
                                             _rww,
                                             fm_ruby.height() + 4,
@@ -1470,6 +1535,9 @@ class KaraokePreview(QWidget):
                         ruby_text_w = fm_ruby.horizontalAdvance(_ruby_disp)
                         ruby_x = curr_x + (char_w - ruby_text_w) // 2
                         ruby_y = int(y_center - main_fm.ascent() - self._ruby_spacing)
+                        # Ruby 文本整串墨水边界（含所有假名）
+                        _r_ink_off, _r_ink_w = _char_ruby_ink.get(char_pos, (0, ruby_text_w))
+                        _r_ink_x = ruby_x + _r_ink_off
                         painter.setFont(font_ruby)
                         painter.setPen(base_color)
                         painter.drawText(int(ruby_x), ruby_y, _ruby_disp)
@@ -1481,7 +1549,8 @@ class KaraokePreview(QWidget):
                         if _r_anchors is not None and len(_r_anchors) >= 2:
                             _i, _sr, _n = _anchor_segment(_r_anchors, current_time)
                             if _n > 0:
-                                # 决定每段像素宽：parts 数与段数 N 匹配则按 part 实际像素，否则等分
+                                # 计算整体进度比例 _ratio ∈ [0,1]，再乘 ink 宽度。
+                                # parts 数与段数 N 匹配则按 part 实际 advance 占比，否则等分。
                                 _parts = ruby.parts if ruby.parts else []
                                 if len(_parts) == _n and _n > 0:
                                     _part_ws = [
@@ -1490,27 +1559,22 @@ class KaraokePreview(QWidget):
                                     ]
                                     _total_pw = sum(_part_ws)
                                     if _total_pw > 0:
-                                        # 按 part 像素比例映射回 ruby_text_w（消除 kerning 差异）
                                         _cum = sum(_part_ws[:_i])
                                         _local = _part_ws[_i] * _sr
-                                        r_wipe_w = int(
-                                            ruby_text_w * (_cum + _local) / _total_pw
-                                        )
+                                        _ratio = (_cum + _local) / _total_pw
                                     else:
-                                        r_wipe_w = int(
-                                            ruby_text_w * (_i + _sr) / _n
-                                        )
+                                        _ratio = (_i + _sr) / _n
                                 else:
-                                    # parts 数与 anchor 段数不等 → 按 ruby 文本像素 N 等分
-                                    r_wipe_w = int(ruby_text_w * (_i + _sr) / _n)
-                                if r_wipe_w >= ruby_text_w:
+                                    _ratio = (_i + _sr) / _n
+                                r_wipe_w = int(_r_ink_w * _ratio) if _r_ink_w > 0 else 0
+                                if _ratio >= 1.0:
                                     painter.setPen(ruby_highlight)
                                     painter.drawText(int(ruby_x), ruby_y, _ruby_disp)
                                 elif r_wipe_w > 0:
                                     painter.save()
                                     painter.setClipRect(
                                         QRect(
-                                            int(ruby_x),
+                                            int(_r_ink_x),
                                             ruby_y - fm_ruby.ascent() - 2,
                                             r_wipe_w,
                                             fm_ruby.height() + 4,
@@ -1535,12 +1599,12 @@ class KaraokePreview(QWidget):
                                         if r_dur > 0
                                         else 1.0
                                     )
-                                    if r_ratio > 0:
+                                    if r_ratio > 0 and _r_ink_w > 0:
                                         painter.save()
-                                        r_wipe_w = int(ruby_text_w * r_ratio)
+                                        r_wipe_w = int(_r_ink_w * r_ratio)
                                         painter.setClipRect(
                                             QRect(
-                                                int(ruby_x),
+                                                int(_r_ink_x),
                                                 ruby_y - fm_ruby.ascent() - 2,
                                                 r_wipe_w,
                                                 fm_ruby.height() + 4,
@@ -1607,19 +1671,28 @@ class KaraokePreview(QWidget):
                         painter.setPen(base_color)
                         painter.drawText(int(char_draw_x), int(y_center), ch)
 
-                        painter.save()
-                        _esw = _end_sentence_w.get(char_pos, 0)
-                        wipe_w = int((char_w + _esw) * wipe_ratio)
-                        clip_rect = QRect(
-                            int(curr_x),
-                            int(y_center - main_fm.ascent() - 5),
-                            wipe_w,
-                            main_fm.height() + 10,
-                        )
-                        painter.setClipRect(clip_rect)
-                        painter.setPen(char_highlight)
-                        painter.drawText(int(char_draw_x), int(y_center), ch)
-                        painter.restore()
+                        # 按字形墨水（ink）边界裁剪，而非 advance box：
+                        # - 起点 = char_draw_x + ink_left（字形真正起墨像素列）
+                        # - 终点 = 起点 + ink_width × ratio（字形墨水终止像素列）
+                        # 这样 wipe 不会扫过字符左右两侧的透明侧 bearings；
+                        # 句尾扩展区（_esw）只用于放置 marker，不再参与 wipe。
+                        ink_w = _char_ink_widths[char_pos]
+                        if ink_w > 0:
+                            ink_off = _char_ink_offsets[char_pos]
+                            painter.save()
+                            wipe_w = int(ink_w * wipe_ratio)
+                            clip_rect = QRect(
+                                int(char_draw_x + ink_off),
+                                int(y_center - main_fm.ascent() - 5),
+                                wipe_w,
+                                main_fm.height() + 10,
+                            )
+                            painter.setClipRect(clip_rect)
+                            painter.setPen(char_highlight)
+                            painter.drawText(int(char_draw_x), int(y_center), ch)
+                            painter.restore()
+                        # ink_w == 0（空格/全角空格/NBSP/Tab 等空白字符）：
+                        # 没有可见墨水，跳过 clip 绘制，wipe 期间保持 base_color 即可。
                     else:
                         # 未唱 → 基色
                         painter.setPen(base_color)
@@ -1656,11 +1729,8 @@ class KaraokePreview(QWidget):
                             marker_char = self._checkpoint_markers["cp_multi_timed"] if has_timed else self._checkpoint_markers["cp_multi_empty"]
                         regular_markers.append((cp_idx, marker_char, has_timed))
 
-                    # 居中排列普通marker（在原始字符宽度内）
-                    total_regular_w = sum(
-                        fm_checkpoint.horizontalAdvance(m[1]) for m in regular_markers
-                    )
-                    mx = curr_x + (char_w - total_regular_w) // 2
+                    # 左对齐排列普通marker（在原始字符宽度内）
+                    mx = curr_x
                     marker_y = int(y_center + main_fm.descent() + 14)
 
                     for cp_idx, marker_char, has_timed in regular_markers:

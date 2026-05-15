@@ -1256,7 +1256,7 @@ class SettingsInterface(ScrollArea):
         if export_dir:
             self.card_export_dir.setText(export_dir)
         self.card_export_offset.setValue(self._settings.get("export.offset_ms", 0))
-        self.card_software_compensation.setValue(self._settings.get("export.software_compensation_ms", -90))
+        self.card_software_compensation.setValue(self._settings.get("export.software_compensation_ms", 0))
         self.card_nicokara_pause_char.setValue(self._settings.get("export.nicokara_pause_char", "^"))
 
         # 自动保存

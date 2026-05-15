@@ -511,7 +511,7 @@ class EditorInterface(QWidget):
         self.transport.edit_speed.setText(f"{max(20, min(200, speed_pct))}%")
         self.transport.edit_speed.blockSignals(False)
         # 应用渲染偏移（与导出偏移联动）
-        render_offset = settings.get("export.offset_ms", -100)
+        render_offset = settings.get("export.offset_ms", 0)
         self.preview.set_global_offset(render_offset)
         # 同步工具栏偏移控件
         self.toolbar.edit_offset.blockSignals(True)
@@ -3121,7 +3121,7 @@ class EditorInterface(QWidget):
             format_name,
             file_path,
             offset_ms=settings.get("export.offset_ms", 0),
-            software_compensation_ms=settings.get("export.software_compensation_ms", -90),
+            software_compensation_ms=settings.get("export.software_compensation_ms", 0),
         )
         if result.success:
             settings.set("export.last_export_dir", str(Path(file_path).parent))

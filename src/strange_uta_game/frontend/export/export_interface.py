@@ -242,7 +242,7 @@ class ExportInterface(QWidget):
     def _get_software_compensation(self) -> int:
         """从设置中获取软件导出补偿（毫秒）。"""
         settings = AppSettings()
-        return settings.get("export.software_compensation_ms", -90)
+        return settings.get("export.software_compensation_ms", 0)
 
     def set_store(self, store):
         """接入 ProjectStore 统一数据中心。"""

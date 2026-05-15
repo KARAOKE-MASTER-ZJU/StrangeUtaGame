@@ -81,8 +81,8 @@ class AppSettings:
             "default_format": "Nicokara (带注音)",
             "auto_add_extension": True,
             "last_export_dir": "",
-            "offset_ms": -230,
-            "software_compensation_ms": -90,
+            "offset_ms": -390,
+            "software_compensation_ms": 0,
             "nicokara_pause_char": "^",
         },
         "ruby_split_mode": "mora",  # 注音分段方式: "direct", "char", "mora"
