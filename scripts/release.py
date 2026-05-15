@@ -203,18 +203,122 @@ def _run_python(script: Path, args: Optional[list] = None) -> int:
     return subprocess.call(cmd, cwd=str(ROOT))
 
 
-def _ensure_updater_exe() -> None:
-    """确保 Updater.exe 已构建；不存在则尝试构建。"""
-    if UPDATER_EXE.exists():
-        size_mb = UPDATER_EXE.stat().st_size / 1024 / 1024
-        print(f"  ✓ 已存在 Updater.exe ({size_mb:.1f} MB)")
+def _updater_sources_max_mtime() -> float:
+    """返回 ``updater_app/`` 下所有 ``.py`` 文件的最大 mtime。
+
+    用于和现有 ``Updater.exe`` 的 mtime 做比较 —— 源代码改过就需要重打，否则
+    release 出去的 zip 里 Updater.exe 还是旧的，新加的功能（manifest/sha256 等）
+    都不会生效。
+    """
+    src_dir = ROOT / "updater_app"
+    mtimes: List[float] = []
+    for p in src_dir.rglob("*.py"):
+        # 跳过 build/ dist/ 等产物目录，只看源码
+        rel = p.relative_to(src_dir)
+        if rel.parts and rel.parts[0] in {"build", "dist"}:
+            continue
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError:
+            pass
+    return max(mtimes) if mtimes else 0.0
+
+
+def _ensure_updater_exe(force: bool = False) -> None:
+    """确保 ``Updater.exe`` 存在且不落后于源代码。
+
+    判定规则：
+    1. 若不存在 → 重打
+    2. 若 ``--rebuild-updater`` 强制 → 重打
+    3. 若 ``updater_app/`` 任一 .py 文件的 mtime 比 ``Updater.exe`` 新 → 重打
+    4. 否则跳过
+
+    踩过的坑：之前只检查存在性，导致改完 ``updater_app/main.py`` 后 release.py
+    仍然用旧的 Updater.exe，发出去的版本不带新功能。
+    """
+    if force:
+        print("  ! --rebuild-updater 强制重打 Updater.exe …")
+        _do_rebuild_updater()
         return
-    print("  ! 未发现 updater_app/dist/Updater.exe，开始构建 …")
+
+    if not UPDATER_EXE.exists():
+        print("  ! 未发现 updater_app/dist/Updater.exe，开始构建 …")
+        _do_rebuild_updater()
+        return
+
+    exe_mtime = UPDATER_EXE.stat().st_mtime
+    src_mtime = _updater_sources_max_mtime()
+    if src_mtime > exe_mtime:
+        import datetime as _dt
+        exe_dt = _dt.datetime.fromtimestamp(exe_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        src_dt = _dt.datetime.fromtimestamp(src_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"  ! Updater.exe 已过期（exe mtime={exe_dt}, 源码 mtime={src_dt}），"
+            f"重新打包 Updater.exe …"
+        )
+        _do_rebuild_updater()
+        return
+
+    size_mb = UPDATER_EXE.stat().st_size / 1024 / 1024
+    print(f"  ✓ 已存在 Updater.exe，源码未更新（{size_mb:.1f} MB）")
+
+
+def _do_rebuild_updater() -> None:
     rc = _run_python(UPDATER_BUILD)
     if rc != 0:
         raise SystemExit(f"构建 Updater 失败，退出码 {rc}")
     if not UPDATER_EXE.exists():
         raise SystemExit("构建似乎完成，但未在 updater_app/dist 下找到 Updater.exe")
+
+
+def _verify_release_assets(version: str, dist_root: Path, full_zip: Path) -> None:
+    """打完 build 后立刻自检每个产物是否到位，让"漏写文件"在 push 之前暴露。
+
+    任一缺失直接 SystemExit；这样 cmd_build 失败用户能马上看到，不会带病发布。
+    """
+    parent = full_zip.parent
+    required_release_assets = [
+        full_zip,
+        full_zip.with_name(full_zip.name + ".sha256"),
+        parent / f"StrangeUtaGame-v{version}-app.zip",
+        parent / f"StrangeUtaGame-v{version}-app.zip.sha256",
+        parent / f"StrangeUtaGame-v{version}-runtime.zip",
+        parent / f"StrangeUtaGame-v{version}-runtime.zip.sha256",
+        parent / f"manifest-v{version}.json",
+    ]
+    missing: List[str] = []
+    for p in required_release_assets:
+        if not p.exists():
+            missing.append(str(p.relative_to(ROOT)))
+
+    # dist 内的"出厂本地清单"也必须存在
+    installed_manifest = dist_root / "_internal" / ".installed_manifest.json"
+    if not installed_manifest.exists():
+        missing.append(str(installed_manifest.relative_to(ROOT)))
+
+    # Updater.exe 必须随主程序一起到位
+    updater_in_dist = dist_root / "Updater.exe"
+    if not updater_in_dist.exists():
+        missing.append(str(updater_in_dist.relative_to(ROOT)))
+
+    if missing:
+        print("  ✗ 自检失败，以下文件缺失：")
+        for m in missing:
+            print(f"      • {m}")
+        raise SystemExit(
+            "构建产物不完整。常见原因：在 release.py build 之后又单独跑了一次 "
+            "`python build.py`，PyInstaller --noconfirm 会清空 dist/StrangeUtaGame/ "
+            "把 .installed_manifest.json 等文件一并删除。"
+        )
+
+    # 把每个产物的 sha256 摘要打一下，便于排错
+    print("  ✓ 所有发布资产就绪：")
+    for p in required_release_assets:
+        rel = p.relative_to(ROOT)
+        size_mb = p.stat().st_size / 1024 / 1024
+        print(f"      • {rel}  ({size_mb:.2f} MB)")
+    print(f"      • {installed_manifest.relative_to(ROOT)}  (出厂本地清单)")
+    print(f"      • {updater_in_dist.relative_to(ROOT)}  (Updater.exe 已就位)")
 
 
 def _run_main_build() -> None:
@@ -426,10 +530,10 @@ def _dump_release_notes(version: str) -> Optional[Path]:
     return notes_path
 
 
-def cmd_build() -> int:
+def cmd_build(rebuild_updater: bool = False) -> int:
     version = _read_version()
     print(f"== build for v{version} ==")
-    _ensure_updater_exe()
+    _ensure_updater_exe(force=rebuild_updater)
     _run_main_build()
 
     # 关键顺序：
@@ -459,8 +563,17 @@ def cmd_build() -> int:
 
     notes_path = _dump_release_notes(version)
 
+    # ── 完整性自检 ── 一次性把"漏写文件"的所有踩坑都消灭在 release 之前
+    print()
+    print("[step] 完整性自检 ...")
+    _verify_release_assets(version, dist_root=MAIN_DIST, full_zip=zip_path)
+
     print()
     print("✓ 打包完成。请手动执行后续步骤：")
+    print()
+    print("⚠ 重要：不要再单独跑 `python build.py`，那会清空 dist/StrangeUtaGame/，")
+    print("   把刚刚写入的 _internal/.installed_manifest.json 一并删除。")
+    print("   `scripts/release.py build` 内部已经会调 PyInstaller 完成主程序构建。")
     print()
     print(f"  git add -A")
     print(f'  git commit -m "release v{version}"')
@@ -489,7 +602,7 @@ def cmd_build() -> int:
     return 0
 
 
-def cmd_all(version: str) -> int:
+def cmd_all(version: str, rebuild_updater: bool = False) -> int:
     rc = cmd_prepare(version)
     if rc != 0:
         return rc
@@ -500,7 +613,7 @@ def cmd_all(version: str) -> int:
     if answer not in ("y", "yes"):
         print("已取消 build。")
         return 0
-    return cmd_build()
+    return cmd_build(rebuild_updater=rebuild_updater)
 
 
 # ───────────────────────── entry ─────────────────────────
@@ -517,10 +630,20 @@ def main(argv: Optional[list] = None) -> int:
     sp_extract.add_argument("version", help="版本号 X.Y.Z")
     sp_extract.add_argument("-o", "--output", type=Path, default=None)
 
-    sub.add_parser("build", help="跑完整构建（Updater + 主程序 + zip）")
+    sp_build = sub.add_parser("build", help="跑完整构建（Updater + 主程序 + zip）")
+    sp_build.add_argument(
+        "--rebuild-updater",
+        action="store_true",
+        help="强制重新打包 Updater.exe，即便源码 mtime 未变（用于排查/确认）",
+    )
 
     sp_all = sub.add_parser("all", help="prepare + build")
     sp_all.add_argument("version", help="版本号 X.Y.Z")
+    sp_all.add_argument(
+        "--rebuild-updater",
+        action="store_true",
+        help="强制重新打包 Updater.exe",
+    )
 
     args = p.parse_args(argv)
     if args.cmd == "prepare":
@@ -528,9 +651,9 @@ def main(argv: Optional[list] = None) -> int:
     if args.cmd == "extract-notes":
         return cmd_extract_notes(args.version, args.output)
     if args.cmd == "build":
-        return cmd_build()
+        return cmd_build(rebuild_updater=args.rebuild_updater)
     if args.cmd == "all":
-        return cmd_all(args.version)
+        return cmd_all(args.version, rebuild_updater=args.rebuild_updater)
     p.print_help()
     return 1
 

@@ -45,6 +45,13 @@
   支持 ###/列表/链接/`代码`/代码块等 GFM 主要语法。
 
 ### Fixed
+- **`Updater.exe` 不会被重新打包 → 新功能（manifest/sha256/增量）永远不生效**：
+  之前 `scripts/release.py` 的 `_ensure_updater_exe()` 只检查 `Updater.exe` 是否
+  存在，不检查 `updater_app/main.py` 等源码是否更新。结果：第一次 release.py
+  打出 Updater.exe 后，后续即便改了 Updater 代码、再跑 release.py，Updater.exe
+  也**绝不**会被重打 —— 发布出去的 zip 里永远是历史上第一次打的旧 Updater。
+  改为：比较 `updater_app/**/*.py` 的最大 mtime 与 `Updater.exe` 的 mtime，前者
+  更新就强制重打。同时新增 `--rebuild-updater` CLI 选项做显式强制重打。
 - **主程序在更新时不会真正退出 → Updater 备份 `_internal` 失败 (WinError 5)**：
   之前用 `QApplication.quit()` 退出，遇到脏项目数据、modal 弹窗、未结束的
   QThread 时不会真退出，导致 Updater 拿不到 `_internal` 写权限。改为新增
