@@ -321,7 +321,7 @@ class SugProjectParser:
     @staticmethod
     def _project_to_dict(project: Project) -> Dict[str, Any]:
         """将 Project 对象转换为当前版本字典"""
-        return {
+        result = {
             "version": SugMigrator.CURRENT_VERSION,
             "id": project.id,
             "metadata": {
@@ -350,6 +350,10 @@ class SugProjectParser:
                 SugProjectParser._sentence_to_dict(s) for s in project.sentences
             ],
         }
+        # 仅当global_offset_ms有值时才写入（兼容性考虑）
+        if project.global_offset_ms is not None:
+            result["global_offset_ms"] = project.global_offset_ms
+        return result
 
     @staticmethod
     def _sentence_to_dict(sentence: Sentence) -> Dict[str, Any]:
@@ -429,12 +433,17 @@ class SugProjectParser:
             sentences.append(sentence)
 
         # 创建项目
+        # 检查global_offset_ms字段是否存在（兼容旧版.sug）
+        global_offset_raw = data.get("global_offset_ms")
+        global_offset_ms = int(global_offset_raw) if global_offset_raw is not None else None
+
         project = Project(
             id=data.get("id") or str(uuid4()),
             singers=singers,
             sentences=sentences,
             metadata=metadata,
             audio_duration_ms=int(data.get("audio_duration_ms", 0)),
+            global_offset_ms=global_offset_ms,
         )
 
         return project

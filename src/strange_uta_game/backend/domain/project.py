@@ -81,6 +81,7 @@ class Project:
     singers: List[Singer] = field(default_factory=list)
     metadata: ProjectMetadata = field(default_factory=ProjectMetadata)
     audio_duration_ms: int = 0
+    global_offset_ms: Optional[int] = None
 
     def __post_init__(self) -> None:
         if not self.id:

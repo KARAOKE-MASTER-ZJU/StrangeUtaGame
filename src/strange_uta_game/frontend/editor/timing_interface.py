@@ -519,6 +519,7 @@ class EditorInterface(QWidget):
         self.toolbar.edit_offset.blockSignals(False)
         # 将偏移量写入所有字符的渲染/导出时间戳
         if self._project:
+            self._project.global_offset_ms = render_offset
             for sentence in self._project.sentences:
                 for ch in sentence.characters:
                     ch.set_offset(render_offset)
@@ -603,6 +604,9 @@ class EditorInterface(QWidget):
             app_settings.save()
         except Exception:
             pass
+        # 同步到Project对象
+        if self._project:
+            self._project.global_offset_ms = offset_ms
         # 更新所有字符的偏移时间戳
         if self._project:
             for sentence in self._project.sentences:
@@ -614,11 +618,28 @@ class EditorInterface(QWidget):
     def set_project(self, project: Project):
         self._project = project
         self.preview.set_project(project)
-        # 应用当前渲染/导出偏移到新加载项目的所有字符
-        offset = self.preview._global_offset_ms
+        # 从项目读取全局偏移，若为None则使用config中的值（兼容旧版.sug）
+        offset = project.global_offset_ms
+        if offset is None:
+            try:
+                from strange_uta_game.frontend.settings.settings_interface import (
+                    AppSettings,
+                )
+                app_settings = AppSettings()
+                offset = app_settings.get("export.offset_ms", 0)
+            except Exception:
+                offset = 0
+            # 写入project，保存时旧sug自动升级
+            project.global_offset_ms = offset
+        # 应用偏移到所有字符
         for sentence in project.sentences:
             for ch in sentence.characters:
                 ch.set_offset(offset)
+        # 更新预览和工具栏
+        self.preview.set_global_offset(offset)
+        self.toolbar.edit_offset.blockSignals(True)
+        self.toolbar.edit_offset.setText(str(offset))
+        self.toolbar.edit_offset.blockSignals(False)
         self._apply_checkpoint_position(
             self._timing_service.get_current_position()
             if self._timing_service
@@ -2212,6 +2233,7 @@ class EditorInterface(QWidget):
         if not self._project:
             return
         offset = self.preview._global_offset_ms
+        self._project.global_offset_ms = offset
         for sentence in self._project.sentences:
             for ch in sentence.characters:
                 ch.set_offset(offset)
