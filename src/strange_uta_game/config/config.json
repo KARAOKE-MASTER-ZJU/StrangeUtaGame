@@ -30,6 +30,7 @@
     "auto_on_load": true,
     "check_n": false,
     "check_sokuon": false,
+    "check_long_vowel": true,
     "check_parentheses": true,
     "check_empty_lines": false,
     "check_line_start": true,
