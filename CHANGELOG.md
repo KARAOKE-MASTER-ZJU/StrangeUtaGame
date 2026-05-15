@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.6] - 2026-05-16
+
+### Added
+- **什么都没改纯粹测试自动更新**
+
+### Changed
+- *（待补充）*
+
+### Fixed
+- *（待补充）*
+
+
 > 本文件维护 StrangeUtaGame 的发布历史。
 >
 > **每发一版**：在文件顶部新增一段（推荐用 `scripts/release.py prepare X.Y.Z`
