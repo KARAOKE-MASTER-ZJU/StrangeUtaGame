@@ -163,11 +163,17 @@ def launch_updater(plan: LaunchPlan) -> LaunchResult:
 
     args = plan.command_args(temp_copy, os.getpid())
 
-    # Windows 下，把 Updater 作为完全独立的进程启动 —— 否则主程序退出会拖死它。
+    # Windows 下，必须给 Updater 一个**可见的新控制台**（不能用 DETACHED_PROCESS）：
+    #
+    # * ``DETACHED_PROCESS (0x08)``  会让进程完全无控制台，print/log 全部消失 —— 用户
+    #   什么都看不到，万一报错也无从排查。
+    # * ``CREATE_NEW_CONSOLE (0x10)`` 为新进程开一个独立 cmd 窗口（与主程序解耦），
+    #   用户能实时看到下载进度与错误信息。这才符合"控制台 UI Updater"的设计意图。
+    # * ``CREATE_NEW_PROCESS_GROUP (0x200)`` 让新进程独立于父进程的进程组，
+    #   主程序退出时不会连带把 Updater 杀掉。
     flags = 0
     if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        flags = 0x00000008 | 0x00000200
+        flags = 0x00000010 | 0x00000200  # CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
 
     try:
         proc = subprocess.Popen(  # noqa: S603 — 受信任的本地 EXE
@@ -175,10 +181,10 @@ def launch_updater(plan: LaunchPlan) -> LaunchResult:
             close_fds=True,
             cwd=str(plan.app_dir),
             creationflags=flags,
-            # 显式继承父进程 stdio 也无害，但完全断开更稳：
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            # 不接管 Updater 的 stdio —— 让它的新控制台自己管，否则即便有窗口也看不到内容。
+            stdin=None,
+            stdout=None,
+            stderr=None,
         )
     except OSError as e:
         return LaunchResult(

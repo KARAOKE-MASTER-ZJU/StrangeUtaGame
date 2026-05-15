@@ -70,7 +70,26 @@ def main() -> int:
         "--hidden-import=charset_normalizer",
         "--hidden-import=idna",
         "--hidden-import=certifi",
-        # 默认排除主程序的重型依赖，缩小体积
+        # ── 易被 PyInstaller `--exclude-module` 副作用漏掉的标准库 ───────────
+        # `colorsys` 等是非常小的纯 Python 模块，但 PyInstaller 在分析
+        # excluded-package 的子依赖时偶尔会过激；为安全起见全部显式声明。
+        "--hidden-import=colorsys",
+        "--hidden-import=encodings",
+        "--hidden-import=encodings.idna",
+        "--hidden-import=encodings.utf_8",
+        "--hidden-import=encodings.utf_8_sig",
+        "--hidden-import=encodings.cp1252",
+        "--hidden-import=encodings.cp437",
+        "--hidden-import=encodings.cp65001",
+        "--hidden-import=encodings.gbk",
+        "--hidden-import=encodings.mbcs",
+        "--hidden-import=hashlib",
+        "--hidden-import=zipfile",
+        "--hidden-import=tempfile",
+        "--hidden-import=ssl",
+        "--hidden-import=_ssl",
+        # ── 排除主程序的重型依赖，缩小体积 ──
+        # 注意：不要 exclude PyQt6 子模块以外的间接小标准库（colorsys 等）
         "--exclude-module=PyQt6",
         "--exclude-module=qfluentwidgets",
         "--exclude-module=numpy",

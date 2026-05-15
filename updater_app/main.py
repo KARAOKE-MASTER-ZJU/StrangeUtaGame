@@ -423,6 +423,8 @@ def launch_main_app(app_dir: Path, app_exe: str, log: logging.Logger) -> bool:
         return False
     log.info("启动新版本: %s", exe_path)
     try:
+        # 启动主程序：主程序是 GUI 应用（PyInstaller --windowed），不需要新建控制台。
+        # 同时与 Updater 解耦，避免我们关闭 Updater 控制台时把它一并杀掉。
         flags = 0
         if sys.platform == "win32":
             # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
@@ -545,5 +547,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     return run(args)
 
 
+def _fatal_pause(exc: BaseException) -> int:
+    """顶层未处理异常的兜底：把堆栈打到控制台并 ``pause``，让用户能看到。"""
+    import traceback
+    try:
+        print()
+        print("=" * 60)
+        print("FATAL: Updater 顶层未处理异常")
+        print("=" * 60)
+        traceback.print_exception(exc)
+        print()
+        print(f"日志（如有）位于：%TEMP%/{TMP_DIR_NAME}/updater.log")
+        print("按回车键退出 ...")
+        try:
+            input()
+        except EOFError:
+            time.sleep(10)
+    except Exception:
+        # 连 print 都失败说明 stdout 都没了 —— 静默退出
+        pass
+    return 99
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    # 顶层全局 catch：即便 ``main()`` 漏抛了什么也至少让用户看见错误
+    # （PyInstaller bootloader 阶段的 import 错误 catch 不住，那由控制台
+    # 一闪而过显示；运行时所有错误本兜底都能接住）。
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as _exc:  # noqa: BLE001 — 这里是最末端兜底
+        sys.exit(_fatal_pause(_exc))

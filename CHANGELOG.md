@@ -15,9 +15,18 @@
 - （在这里写未发布的新增内容…）
 
 ### Changed
-- （在这里写未发布的改动内容…）
+- 更新弹窗的 changelog 改为用 `QTextEdit.setMarkdown` 渲染 Markdown，
+  支持 ###/列表/链接/`代码`/代码块等 GFM 主要语法。
 
 ### Fixed
+- **Updater.exe 启动后看不到任何输出**：之前用 `DETACHED_PROCESS` flag
+  让 Updater 完全无控制台，所有 `print` / 报错都被吞掉。改为
+  `CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP`，启动一个独立 cmd 窗口
+  让用户看到下载进度与错误。
+- **Updater.exe 报 `No module named 'colorsys'`**：PyInstaller 在
+  `--exclude-module=qfluentwidgets/PyQt6` 的副作用下把一些标准库小模块也
+  一并 exclude。给 `build_updater.py` 显式 `--hidden-import=colorsys` 以及
+  `encodings.*`、`hashlib`、`zipfile`、`ssl` 等易漏标准库做兜底。
 - **GitHub Actions 创建 Release 时 403 失败**：默认 `GITHUB_TOKEN` 只读，
   `softprops/action-gh-release` 无法创建 Release。
   解决：`.github/workflows/release.yml` 顶部声明 `permissions: contents: write`。

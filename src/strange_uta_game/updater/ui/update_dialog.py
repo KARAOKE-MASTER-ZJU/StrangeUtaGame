@@ -74,16 +74,26 @@ class UpdateAvailableDialog(MessageBoxBase):
             src_line.setStyleSheet("color: #888;")
             self.viewLayout.addWidget(src_line)
 
-        # changelog
+        # changelog —— 使用 Qt 原生 ``setMarkdown`` 渲染 GitHub Release body 的 Markdown。
+        # 该 API 在 Qt 5.14+ 可用，PyQt6 全面支持；覆盖 #/##、列表、链接、行内代码、
+        # 代码块等绝大多数 GFM 语法，零额外依赖。
         changelog_label = BodyLabel("更新内容：", self)
         self.viewLayout.addWidget(changelog_label)
 
         body_view = TextEdit(self)
         body_view.setReadOnly(True)
-        body_view.setMinimumHeight(220)
-        body_view.setMinimumWidth(500)
+        body_view.setMinimumHeight(260)
+        body_view.setMinimumWidth(560)
         body_view.setFont(QFont("Microsoft YaHei", 10))
-        body_view.setPlainText(release.body.strip() or "（发布说明为空）")
+        body_text = release.body.strip()
+        if body_text:
+            try:
+                body_view.setMarkdown(body_text)
+            except Exception:
+                # 极端情况下 setMarkdown 失败 → 退回 setPlainText
+                body_view.setPlainText(body_text)
+        else:
+            body_view.setPlainText("（发布说明为空）")
         self.viewLayout.addWidget(body_view)
 
         # 链接到 release 页面
