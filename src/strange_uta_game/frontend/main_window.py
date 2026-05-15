@@ -75,6 +75,10 @@ class MainWindow(MSFluentWindow):
         # 失败/无网时静默跳过，绝不阻塞主流程。
         QTimer.singleShot(2500, self._check_for_app_update)
 
+        # 由 updater 流程主动设置；closeEvent 检测到此标志即 bypass dirty 弹窗，
+        # 走"兜底保存 + 直接退出"路径。
+        self._force_quitting = False
+
     @staticmethod
     def _find_icon_path() -> Optional[str]:
         """查找应用图标路径（兼容开发环境和 PyInstaller 打包环境）。"""
@@ -475,7 +479,9 @@ class MainWindow(MSFluentWindow):
                 duration=3500,
                 parent=self,
             )
-            QTimer.singleShot(1200, QApplication.quit)
+            # 用强制退出而非 ``QApplication.quit()`` —— 后者遇到脏项目、modal、
+            # 未停的 QThread 时不一定真退出，会让 Updater 卡在 _internal 锁住。
+            QTimer.singleShot(1200, self.request_force_quit)
         except Exception:
             import logging
             logging.getLogger(__name__).warning(
@@ -682,7 +688,29 @@ class MainWindow(MSFluentWindow):
             self._save_worker = None
 
     def closeEvent(self, e):
-        """关闭窗口时检查未保存变更并退出"""
+        """关闭窗口时检查未保存变更并退出。
+
+        ``self._force_quitting=True`` 时由 :meth:`request_force_quit` 设置，
+        表示当前流程是 updater 触发的硬退出 —— 不弹"未保存"对话框，改为
+        把脏数据兜底写到临时文件（next 启动会触发"闪退恢复"机制），然后立刻退出。
+        """
+        if self._force_quitting:
+            # 兜底保存（脏数据写到 .cache/.untitled.sug.temp 或 .项目名.sug.temp）
+            try:
+                if self._store.dirty:
+                    self._store._do_periodic_save()
+            except Exception:
+                pass
+            # 释放编辑器资源（音频引擎等）
+            if hasattr(self, "editorInterface"):
+                try:
+                    self.editorInterface.release_resources()
+                except Exception:
+                    pass
+            QApplication.quit()
+            e.accept()
+            return
+
         if self._store.dirty:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Question)
@@ -714,3 +742,26 @@ class MainWindow(MSFluentWindow):
             self.editorInterface.release_resources()
         QApplication.quit()
         e.accept()
+
+    def request_force_quit(self) -> None:
+        """立即退出主程序（由 updater 流程调用）。
+
+        步骤：
+
+        1. 置位 ``_force_quitting`` 标志（影响 :meth:`closeEvent` 行为）；
+        2. 调 :meth:`close` 触发 closeEvent —— 由于 ``_force_quitting=True``，会
+           bypass "未保存更改"对话框，自动把脏数据兜底写到 .cache 下的临时文件
+           （主程序下次启动会触发"闪退恢复"流程）；
+        3. closeEvent 内部已经 `QApplication.quit()`；
+        4. 兜底：调度一个 250ms 后的 ``os._exit(0)`` 硬退出，防止 Qt 事件循环
+           因为残留 QThread / Modal 未处理事件而拒绝退出 —— 那会导致 Updater
+           备份 ``_internal`` 时拿不到写权限。
+        """
+        import os as _os
+        self._force_quitting = True
+        try:
+            self.close()
+        except Exception:
+            pass
+        # 给 Qt 一点时间走完 close 流程；超时强制退出
+        QTimer.singleShot(250, lambda: _os._exit(0))

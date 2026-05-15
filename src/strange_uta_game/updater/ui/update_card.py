@@ -366,8 +366,22 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
 
 
 def _quit_app() -> None:
-    """安全退出 Qt 应用。"""
+    """触发主窗口的 :meth:`request_force_quit`，确保进程真正退出。
+
+    ``app.quit()`` 在 Qt 中只是请求事件循环退出，遇到 modal 对话框 / 未结束的
+    QThread / 脏项目数据时可能不生效 —— 用户实测过"主程序未自动退出，导致
+    Updater 无法替换 _internal"。改为找到 MainWindow 实例直接调用强制退出方法。
+    """
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance()
-    if app is not None:
-        app.quit()
+    if app is None:
+        return
+    for w in app.topLevelWidgets():
+        if hasattr(w, "request_force_quit"):
+            try:
+                w.request_force_quit()  # type: ignore[attr-defined]
+                return
+            except Exception:
+                pass
+    # 兜底：找不到主窗口就调 quit
+    app.quit()

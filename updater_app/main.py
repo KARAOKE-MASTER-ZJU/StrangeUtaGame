@@ -76,6 +76,13 @@ DEFAULT_USER_AGENT = "StrangeUtaGame-Updater/standalone"
 
 # 等待主程序退出的总时长（秒）
 WAIT_PID_TIMEOUT = 30.0
+# tasklist 探测到 PID 消失后，再宽限多久让 Windows 完全释放 DLL/_internal 文件句柄。
+# 即便主进程已"退出"，Win 内核清理 DLL 句柄、Defender 实时扫描等都可能让短时间内的
+# 文件操作返回 Access Denied。
+POST_EXIT_GRACE_SECONDS = 2.0
+# 备份 / 覆盖 _internal 时遇到 PermissionError 的最大重试次数与间隔。
+FILE_LOCK_RETRY_COUNT = 6
+FILE_LOCK_RETRY_INTERVAL = 1.5
 
 
 # ───────────────────────── 数据结构 ─────────────────────────
@@ -179,16 +186,52 @@ def setup_logger(log_path: Path) -> logging.Logger:
 
 
 def wait_for_pid_exit(pid: int, log: logging.Logger, timeout: float = WAIT_PID_TIMEOUT) -> bool:
-    """等待指定 PID 退出。"""
+    """等待指定 PID 退出，并在其后宽限 :data:`POST_EXIT_GRACE_SECONDS` 秒。"""
     log.info("等待主程序退出 (PID=%d)...", pid)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _is_pid_alive(pid):
-            log.info("主程序已退出")
+            log.info("主程序进程已结束")
+            # 关键：tasklist 报告 PID 消失，并不等于 Windows 已经释放 DLL/_internal 的
+            # 文件句柄。给 OS 一点宽限时间，否则后续 rename _internal 会拿到 ERROR_ACCESS_DENIED。
+            log.info("等待文件句柄释放（%.1fs）...", POST_EXIT_GRACE_SECONDS)
+            time.sleep(POST_EXIT_GRACE_SECONDS)
             return True
         time.sleep(0.4)
     log.warning("等待主程序退出超时 (%.0fs)，将强制继续", timeout)
     return False
+
+
+def _retry_on_permission_error(
+    op_desc: str,
+    func,  # type: ignore[no-untyped-def]
+    log: logging.Logger,
+    max_retries: int = FILE_LOCK_RETRY_COUNT,
+    interval: float = FILE_LOCK_RETRY_INTERVAL,
+):  # type: ignore[no-untyped-def]
+    """在遇到 PermissionError / WinError 5 时重试给定操作。
+
+    Windows 的文件锁释放是异步的：主进程"退出"后，DLL 句柄可能仍被内核挂着
+    一两秒；杀毒软件也会临时锁住新文件。多次重试通常能在几秒内成功。
+    """
+    last_exc: BaseException = OSError("no attempt made")
+    for attempt in range(1, max_retries + 1):
+        try:
+            return func()
+        except PermissionError as e:
+            last_exc = e
+        except OSError as e:
+            # WinError 5 (拒绝访问) / 32 (文件被占用) 同样视为可重试
+            if getattr(e, "winerror", None) in (5, 32):
+                last_exc = e
+            else:
+                raise
+        log.warning(
+            "%s 第 %d/%d 次失败：%s；%.1fs 后重试…",
+            op_desc, attempt, max_retries, last_exc, interval,
+        )
+        time.sleep(interval)
+    raise last_exc
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -259,7 +302,8 @@ def try_download_from_sources(
     args: Args,
     download_path: Path,
     log: logging.Logger,
-) -> bool:
+) -> tuple[bool, str]:
+    """逐个尝试 ``args.urls`` 下载 zip；返回 ``(成功?, 命中的 URL)``。"""
     proxies = {"http": args.proxy_url, "https": args.proxy_url} if args.proxy_url else None
     if proxies:
         log.info("使用代理: %s", args.proxy_url)
@@ -269,9 +313,48 @@ def try_download_from_sources(
         if ok:
             log.info("[%s] 下载成功 (%.1f MB)",
                      source_id, download_path.stat().st_size / 1024 / 1024)
-            return True
+            return True, url
         log.warning("[%s] 失败: %s", source_id, err)
-    return False
+    return False, ""
+
+
+def try_fetch_sha256(success_url: str, proxies: Optional[dict], log: logging.Logger) -> str:
+    """主动尝试拉取与 zip 同源的 ``<url>.sha256`` 文件并解析摘要。
+
+    发布流程会在 zip 同目录上传 ``StrangeUtaGame-vX.Y.Z.zip.sha256`` 资产（格式
+    ``<64位hex>  文件名\\n``，coreutils ``sha256sum`` 兼容）。本函数：
+
+    * 用 ``<成功的 zip URL> + ".sha256"`` 拼接 sha256 URL —— 因为 GitHub Release
+      所有资产都在同一目录下，镜像源（ghproxy / fastgit）也透传相同路径；
+    * 取首个连续 64 位十六进制子串作为摘要，对换行 / 行尾空格 / 大小写宽容；
+    * 任何失败都返回 ``""``，由上游降级为"跳过校验"。
+    """
+    if not success_url:
+        return ""
+    sha_url = success_url + ".sha256"
+    log.info("尝试拉取 SHA-256 校验: %s", sha_url)
+    try:
+        resp = requests.get(
+            sha_url,
+            headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "*/*"},
+            proxies=proxies,
+            timeout=(5, 15),
+            allow_redirects=True,
+        )
+    except requests.RequestException as e:
+        log.warning("SHA-256 拉取失败（将跳过校验）: %s", e)
+        return ""
+    if resp.status_code != 200:
+        log.warning("SHA-256 文件 HTTP %s（将跳过校验）", resp.status_code)
+        return ""
+    import re as _re
+    m = _re.search(r"\b([0-9a-fA-F]{64})\b", resp.text)
+    if not m:
+        log.warning("SHA-256 文件内容无法解析（将跳过校验）")
+        return ""
+    digest = m.group(1).lower()
+    log.info("拿到 SHA-256: %s", digest)
+    return digest
 
 
 def verify_sha256(file_path: Path, expected_hex: str, log: logging.Logger) -> bool:
@@ -344,18 +427,24 @@ def apply_update(
     if not new_internal.exists() or not new_internal.is_dir():
         return False, f"更新包中找不到 {internal_name}/"
 
-    # 备份 _internal
+    # 备份 _internal —— 用重试包裹，应对 Windows 异步释放 DLL 句柄的常见延迟
     backup_internal = app_dir / f"{internal_name}.bak"
     cur_internal = app_dir / internal_name
     if backup_internal.exists():
         log.info("清理旧备份: %s", backup_internal)
         shutil.rmtree(backup_internal, ignore_errors=True)
     if cur_internal.exists():
+        log.info("备份 %s → %s", cur_internal.name, backup_internal.name)
         try:
-            log.info("备份 %s → %s", cur_internal.name, backup_internal.name)
-            os.rename(str(cur_internal), str(backup_internal))
+            _retry_on_permission_error(
+                f"备份 {internal_name}",
+                lambda: os.rename(str(cur_internal), str(backup_internal)),
+                log,
+            )
         except OSError as e:
-            return False, f"备份 {internal_name} 失败: {e}（可能仍被占用）"
+            return False, (
+                f"备份 {internal_name} 失败: {e}（主程序可能仍未完全释放文件句柄）"
+            )
 
     # 备份 EXE
     cur_exe = app_dir / app_exe
@@ -367,9 +456,13 @@ def apply_update(
             pass
     exe_was_present = cur_exe.exists()
     if exe_was_present:
+        log.info("备份 %s → %s", cur_exe.name, backup_exe.name)
         try:
-            log.info("备份 %s → %s", cur_exe.name, backup_exe.name)
-            os.rename(str(cur_exe), str(backup_exe))
+            _retry_on_permission_error(
+                "备份 EXE",
+                lambda: os.rename(str(cur_exe), str(backup_exe)),
+                log,
+            )
         except OSError as e:
             # 回滚 _internal
             try:
@@ -379,12 +472,20 @@ def apply_update(
                 pass
             return False, f"备份 EXE 失败: {e}（主程序可能未完全退出）"
 
-    # 写入新内容
+    # 写入新内容 —— 同样带重试
+    log.info("写入新 %s/", internal_name)
     try:
-        log.info("写入新 %s/", internal_name)
-        shutil.copytree(str(new_internal), str(cur_internal))
+        _retry_on_permission_error(
+            f"写入 {internal_name}",
+            lambda: shutil.copytree(str(new_internal), str(cur_internal)),
+            log,
+        )
         log.info("写入新 %s", app_exe)
-        shutil.copy2(str(new_exe), str(cur_exe))
+        _retry_on_permission_error(
+            f"写入 {app_exe}",
+            lambda: shutil.copy2(str(new_exe), str(cur_exe)),
+            log,
+        )
     except (OSError, shutil.Error) as e:
         log.error("写入新文件失败，尝试回滚: %s", e)
         # 回滚
@@ -474,11 +575,17 @@ def run(args: Args) -> int:
     if not args.urls:
         log.error("未提供任何下载 URL")
         return _exit_with_pause(2)
-    if not try_download_from_sources(args, download_path, log):
+    ok, success_url = try_download_from_sources(args, download_path, log)
+    if not ok:
         log.error("所有源均下载失败")
         return _exit_with_pause(3)
 
-    # 3. 校验
+    # 3. 校验 —— 如果命令行未传 --sha256，尝试自动从同源 .sha256 资产拉取
+    if not args.sha256:
+        proxies = (
+            {"http": args.proxy_url, "https": args.proxy_url} if args.proxy_url else None
+        )
+        args.sha256 = try_fetch_sha256(success_url, proxies, log)
     if not verify_sha256(download_path, args.sha256, log):
         log.error("校验失败")
         return _exit_with_pause(4)

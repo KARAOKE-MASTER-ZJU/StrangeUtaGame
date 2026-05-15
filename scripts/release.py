@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import re
 import shutil
 import subprocess
@@ -237,6 +238,23 @@ def _pack_zip(version: str) -> Path:
     return zip_path
 
 
+def _write_sha256(target: Path) -> Path:
+    """为 ``target`` 生成同名 ``.sha256`` 文件，与 sha256sum / coreutils 兼容。
+
+    格式：``<64位十六进制>  <文件名>\\n``。Updater 拿到后用 regex 抽前 64 个 hex
+    字符做校验，对换行 / 行尾空格容忍。
+    """
+    h = hashlib.sha256()
+    with open(target, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    digest = h.hexdigest().lower()
+    sha_path = target.with_name(target.name + ".sha256")
+    sha_path.write_text(f"{digest}  {target.name}\n", encoding="ascii")
+    print(f"  ✓ {sha_path.name}  (sha256={digest})")
+    return sha_path
+
+
 def _dump_release_notes(version: str) -> Optional[Path]:
     try:
         notes = _extract_section(version)
@@ -256,6 +274,7 @@ def cmd_build() -> int:
     _ensure_updater_exe()
     _run_main_build()
     zip_path = _pack_zip(version)
+    sha_path = _write_sha256(zip_path)
     notes_path = _dump_release_notes(version)
 
     print()
@@ -272,6 +291,7 @@ def cmd_build() -> int:
     if notes_path:
         print(f"  - body：直接复制 {notes_path.relative_to(ROOT)} 全文")
     print(f"  - 资产：上传 {zip_path.relative_to(ROOT)}")
+    print(f"           以及 {sha_path.relative_to(ROOT)}（Updater 会自动校验）")
     return 0
 
 

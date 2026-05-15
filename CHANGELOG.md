@@ -16,11 +16,28 @@
 ### Added
 - （在这里写未发布的新增内容…）
 
+### Added
+- **发布资产自动生成 `.zip.sha256` 校验文件**：`scripts/release.py build` 与
+  GitHub Actions workflow 都会同时输出 `StrangeUtaGame-vX.Y.Z.zip.sha256`
+  （sha256sum / coreutils 兼容格式），并随 Release 一并上传。Updater 拿到主
+  zip 后会自动按 `<zip-url>.sha256` 拉取同源的校验文件做完整性校验；找不到
+  就降级为"跳过校验"，与旧版本向后兼容。
+
 ### Changed
 - 更新弹窗的 changelog 改为用 `QTextEdit.setMarkdown` 渲染 Markdown，
   支持 ###/列表/链接/`代码`/代码块等 GFM 主要语法。
 
 ### Fixed
+- **主程序在更新时不会真正退出 → Updater 备份 `_internal` 失败 (WinError 5)**：
+  之前用 `QApplication.quit()` 退出，遇到脏项目数据、modal 弹窗、未结束的
+  QThread 时不会真退出，导致 Updater 拿不到 `_internal` 写权限。改为新增
+  `MainWindow.request_force_quit()` —— bypass "未保存"对话框，把脏数据兜底
+  写到 `.cache` 临时文件，250ms 内 `os._exit(0)` 硬退出。
+- **Updater 在 PID 消失后立刻动手 → 文件句柄未释放报 Access Denied**：
+  Windows 内核释放 DLL/`_internal` 句柄是异步的，主进程 "退出" 后还会
+  hold 文件锁一两秒。Updater 现在在 `wait_for_pid_exit` 后**再宽限 2 秒**，
+  且对 `os.rename` / `shutil.copytree` 等关键操作做最多 6 次、每次 1.5s 的
+  `PermissionError` 重试。
 - **Updater.exe 启动后看不到任何输出**：之前用 `DETACHED_PROCESS` flag
   让 Updater 完全无控制台，所有 `print` / 报错都被吞掉。改为
   `CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP`，启动一个独立 cmd 窗口
