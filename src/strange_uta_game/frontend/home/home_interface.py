@@ -453,8 +453,13 @@ class HomeInterface(QWidget):
                 auto_check_flags = app_settings.get_all().get("auto_check", {})
                 if auto_check_flags.get("auto_on_load", True):
                     user_dict = app_settings.load_dictionary()
+                    annotate_katakana_with_english = app_settings.get(
+                        "ruby_dictionary.annotate_katakana_with_english", False
+                    )
                     auto_check = AutoCheckService(
-                        auto_check_flags=auto_check_flags, user_dictionary=user_dict
+                        auto_check_flags=auto_check_flags,
+                        user_dictionary=user_dict,
+                        annotate_katakana_with_english=annotate_katakana_with_english,
                     )
                     auto_check.apply_to_project(project, only_noruby=True)
 

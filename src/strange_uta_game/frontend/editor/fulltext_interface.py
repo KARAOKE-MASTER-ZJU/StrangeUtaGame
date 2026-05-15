@@ -507,8 +507,13 @@ class RubyInterface(QWidget):
         all_settings = app_settings.get_all()
         auto_check_flags = all_settings.get("auto_check", {})
         user_dict = app_settings.load_dictionary()
+        annotate_katakana_with_english = app_settings.get(
+            "ruby_dictionary.annotate_katakana_with_english", False
+        )
         return AutoCheckService(
-            auto_check_flags=auto_check_flags, user_dictionary=user_dict
+            auto_check_flags=auto_check_flags,
+            user_dictionary=user_dict,
+            annotate_katakana_with_english=annotate_katakana_with_english,
         )
 
     # ==================== 批量操作 ====================

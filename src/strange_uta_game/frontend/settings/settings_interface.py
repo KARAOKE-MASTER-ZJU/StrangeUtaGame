@@ -580,7 +580,15 @@ class SettingsInterface(ScrollArea):
         dict_card.hBoxLayout.addSpacing(16)
         self.dict_card = dict_card
 
+        self.card_annotate_katakana_with_english = SwitchSettingCard(
+            FIF.LANGUAGE,
+            "根据用户词典给片假名标注英文",
+            "开启后，用户词典中纯片假名词条或读音为英文的词条将被应用；关闭时拦截这类词条",
+            parent=self.dictionary_group,
+        )
+
         self.dictionary_group.addSettingCard(self.dict_card)
+        self.dictionary_group.addSettingCard(self.card_annotate_katakana_with_english)
         self.expandLayout.addWidget(self.dictionary_group)
 
     def _on_open_dictionary(self):
@@ -1220,6 +1228,11 @@ class SettingsInterface(ScrollArea):
             self._settings.get("auto_check.delete_ruby_types", [])
         )
 
+        # 读音词典
+        self.card_annotate_katakana_with_english.setChecked(
+            self._settings.get("ruby_dictionary.annotate_katakana_with_english", False)
+        )
+
         # 界面设定
         theme_value = self._settings.get("ui.theme", "auto")
         theme_idx = {"auto": 0, "light": 1, "dark": 2}.get(theme_value, 0)
@@ -1323,6 +1336,12 @@ class SettingsInterface(ScrollArea):
         self._settings.set(
             "auto_check.delete_ruby_types",
             self.card_delete_ruby_types.selectedValues(),
+        )
+
+        # 读音词典
+        self._settings.set(
+            "ruby_dictionary.annotate_katakana_with_english",
+            self.card_annotate_katakana_with_english.isChecked(),
         )
 
         # 界面设定

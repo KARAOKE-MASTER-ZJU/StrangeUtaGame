@@ -82,7 +82,8 @@
   },
   "ruby_split_mode": "mora",
   "ruby_dictionary": {
-    "enabled": true
+    "enabled": true,
+    "annotate_katakana_with_english": false
   },
   "dictionary_version": 1,
   "nicokara_tags": {

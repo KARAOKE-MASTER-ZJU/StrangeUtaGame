@@ -590,8 +590,13 @@ class FileLoader:
             app_settings = AppSettings()
             auto_check_flags = app_settings.get_all().get("auto_check", {})
             user_dict = app_settings.load_dictionary()
+            annotate_katakana_with_english = app_settings.get(
+                "ruby_dictionary.annotate_katakana_with_english", False
+            )
             auto_check = AutoCheckService(
-                auto_check_flags=auto_check_flags, user_dictionary=user_dict
+                auto_check_flags=auto_check_flags,
+                user_dictionary=user_dict,
+                annotate_katakana_with_english=annotate_katakana_with_english,
             )
             auto_check.update_checkpoints_for_project(
                 self._project, preserve_ruby_segments=True

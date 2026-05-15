@@ -3713,8 +3713,13 @@ class EditorInterface(QWidget):
             app_settings = AppSettings()
             auto_check_flags = app_settings.get_all().get("auto_check", {})
             user_dict = app_settings.load_dictionary()
+            annotate_katakana_with_english = app_settings.get(
+                "ruby_dictionary.annotate_katakana_with_english", False
+            )
             auto_check = AutoCheckService(
-                auto_check_flags=auto_check_flags, user_dictionary=user_dict
+                auto_check_flags=auto_check_flags,
+                user_dictionary=user_dict,
+                annotate_katakana_with_english=annotate_katakana_with_english,
             )
             # apply_user_dict=False：先分析注音，推迟用户词典覆盖（Phase 5）
             # 到按类型删除注音之后，确保用户词典不会被删除操作误删

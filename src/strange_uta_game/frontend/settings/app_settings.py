@@ -88,6 +88,7 @@ class AppSettings:
         "ruby_split_mode": "mora",  # 注音分段方式: "direct", "char", "mora"
         "ruby_dictionary": {
             "enabled": True,
+            "annotate_katakana_with_english": False,
         },
         "nicokara_tags": {
             "title": "",

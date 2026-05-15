@@ -170,15 +170,18 @@ class AutoCheckService:
         ruby_analyzer: Optional[RubyAnalyzer] = None,
         auto_check_flags: Optional[Dict[str, Any]] = None,
         user_dictionary: Optional[List[Dict[str, Any]]] = None,
+        annotate_katakana_with_english: bool = False,
     ):
         """
         Args:
             ruby_analyzer: 注音分析器（如果为 None 则自动创建）
             auto_check_flags: 自动打勾过滤标志
             user_dictionary: 用户读音词典，格式 [{"enabled": bool, "word": str, "reading": str}, ...]
+            annotate_katakana_with_english: 是否根据用户词典给片假名标注英文
         """
         self._analyzer = ruby_analyzer or create_analyzer()
         self._flags = auto_check_flags or {}
+        self._annotate_katakana_with_english = annotate_katakana_with_english
         # 用户词典：保留词典数组顺序（上方条目优先级最高）。
         # 在 apply_to_sentence 末尾以子串严格匹配方式覆盖 Character[]，
         # 因此本字段仅用于 Phase 5 覆盖，不再参与 analyze_sentence 阶段。
@@ -1513,6 +1516,30 @@ class AutoCheckService:
             if len(per_char_parts) != len(word):
                 # 解析出的字符数与 word 不符，跳过
                 continue
+
+            # 检查是否需要拦截：当 annotate_katakana_with_english 为 False 时
+            if not self._annotate_katakana_with_english:
+                # 检查条件1：word 是否含有汉字/平假名（含小平假名），有则放行
+                has_kanji_or_hira = any(
+                    "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u309f"
+                    for c in word
+                )
+                if not has_kanji_or_hira:
+                    # word 中无汉字/平假名 → 视为纯片假名词条，拦截
+                    # 检查条件2：reading 中的 ruby 部分是否只有英文、空格和结构化修饰符
+                    all_ruby_parts = []
+                    for parts in per_char_parts:
+                        all_ruby_parts.extend(parts)
+
+                    if all_ruby_parts:
+                        is_english_only = all(
+                            all(c.isascii() and (c.isalpha() or c.isspace() or c == "|") for c in part)
+                            for part in all_ruby_parts
+                        )
+                        if is_english_only:
+                            continue  # 拦截英文读音的片假名词条
+                    else:
+                        continue  # ruby 为空的纯片假名词条也拦截
 
             # 找所有不重叠出现位置（贪心从左到右）
             search_from = 0
