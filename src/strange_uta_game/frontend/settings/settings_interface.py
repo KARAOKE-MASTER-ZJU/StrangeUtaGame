@@ -498,6 +498,7 @@ class SettingsInterface(ScrollArea):
             items=[
                 ("check_n", "「ん/ン」check"),
                 ("check_sokuon", "促音check"),
+                ("check_long_vowel", "长音符号check"),
                 ("small_kana", "小写假名check"),
                 ("check_parentheses", "括号内文字check"),
                 ("checkpoint_on_punctuation", "标点参与节奏点"),
@@ -820,6 +821,7 @@ class SettingsInterface(ScrollArea):
         ("apply_singer", FIF.PEOPLE, "应用演唱者", "为选中字符设置演唱者", "", "", "both", None, None, False),
         ("timestamps_to_sentence_end", FIF.TAG, "时间戳转句尾", "取消所有节奏点、清除时间戳并标记为句尾", "", "", "both", None, None, False),
         ("quick_export", FIF.SHARE, "快捷导出", "使用默认导出格式快速导出到文件", "", "", "both", None, None, False),
+        ("insert_space", FIF.ADD, "插入空格", "在当前字符后插入空格", "M:short", "M:short", "both", None, None, False),
         # — 硬编码按键（仅用于冲突检测，不可编辑） —
         ("undo", FIF.CANCEL, "撤销", "撤销操作", "CTRL+Z:short", "CTRL+Z:short", "both", None, None, True),
         ("redo", FIF.SYNC, "重做", "重做操作", "CTRL+Y:short", "CTRL+Y:short", "both", None, None, True),

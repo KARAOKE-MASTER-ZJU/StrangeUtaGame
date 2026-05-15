@@ -48,6 +48,7 @@ class AppSettings:
             "auto_on_load": True,
             "check_n": False,
             "check_sokuon": False,
+            "check_long_vowel": True,
             "check_parentheses": True,
             "check_empty_lines": False,
             "check_line_start": False,
@@ -155,6 +156,7 @@ class AppSettings:
                 "clear_timestamp": "",
                 "timestamps_to_sentence_end": "",
                 "quick_export": "",
+                "insert_space": "M:short",
             },
             # 编辑模式：音乐暂停/停止时生效（以歌词/注音编辑为主）
             "edit_mode": {
@@ -195,6 +197,7 @@ class AppSettings:
                 "clear_timestamp": "",
                 "timestamps_to_sentence_end": "",
                 "quick_export": "",
+                "insert_space": "M:short",
             },
         },
     }

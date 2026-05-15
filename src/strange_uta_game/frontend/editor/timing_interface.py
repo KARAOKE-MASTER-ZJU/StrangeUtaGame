@@ -388,6 +388,7 @@ class EditorInterface(QWidget):
             "apply_singer",
             "timestamps_to_sentence_end",
             "quick_export",
+            "insert_space",
         ]
         # 默认值兜底（当设置未写入新 schema 时使用）
         defaults = {
@@ -425,6 +426,7 @@ class EditorInterface(QWidget):
             "apply_singer": "",
             "timestamps_to_sentence_end": "",
             "quick_export": "",
+            "insert_space": "M",
         }
 
         def _normalize_trigger(raw: str) -> str:
@@ -2284,6 +2286,32 @@ class EditorInterface(QWidget):
         )
         return True
 
+    def _register_timestamp_undo(
+        self,
+        before_sentences: list,
+        focus_line_idx: int,
+        focus_char_idx: int,
+        description: str,
+    ) -> None:
+        """手动注册撤销命令（不走 _sync_after_structure_change）。"""
+        if not self._project:
+            return
+        after_sentences = deepcopy(self._project.sentences)
+        command_manager = None
+        if self._timing_service:
+            command_manager = self._timing_service.command_manager
+        if command_manager is not None:
+            command = SentenceSnapshotCommand(
+                self._project,
+                before_sentences,
+                after_sentences,
+                description,
+            )
+            undo_pos = (self._current_line_idx, self.preview._current_char_idx)
+            command.undo_position = undo_pos
+            command.redo_position = (focus_line_idx, focus_char_idx)
+            command_manager.execute(command)
+
     def _delete_char_range(
         self, line_idx: int, start_idx: int, end_idx: int
     ) -> Optional[tuple[int, int, Optional[int], str]]:
@@ -2765,15 +2793,17 @@ class EditorInterface(QWidget):
         jump_before = getattr(self, "_jump_before_ms", 3000)
         char = sentence.get_character(char_idx)
 
+        before_sentences = deepcopy(self._project.sentences)
+
         if char and char.all_global_timestamps:
             # 当前字符有时间戳：删除当前字符时间戳，音频回退3秒，结束
             seek_ms = max(0, char.all_global_timestamps[0] - jump_before)
-
-            def _mutate():
-                self._delete_timestamp(line_idx, char_idx)
-                return line_idx, char_idx, 0, "timetags"
-
-            self._execute_structural_edit("删除时间戳", _mutate)
+            self._delete_timestamp(line_idx, char_idx)
+            self._register_timestamp_undo(before_sentences, line_idx, char_idx, "删除时间戳")
+            if self._timing_service:
+                self._timing_service.move_to_checkpoint(line_idx, char_idx, 0)
+                self._update_time_tags_display()
+                self._update_status()
             self._on_seek(seek_ms)
         else:
             # 当前字符没有时间戳：找前一个有节奏点的字符
@@ -2783,17 +2813,42 @@ class EditorInterface(QWidget):
             prev_line, prev_char_idx, prev_cp_idx = prev_char
             prev = self._project.sentences[prev_line].get_character(prev_char_idx)
             seek_ms = max(0, prev.all_global_timestamps[0] - jump_before) if prev and prev.all_global_timestamps else None
-
-            def _mutate():
-                self._delete_timestamp(prev_line, prev_char_idx)
-                return prev_line, prev_char_idx, prev_cp_idx, "timetags"
-
-            self._execute_structural_edit("删除时间戳", _mutate)
+            self._delete_timestamp(prev_line, prev_char_idx)
+            self._register_timestamp_undo(before_sentences, prev_line, prev_char_idx, "删除时间戳")
+            if self._timing_service:
+                self._timing_service.move_to_checkpoint(prev_line, prev_char_idx, prev_cp_idx)
+                self._update_time_tags_display()
+                self._update_status()
+            self.preview.set_focus_position(prev_line, prev_char_idx)
             if seek_ms is not None:
                 self._on_seek(seek_ms)
 
     def _on_insert_space_after_requested(self, line_idx: int, char_idx: int):
         if not self._project or line_idx < 0 or line_idx >= len(self._project.sentences):
+            return
+        project = self._project
+
+        def _mutate():
+            sentence = project.sentences[line_idx]
+            if char_idx < 0 or char_idx >= len(sentence.characters):
+                return None
+            ref_char = sentence.characters[char_idx]
+            new_char = Character(
+                char=" ",
+                check_count=0,
+                singer_id=ref_char.singer_id or sentence.singer_id,
+            )
+            sentence.insert_character(char_idx + 1, new_char)
+            return line_idx, char_idx + 1, 0, "lyrics"
+
+        self._execute_structural_edit("插入空格", _mutate)
+
+    def _insert_space_at_current(self):
+        """在当前字符后插入空格（快捷键入口）。"""
+        if not self._project:
+            return
+        line_idx, char_idx = self._resolve_target_char()
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
             return
         project = self._project
 
@@ -2997,6 +3052,8 @@ class EditorInterface(QWidget):
             self._convert_timestamps_to_sentence_end()
         elif action == "quick_export":
             self._on_quick_export()
+        elif action == "insert_space":
+            self._insert_space_at_current()
 
     def _on_quick_export(self):
         """快捷导出：使用默认导出格式弹出保存对话框并导出。"""

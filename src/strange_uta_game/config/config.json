@@ -151,8 +151,8 @@
       "save": "CTRL+S:short",
       "paste_lyrics": "CTRL+V:short",
       "timestamps_to_sentence_end": "CTRL+J:short",
-      "quick_export": "CTRL+E:short"
-
+      "quick_export": "CTRL+E:short",
+      "insert_space": "M:short"
     },
     "edit_mode": {
       "play_pause": "D:short",
@@ -194,7 +194,8 @@
       "save": "CTRL+S:short",
       "paste_lyrics": "CTRL+V:short",
       "timestamps_to_sentence_end": "CTRL+J:short",
-      "quick_export": "CTRL+E:short"
+      "quick_export": "CTRL+E:short",
+      "insert_space": "M:short"
     },
     "play_pause": "D",
     "stop": "S",
