@@ -71,6 +71,10 @@ class MainWindow(MSFluentWindow):
         # 延迟检查闪退恢复（等 UI 显示完毕后再弹窗）
         QTimer.singleShot(500, self._check_crash_recovery)
 
+        # 延迟检查应用自动更新（在闪退恢复之后，避免抢占用户注意力）。
+        # 失败/无网时静默跳过，绝不阻塞主流程。
+        QTimer.singleShot(2500, self._check_for_app_update)
+
     @staticmethod
     def _find_icon_path() -> Optional[str]:
         """查找应用图标路径（兼容开发环境和 PyInstaller 打包环境）。"""
@@ -346,6 +350,137 @@ class MainWindow(MSFluentWindow):
         else:
             # 用户拒绝恢复 → 删除临时文件
             ProjectStore.delete_crash_recovery()
+
+    # ==================== 自动更新检查 ====================
+
+    def _check_for_app_update(self) -> None:
+        """启动时的轻量自动更新检查。
+
+        实际逻辑全部委托给 ``strange_uta_game.updater``；任何异常均吞掉并仅写日志，
+        以确保更新模块的故障不会影响主程序使用。
+        """
+        try:
+            from strange_uta_game.updater.settings import UpdaterSettings
+            from strange_uta_game.updater.worker import UpdateChecker
+
+            settings = UpdaterSettings.load(self.settingInterface.get_settings())
+            if not (settings.enabled and settings.check_on_startup):
+                return
+
+            # 启动期检查：受 ``min_check_interval_hours`` 防抖限制
+            self._update_checker = UpdateChecker(settings, manual=False, parent=self)
+            self._update_checker.finished.connect(self._on_startup_update_check)
+            self._update_checker.start()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "启动更新检查失败，已忽略", exc_info=True
+            )
+
+    def _on_startup_update_check(self, result_obj: object) -> None:
+        """处理启动期 UpdateChecker 的回调。"""
+        try:
+            from strange_uta_game.__version__ import __version__
+            from strange_uta_game.updater.settings import UpdaterSettings
+            from strange_uta_game.updater.sources import SOURCE_LABELS
+            from strange_uta_game.updater.ui.update_dialog import UpdateAvailableDialog
+            from strange_uta_game.updater import installer as upd_installer
+
+            result = result_obj  # type: ignore[assignment]
+            if not getattr(result, "ok", False) or not getattr(result, "has_update", False):
+                return
+            release = getattr(result, "release", None)
+            if release is None:
+                return
+
+            # 用户曾经点击「跳过此版本」 → 静默忽略
+            settings = UpdaterSettings.load(self.settingInterface.get_settings())
+            if settings.skipped_version and settings.skipped_version == release.version:
+                return
+
+            # 记录最近一次发现的远端版本（仅用于以后扩展，例如"侧栏红点"）
+            settings.last_seen_version = release.version
+            try:
+                settings.save(self.settingInterface.get_settings())
+            except Exception:
+                pass
+
+            primary_source = getattr(result, "primary_source", "")
+            source_label = SOURCE_LABELS.get(primary_source, "") if primary_source else ""
+
+            dlg = UpdateAvailableDialog(
+                release,
+                local_version=__version__,
+                primary_source_label=source_label,
+                parent=self,
+            )
+            accepted = dlg.exec()
+            choice = dlg.user_choice
+
+            if choice == "skip":
+                settings.skipped_version = release.version
+                try:
+                    settings.save(self.settingInterface.get_settings())
+                except Exception:
+                    pass
+                return
+            if not accepted or choice == "later":
+                return
+
+            # 用户确认更新 → 启动 Updater.exe 并退出
+            if not upd_installer.is_updater_available():
+                InfoBar.warning(
+                    title="更新器未就绪",
+                    content="未找到 Updater.exe。请到 GitHub 手动下载完整安装包。",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=6000,
+                    parent=self,
+                )
+                return
+
+            from strange_uta_game.updater.proxy import resolve_proxy
+            info, _ = resolve_proxy(settings.proxy_mode, settings.proxy_manual_url)
+            proxy_url = info.url if info and info.is_valid else ""
+
+            plan = upd_installer.LaunchPlan(
+                app_dir=upd_installer.find_app_dir(),
+                app_exe_name=upd_installer.find_app_exe_name(),
+                target_version=release.version,
+                target_tag=release.tag,
+                asset_name=result.primary_asset_name,
+                download_urls=list(result.download_candidates),
+                proxy_url=proxy_url,
+            )
+            launched = upd_installer.launch_updater(plan)
+            if not launched.launched:
+                InfoBar.error(
+                    title="启动 Updater 失败",
+                    content=launched.reason or "未知错误",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=6000,
+                    parent=self,
+                )
+                return
+
+            InfoBar.success(
+                title="更新已启动",
+                content="即将退出应用，由 Updater 完成替换并自动重启…",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3500,
+                parent=self,
+            )
+            QTimer.singleShot(1200, QApplication.quit)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "处理启动更新回调时异常，已忽略", exc_info=True
+            )
 
     # ==================== 启动时打开项目 ====================
 

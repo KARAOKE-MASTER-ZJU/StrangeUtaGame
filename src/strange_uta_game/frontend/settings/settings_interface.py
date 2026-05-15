@@ -260,7 +260,27 @@ class SettingsInterface(ScrollArea):
         self._init_export_group()
         self._init_shortcut_group()
         self._init_buttons()
+        # 在「关于」上方接入更新器相关分组（代理 / 应用更新）。
+        # 失败时回退为 no-op，绝不阻塞设置界面正常显示。
+        try:
+            from strange_uta_game.updater.ui import (
+                attach_proxy_group,
+                attach_update_group,
+            )
+            attach_proxy_group(self)
+            attach_update_group(self)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "加载 updater 设置卡片失败，已忽略", exc_info=True
+            )
         self._init_about_group()
+        # 关于卡片的版本号替换为 __version__；与上方一样，失败容忍。
+        try:
+            from strange_uta_game.updater.ui import refresh_about_version
+            refresh_about_version(self)
+        except Exception:
+            pass
 
     # ── 演奏控制 ──
 

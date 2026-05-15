@@ -220,5 +220,18 @@
     "cycle_checkpoint_prev": "ALT+LEFT",
     "cycle_checkpoint": "ALT+RIGHT"
   },
-  "nicokara_emoji_default": "透明画像1x1.png,,Zoom=1,NoDecor,MarginRight=-170"
+  "nicokara_emoji_default": "透明画像1x1.png,,Zoom=1,NoDecor,MarginRight=-170",
+  "updater": {
+    "enabled": true,
+    "check_on_startup": true,
+    "min_check_interval_hours": 8,
+    "source_order": ["github", "ghproxy", "fastgit"],
+    "proxy": {
+      "mode": "system",
+      "manual_url": ""
+    },
+    "skipped_version": "",
+    "last_seen_version": "",
+    "last_check_at": 0
+  }
 }
