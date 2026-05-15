@@ -46,6 +46,10 @@
   `--exclude-module=qfluentwidgets/PyQt6` 的副作用下把一些标准库小模块也
   一并 exclude。给 `build_updater.py` 显式 `--hidden-import=colorsys` 以及
   `encodings.*`、`hashlib`、`zipfile`、`ssl` 等易漏标准库做兜底。
+- **主程序 `StrangeUtaGame.exe` 也报 `No module named 'colorsys'`**：
+  `backend/domain/entities.py` 直接 `import colorsys` 做颜色 HSV 变换，
+  PyInstaller 这次静态分析没把它列入产物。给 `build.py` 显式声明
+  `--hidden-import=colorsys` 兜底。
 - **GitHub Actions 创建 Release 时 403 失败**：默认 `GITHUB_TOKEN` 只读，
   `softprops/action-gh-release` 无法创建 Release。
   解决：`.github/workflows/release.yml` 顶部声明 `permissions: contents: write`。

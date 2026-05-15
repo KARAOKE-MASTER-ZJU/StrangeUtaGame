@@ -126,6 +126,12 @@ args = [
     # 标准库可能被跳过的模块
     "--hidden-import=encodings.idna",
     "--hidden-import=pkg_resources",
+    # ── 标准库小模块：PyInstaller 偶尔漏检（取决于版本与缓存） ─────────────
+    # `colorsys` 由 backend/domain/entities.py 直接 import；同时 qfluentwidgets
+    # 内部也用它做主题色变换。一旦漏掉，用户启动主程序会看到
+    # ``ModuleNotFoundError: No module named 'colorsys'`` 的 PyInstaller bootloader
+    # 弹窗，对发布是灾难性的。显式声明做兜底。
+    "--hidden-import=colorsys",
     # 注：不使用 --exclude-module 手动裁剪，让 PyInstaller 自行决定，
     # 避免遗漏运行时通过 importlib / 反射间接加载的模块。
     # 项目使用 PyQt6 + PyQt6-Fluent-Widgets，环境内不应再有 PyQt5。
