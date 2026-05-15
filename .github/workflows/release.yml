@@ -124,7 +124,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: v${{ steps.ver.outputs.version }}
+          name: StrangeUtaGame_v${{ steps.ver.outputs.version }}
           body_path: dist/release_notes-v${{ steps.ver.outputs.version }}.md
           files: |
             dist/StrangeUtaGame-v${{ steps.ver.outputs.version }}.zip
