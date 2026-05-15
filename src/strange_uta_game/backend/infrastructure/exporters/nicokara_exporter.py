@@ -40,6 +40,20 @@ def _format_nicokara_ts(timestamp_ms: int, offset_ms: int = 0) -> str:
     return f"[{minutes:02d}:{seconds:02d}:{centiseconds:02d}]"
 
 
+_FULLWIDTH_CARET = "\uff3e"  # ＾
+_ASCII_CARET = "^"
+
+
+def _pause_char_variants(pause_char: str) -> set:
+    """返回停顿符及其全角/半角变体"""
+    variants = {pause_char}
+    if pause_char == _ASCII_CARET:
+        variants.add(_FULLWIDTH_CARET)
+    elif pause_char == _FULLWIDTH_CARET:
+        variants.add(_ASCII_CARET)
+    return variants
+
+
 class NicokaraExporter(BaseExporter):
     """Nicokara 逐字 LRC 格式导出器
 
@@ -438,13 +452,14 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             pause_char = "^"
 
         if pause_char:
+            pause_chars = _pause_char_variants(pause_char)
             for i, line in enumerate(output_lines):
                 if line.startswith("@Ruby"):
-                    reading_only = self._check_reading_is_only_pause(line, pause_char)
-                    if reading_only:
-                        output_lines[i] = line.replace(pause_char, " ")
-                    else:
-                        output_lines[i] = line.replace(pause_char, "")
+                    reading_only = self._check_reading_is_only_pause(line, pause_chars)
+                    replacement = " " if reading_only else ""
+                    for pc in pause_chars:
+                        line = line.replace(pc, replacement)
+                    output_lines[i] = line
 
         try:
             # 与 nicokara3 原生格式一致：UTF-8-BOM + CRLF 行尾 + 末尾 newline
@@ -708,7 +723,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
         return "".join(display_parts), tuple(ms_key_parts)
 
     @staticmethod
-    def _check_reading_is_only_pause(line: str, pause_char: str) -> bool:
+    def _check_reading_is_only_pause(line: str, pause_chars: set) -> bool:
         """检查 @Ruby 行的读音部分去除时间戳后是否只剩停顿符"""
         eq_idx = line.index("=")
         parts = line[eq_idx + 1:].split(",", 2)
@@ -716,4 +731,4 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             return False
         reading = parts[1]
         reading_no_ts = re.sub(r"\[[^\]]*\]", "", reading)
-        return bool(reading_no_ts) and all(c == pause_char for c in reading_no_ts)
+        return bool(reading_no_ts) and all(c in pause_chars for c in reading_no_ts)
