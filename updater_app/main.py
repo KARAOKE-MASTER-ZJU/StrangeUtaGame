@@ -89,6 +89,8 @@ FILE_LOCK_RETRY_INTERVAL = 1.5
 LOCAL_MANIFEST_FILENAME = ".installed_manifest.json"
 # manifest schema 兼容版本（远端 manifest.schema 必须 <= 该值才走增量；否则降级全量）。
 SUPPORTED_MANIFEST_SCHEMA = 1
+# Updater 自身的文件名；自更新时 rename 为 ``<name>.old``，下次启动时清理。
+UPDATER_EXE_NAME = "Updater.exe"
 
 
 # ───────────────────────── 数据结构 ─────────────────────────
@@ -189,6 +191,20 @@ def setup_logger(log_path: Path) -> logging.Logger:
 
 
 # ───────────────────────── 流程步骤 ─────────────────────────
+
+
+def _cleanup_old_files(app_dir: Path, log: logging.Logger) -> None:
+    """清理上次自更新遗留的 ``*.old`` 文件。
+
+    Windows 允许 rename 运行中的 exe，但不允许 delete/overwrite。
+    自更新流程把旧 Updater.exe rename 为 .old，这里在启动时清理。
+    """
+    for p in app_dir.glob("*.old"):
+        try:
+            p.unlink()
+            log.info("已清理旧文件: %s", p.name)
+        except OSError as e:
+            log.warning("清理旧文件 %s 失败（可忽略）: %s", p.name, e)
 
 
 def wait_for_pid_exit(pid: int, log: logging.Logger, timeout: float = WAIT_PID_TIMEOUT) -> bool:
@@ -567,6 +583,23 @@ def apply_update(
                 pass
             return False, f"备份 EXE 失败: {e}（主程序可能未完全退出）"
 
+    # 自更新 Updater.exe：rename 为 .old（Windows 允许 rename 运行中的 exe），
+    # 复制新的；下次启动时 _cleanup_old_files 会删除 .old。
+    new_updater = new_root / UPDATER_EXE_NAME
+    cur_updater = app_dir / UPDATER_EXE_NAME
+    if new_updater.exists():
+        if cur_updater.exists():
+            log.info("自更新: rename %s → %s.old", UPDATER_EXE_NAME, UPDATER_EXE_NAME)
+            try:
+                os.rename(str(cur_updater), str(cur_updater.with_suffix(".exe.old")))
+            except OSError as e:
+                log.warning("rename %s 失败（可能未在运行，忽略）: %s", UPDATER_EXE_NAME, e)
+        try:
+            shutil.copy2(str(new_updater), str(cur_updater))
+            log.info("已写入新 %s", UPDATER_EXE_NAME)
+        except OSError as e:
+            log.warning("写入新 %s 失败（不影响主程序更新）: %s", UPDATER_EXE_NAME, e)
+
     # 写入新内容 —— 同样带重试
     log.info("写入新 %s/", internal_name)
     try:
@@ -805,6 +838,23 @@ def _apply_part(
 
             orig = app_dir / rel
             is_dir = new_src.is_dir()
+
+            # 自更新 Updater.exe：rename 为 .old 而非 .bak，下次启动时清理
+            if rel == UPDATER_EXE_NAME:
+                if orig.exists():
+                    old_path = orig.with_suffix(".exe.old")
+                    log.info("[%s] 自更新: rename %s → %s.old", part_id, UPDATER_EXE_NAME, UPDATER_EXE_NAME)
+                    try:
+                        os.rename(str(orig), str(old_path))
+                    except OSError as e:
+                        log.warning("[%s] rename %s 失败（忽略）: %s", part_id, UPDATER_EXE_NAME, e)
+                try:
+                    shutil.copy2(str(new_src), str(orig))
+                    log.info("[%s] 已写入新 %s", part_id, UPDATER_EXE_NAME)
+                except OSError as e:
+                    log.warning("[%s] 写入新 %s 失败（不影响主程序更新）: %s", part_id, UPDATER_EXE_NAME, e)
+                continue
+
             bak = app_dir / (rel + ".bak")
             # 清理可能残留的 .bak
             if bak.exists():
@@ -939,6 +989,9 @@ def run(args: Args) -> int:
     log.info("内部目录名: %s", args.internal_name)
     log.info("下载候选: %d 个源", len(args.urls))
     log.info("=" * 60)
+
+    # 0. 清理上次自更新遗留的 .old 文件
+    _cleanup_old_files(args.app_dir, log)
 
     # 1. 等待主程序退出（含文件锁释放宽限）
     wait_for_pid_exit(args.pid, log)

@@ -15,18 +15,26 @@
 3. **主程序退出顺序** —— 主程序退出后 Updater.exe 才能解锁 ``StrangeUtaGame.exe``
    与 ``_internal/``。本模块在 ``launch_updater`` 中传入主程序 PID，由 Updater
    等待 PID 退出后再开始替换；调用方在调用本函数后应立刻 ``QApplication.quit``。
+
+4. **自更新** —— 主程序在启动 Updater 之前，先尝试从远端 app part zip 中提取
+   新的 Updater.exe 并替换本地版本，确保旧 updater 也能被更新。
 """
 
 from __future__ import annotations
 
+import io
+import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+log = logging.getLogger(__name__)
 
 # 与主程序同目录下的 Updater.exe 名字。
 UPDATER_EXE_NAME = "Updater.exe"
@@ -137,6 +145,87 @@ def _copy_updater_to_temp(updater_exe: Path) -> Path:
 # ───────────────────────── 主入口 ─────────────────────────
 
 
+def _update_updater_from_remote(
+    plan: LaunchPlan,
+    proxies: Optional[dict] = None,
+) -> bool:
+    """尝试从远端 app part zip 提取并替换本地 Updater.exe。
+
+    解决鸡生蛋问题：已分发的旧 Updater.exe 没有自更新逻辑，无法更新自身。
+    主程序在启动 updater 之前调用本函数，先拉取 app part zip，提取新的
+    Updater.exe 并替换本地版本。这样即使旧 updater 没有自更新代码，
+    也能通过主程序间接触发更新。
+
+    返回 ``True`` 表示成功更新了 Updater.exe（或已是最新），``False`` 表示
+    失败但不影响后续流程（降级使用旧 updater）。
+    """
+    import requests
+
+    app_dir = plan.app_dir
+    local_updater = app_dir / UPDATER_EXE_NAME
+
+    # 构造 app part zip 的 URL（从 download_urls 推导）
+    # download_urls 格式: [(source_id, full_zip_url), ...]
+    app_zip_name = f"StrangeUtaGame-v{plan.target_version}-app.zip"
+    candidates: List[Tuple[str, str]] = []
+    for source_id, url in plan.download_urls:
+        # URL 形如 https://.../StrangeUtaGame-vX.Y.Z.zip
+        # 替换为  https://.../StrangeUtaGame-vX.Y.Z-app.zip
+        prefix = url.rsplit("/", 1)[0]
+        app_url = f"{prefix}/{app_zip_name}"
+        candidates.append((source_id, app_url))
+
+    proxies_dict = {"http": plan.proxy_url, "https": plan.proxy_url} if plan.proxy_url else None
+
+    for source_id, url in candidates:
+        log.info("[self-update] 尝试下载 app part: %s", url)
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "StrangeUtaGame-MainApp/self-update"},
+                proxies=proxies_dict,
+                timeout=(10, 60),
+                allow_redirects=True,
+            )
+            if resp.status_code != 200:
+                log.warning("[self-update] HTTP %d from %s", resp.status_code, source_id)
+                continue
+
+            # 从 zip 中提取 Updater.exe
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                names = zf.namelist()
+                # 查找 Updater.exe（可能在根目录或子目录下）
+                updater_entry = None
+                for name in names:
+                    if name.endswith(UPDATER_EXE_NAME) and not name.endswith("/"):
+                        updater_entry = name
+                        break
+                if updater_entry is None:
+                    log.warning("[self-update] app part zip 中未找到 %s", UPDATER_EXE_NAME)
+                    continue
+
+                new_bytes = zf.read(updater_entry)
+
+                # 比较内容是否一致（避免无意义替换）
+                if local_updater.exists():
+                    local_bytes = local_updater.read_bytes()
+                    if local_bytes == new_bytes:
+                        log.info("[self-update] Updater.exe 内容一致，无需更新")
+                        return True
+
+                # 写入新 Updater.exe
+                local_updater.write_bytes(new_bytes)
+                log.info("[self-update] 已更新 Updater.exe（%d bytes）", len(new_bytes))
+                return True
+
+        except Exception as e:
+            log.warning("[self-update] 从 %s 下载/提取失败: %s", source_id, e)
+            continue
+
+    log.warning("[self-update] 所有源均失败，将使用旧版 Updater.exe")
+    return False
+
+
 def launch_updater(plan: LaunchPlan) -> LaunchResult:
     """根据 ``plan`` 启动独立 Updater.exe；调用后调用方应立刻退出 Qt 应用。
 
@@ -151,6 +240,14 @@ def launch_updater(plan: LaunchPlan) -> LaunchResult:
                 "Updater.exe 与主程序位于同一目录。"
             ),
         )
+
+    # 先尝试从远端更新 Updater.exe 自身（解决旧 updater 无自更新逻辑的问题）
+    try:
+        _update_updater_from_remote(plan)
+        # 重新定位（可能已被更新）
+        updater = find_updater_exe(plan.app_dir) or updater
+    except Exception as e:
+        log.warning("自更新 Updater.exe 失败（忽略，继续使用旧版）: %s", e)
 
     try:
         temp_copy = _copy_updater_to_temp(updater)
