@@ -522,7 +522,7 @@
   {
     "enabled": true,
     "word": "空っぽ",
-    "reading": "{空っぽ||から,,}"
+    "reading": "{空||から}っぽ"
   },
   {
     "enabled": true,
@@ -2757,7 +2757,7 @@
   {
     "enabled": true,
     "word": "紅",
-    "reading": "{紅||くれない}"
+    "reading": "{紅||く|れ|な|い}"
   },
   {
     "enabled": true,
@@ -4112,7 +4112,7 @@
   {
     "enabled": true,
     "word": "光",
-    "reading": "{光||ひかり}"
+    "reading": "{光||ひ|か|り}"
   },
   {
     "enabled": true,
@@ -5067,7 +5067,7 @@
   {
     "enabled": true,
     "word": "吹っ飛ぶ",
-    "reading": "{吹っ飛ぶ||ふ,と,,}"
+    "reading": "{吹||ふ}っ{飛||と}ぶ"
   },
   {
     "enabled": true,
@@ -5212,7 +5212,7 @@
   {
     "enabled": true,
     "word": "笑う門には福来たる",
-    "reading": "{笑う門には福来たる||わら,かどふくき,,,,,,,}"
+    "reading": "{笑||わ,ら}う{門||か|ど}には{福||ふ|く}{来||き}たる"
   },
   {
     "enabled": true,
@@ -5852,7 +5852,7 @@
   {
     "enabled": true,
     "word": "想い出",
-    "reading": "{想||お}{い||も}{出||で}"
+    "reading": "{想||お|も}い{出||で}"
   },
   {
     "enabled": true,
@@ -6032,7 +6032,7 @@
   {
     "enabled": true,
     "word": "立ち止ま",
-    "reading": "{立ち止ま||た,ど,,}"
+    "reading": "{立||た}ち{止||ど}ま"
   },
   {
     "enabled": true,
@@ -6042,7 +6042,7 @@
   {
     "enabled": true,
     "word": "隙き間",
-    "reading": "{隙き間||す,,ま}"
+    "reading": "{隙||す}き{間||ま}"
   },
   {
     "enabled": true,
@@ -6187,7 +6187,7 @@
   {
     "enabled": true,
     "word": "降りた",
-    "reading": "{降りた||お,,}"
+    "reading": "{降||お}りた"
   },
   {
     "enabled": true,
@@ -6462,7 +6462,7 @@
   {
     "enabled": true,
     "word": "華吹雪",
-    "reading": "{華吹雪||はなふぶき,,}"
+    "reading": "{華||はな}{吹||ふ}{雪||ぶき}"
   },
   {
     "enabled": true,
@@ -6517,7 +6517,7 @@
   {
     "enabled": true,
     "word": "000％",
-    "reading": "{000％||せん|ぱーせんと|,,,}"
+    "reading": "{000％||せん|ぱー|せん|と,,,}"
   },
   {
     "enabled": true,
@@ -7257,7 +7257,7 @@
   {
     "enabled": true,
     "word": "度",
-    "reading": "{度||たび}"
+    "reading": "{度||た|び}"
   },
   {
     "enabled": true,
@@ -7277,7 +7277,7 @@
   {
     "enabled": true,
     "word": "空",
-    "reading": "{空||そら}"
+    "reading": "{空||そ|ら}"
   },
   {
     "enabled": true,
