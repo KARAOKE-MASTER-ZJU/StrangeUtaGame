@@ -86,8 +86,8 @@ _PRODUCER_TICK = 0.005
 
 # 目标硬件延迟：传给 PortAudio 的建议值（秒）。
 # WASAPI Shared 模式硬下限约 20ms，传更小值会被 clamp 到硬件最小值。
-# 传 0.02 让 PortAudio 尽可能申请小缓冲，实际值由 stream.latency 读回。
-_TARGET_LATENCY = 0.02
+# 传 0.1 让 PortAudio 申请标准低缓冲，实际值由 stream.latency 读回。
+_TARGET_LATENCY = 0.1
 
 
 class SoundDeviceEngine(IAudioEngine):

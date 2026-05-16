@@ -131,9 +131,11 @@ class KaraokePreview(QWidget):
     )  # line_idx, start_char, end_char, singer_id
     delete_chars_requested = pyqtSignal(int, int, int)
     delete_timestamp_requested = pyqtSignal(int, int)
+    insert_space_before_requested = pyqtSignal(int, int)
     insert_space_after_requested = pyqtSignal(int, int)
     merge_line_up_requested = pyqtSignal(int)
     delete_line_requested = pyqtSignal(int)
+    insert_blank_line_before_requested = pyqtSignal(int)
     insert_blank_line_requested = pyqtSignal(int)
     add_checkpoint_requested = pyqtSignal(int, int)
     remove_checkpoint_requested = pyqtSignal(int, int)
@@ -774,13 +776,21 @@ class KaraokePreview(QWidget):
         )
         menu.addAction(delete_timestamp)
 
-        insert_space_action = Action("在此插入空格", menu)
-        insert_space_action.triggered.connect(
+        insert_space_before_action = Action("在此前插入空格", menu)
+        insert_space_before_action.triggered.connect(
+            lambda checked=False: self.insert_space_before_requested.emit(
+                target_line_idx, target_char_idx
+            )
+        )
+        menu.addAction(insert_space_before_action)
+
+        insert_space_after_action = Action("在此后插入空格", menu)
+        insert_space_after_action.triggered.connect(
             lambda checked=False: self.insert_space_after_requested.emit(
                 target_line_idx, target_char_idx
             )
         )
-        menu.addAction(insert_space_action)
+        menu.addAction(insert_space_after_action)
         menu.addSeparator()
 
         merge_up_action = Action("合并上一行", menu)
@@ -796,11 +806,17 @@ class KaraokePreview(QWidget):
         )
         menu.addAction(delete_line_action)
 
-        insert_blank_line_action = Action("在此插入空行", menu)
-        insert_blank_line_action.triggered.connect(
+        insert_blank_line_before_action = Action("在此前插入空行", menu)
+        insert_blank_line_before_action.triggered.connect(
+            lambda checked=False: self.insert_blank_line_before_requested.emit(target_line_idx)
+        )
+        menu.addAction(insert_blank_line_before_action)
+
+        insert_blank_line_after_action = Action("在此后插入空行", menu)
+        insert_blank_line_after_action.triggered.connect(
             lambda checked=False: self.insert_blank_line_requested.emit(target_line_idx)
         )
-        menu.addAction(insert_blank_line_action)
+        menu.addAction(insert_blank_line_after_action)
         menu.addSeparator()
 
         add_checkpoint_action = Action("增加节奏点", menu)

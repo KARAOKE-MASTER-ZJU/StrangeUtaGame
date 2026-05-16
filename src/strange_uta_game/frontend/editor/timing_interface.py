@@ -223,11 +223,17 @@ class EditorInterface(QWidget):
         self.preview.singer_change_requested.connect(self._on_singer_change_selection)
         self.preview.delete_chars_requested.connect(self._on_delete_chars_requested)
         self.preview.delete_timestamp_requested.connect(self._on_delete_timestamp_requested)
+        self.preview.insert_space_before_requested.connect(
+            self._on_insert_space_before_requested
+        )
         self.preview.insert_space_after_requested.connect(
             self._on_insert_space_after_requested
         )
         self.preview.merge_line_up_requested.connect(self._on_merge_line_up_requested)
         self.preview.delete_line_requested.connect(self._on_delete_line_requested)
+        self.preview.insert_blank_line_before_requested.connect(
+            self._on_insert_blank_line_before_requested
+        )
         self.preview.insert_blank_line_requested.connect(
             self._on_insert_blank_line_requested
         )
@@ -2935,6 +2941,26 @@ class EditorInterface(QWidget):
             if seek_ms is not None:
                 self._on_seek(seek_ms)
 
+    def _on_insert_space_before_requested(self, line_idx: int, char_idx: int):
+        if not self._project or line_idx < 0 or line_idx >= len(self._project.sentences):
+            return
+        project = self._project
+
+        def _mutate():
+            sentence = project.sentences[line_idx]
+            if char_idx < 0 or char_idx >= len(sentence.characters):
+                return None
+            ref_char = sentence.characters[char_idx]
+            new_char = Character(
+                char=" ",
+                check_count=0,
+                singer_id=ref_char.singer_id or sentence.singer_id,
+            )
+            sentence.insert_character(char_idx, new_char)
+            return line_idx, char_idx, 0, "lyrics"
+
+        self._execute_structural_edit("在前插入空格", _mutate)
+
     def _on_insert_space_after_requested(self, line_idx: int, char_idx: int):
         if not self._project or line_idx < 0 or line_idx >= len(self._project.sentences):
             return
@@ -3010,6 +3036,22 @@ class EditorInterface(QWidget):
             return new_line_idx, 0, 0, "lyrics"
 
         self._execute_structural_edit("删除本行", _mutate)
+
+    def _on_insert_blank_line_before_requested(self, line_idx: int):
+        if not self._project:
+            return
+        project = self._project
+
+        singer_id = ""
+        if 0 <= line_idx < len(project.sentences):
+            sentence = project.sentences[line_idx]
+            if sentence.characters:
+                singer_id = sentence.characters[-1].singer_id
+
+        self._execute_structural_edit(
+            "在前插入空行",
+            lambda: ((project.insert_blank_line(line_idx - 1, singer_id=singer_id), 0, None, "lyrics")),
+        )
 
     def _on_insert_blank_line_requested(self, line_idx: int):
         if not self._project:
