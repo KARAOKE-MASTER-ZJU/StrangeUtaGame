@@ -262,7 +262,7 @@ class TSMRenderCache:
         # 内存级别的 PCM 缓存，避免重复读盘解码
         self._memory_cache: OrderedDict[float, np.ndarray] = OrderedDict()
         self._mem_cache_lock = threading.Lock()
-        self._MAX_MEM_CACHE = 3
+        self._MAX_MEM_CACHE = 5
 
     # ---------- 加载 ----------
 

@@ -7,7 +7,7 @@
 架构分三层：
 
 1. :class:`TSMRenderCache`：UI/控制线程在切换速度时**离线**把整段原始 PCM
-   预渲染成目标速度的 PCM，缓存在内存里（LRU 3 份）。1.0x 直接复用原始
+   预渲染成目标速度的 PCM，缓存在内存里（LRU 5 份）。1.0x 直接复用原始
    PCM，零开销。
 
 2. :class:`RingBuffer`：单生产者单消费者无锁环形缓冲（float32 (n, ch)），
