@@ -1292,16 +1292,22 @@ class CompleteTimestampDialog(QDialog):
                 "kanji", "hiragana", "katakana", "sokuon", "long_vowel", "chon", "chisai_kana"
             ])
             self._saved_exclude_rules = settings.get("complete_timestamp.exclude_rules", ["linked"])
+            self._saved_head_offset_ms = settings.get("complete_timestamp.head_offset_ms", 150)
+            self._saved_tail_offset_ms = settings.get("complete_timestamp.tail_offset_ms", 150)
         except Exception:
             self._saved_scope_types = ["kanji", "hiragana", "katakana", "sokuon", "long_vowel", "chon", "chisai_kana"]
             self._saved_exclude_rules = ["linked"]
+            self._saved_head_offset_ms = 150
+            self._saved_tail_offset_ms = 150
 
         layout = QVBoxLayout(self)
 
         # 第一行：功能说明
         desc_label = QLabel(
             "本功能用于所有打轴过程完成后，自动查找需要补轴点的字符（仅无普通时间戳字符），"
-            "查找前后时间戳取平均值均分给待补偿时间戳。"
+            "查找前后时间戳取平均值均分给待补偿时间戳。\n\n"
+            "边界处理：行首无前方时间戳时，向后找到第一个时间戳并减去「行首扣除」值；"
+            "行尾无后方时间戳时，向前找到第一个时间戳并加上「行尾增加」值。"
         )
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet("font-size: 12px; color: #555; padding: 8px;")
@@ -1350,6 +1356,26 @@ class CompleteTimestampDialog(QDialog):
 
         layout.addWidget(exclude_group)
 
+        # 第四行：边界时间戳偏移设置
+        offset_group = QGroupBox("边界时间戳偏移")
+        offset_layout = QFormLayout(offset_group)
+
+        self._edit_head_offset = QLineEdit(str(self._saved_head_offset_ms))
+        self._edit_head_offset.setPlaceholderText("150")
+        self._edit_head_offset.setToolTip(
+            "行首字符无前方时间戳时，向后找到第一个时间戳后减去此值"
+        )
+        offset_layout.addRow("行首扣除时间戳 (ms):", self._edit_head_offset)
+
+        self._edit_tail_offset = QLineEdit(str(self._saved_tail_offset_ms))
+        self._edit_tail_offset.setPlaceholderText("150")
+        self._edit_tail_offset.setToolTip(
+            "行尾字符无后方时间戳时，向前找到第一个时间戳后加上此值"
+        )
+        offset_layout.addRow("行尾增加时间戳 (ms):", self._edit_tail_offset)
+
+        layout.addWidget(offset_group)
+
         # 底部按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -1364,14 +1390,18 @@ class CompleteTimestampDialog(QDialog):
     def _on_apply(self):
         """应用按钮点击处理"""
         self._apply_clicked = True
-        # 保存适用范围和排除规则到配置
+        # 保存适用范围、排除规则和边界偏移到配置
         scope_types = self.get_scope_types()
         exclude_rules = self.get_exclude_rules()
+        head_offset = self.get_head_offset_ms()
+        tail_offset = self.get_tail_offset_ms()
         try:
             from strange_uta_game.frontend.settings.app_settings import AppSettings
             settings = AppSettings()
             settings.set("complete_timestamp.scope_types", list(scope_types))
             settings.set("complete_timestamp.exclude_rules", exclude_rules)
+            settings.set("complete_timestamp.head_offset_ms", head_offset)
+            settings.set("complete_timestamp.tail_offset_ms", tail_offset)
             settings.save()
         except Exception:
             pass
@@ -1387,3 +1417,17 @@ class CompleteTimestampDialog(QDialog):
     def get_exclude_rules(self) -> list[str]:
         """返回选中的排除规则列表"""
         return [key for key, chk in self._exclude_checkboxes.items() if chk.isChecked()]
+
+    def get_head_offset_ms(self) -> int:
+        """返回行首扣除时间戳值（毫秒）"""
+        try:
+            return int(self._edit_head_offset.text())
+        except ValueError:
+            return 150
+
+    def get_tail_offset_ms(self) -> int:
+        """返回行尾增加时间戳值（毫秒）"""
+        try:
+            return int(self._edit_tail_offset.text())
+        except ValueError:
+            return 150

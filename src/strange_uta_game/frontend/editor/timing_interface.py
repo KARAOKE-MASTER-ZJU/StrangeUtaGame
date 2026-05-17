@@ -1741,23 +1741,41 @@ class EditorInterface(QWidget):
                                 chars[ci].push_to_ruby()
                                 total_count += 1
                     elif prev_ts is not None:
-                        # 只有前面的时间戳：行尾无后方时间戳，向前找到时间戳后加上偏移
-                        adjusted_ts = prev_ts + tail_offset_ms
-                        for ci in range(segment_start, segment_end):
-                            chars[ci].timestamps = [adjusted_ts]
-                            chars[ci].check_count = 1
-                            chars[ci]._update_offset_timestamps()
-                            chars[ci].push_to_ruby()
+                        # 只有前面的时间戳：行尾无后方时间戳，向前找到时间戳后加上偏移作为结束时间，均分
+                        end_ts = prev_ts + tail_offset_ms
+                        if segment_len == 1:
+                            chars[segment_start].timestamps = [end_ts]
+                            chars[segment_start].check_count = 1
+                            chars[segment_start]._update_offset_timestamps()
+                            chars[segment_start].push_to_ruby()
                             total_count += 1
+                        else:
+                            time_diff = end_ts - prev_ts
+                            for idx, ci in enumerate(range(segment_start, segment_end)):
+                                ts = prev_ts + time_diff * (idx + 1) // (segment_len + 1)
+                                chars[ci].timestamps = [ts]
+                                chars[ci].check_count = 1
+                                chars[ci]._update_offset_timestamps()
+                                chars[ci].push_to_ruby()
+                                total_count += 1
                     elif next_ts is not None:
-                        # 只有后面的时间戳：行首无前方时间戳，向后找到时间戳后减去偏移
-                        adjusted_ts = max(0, next_ts - head_offset_ms)
-                        for ci in range(segment_start, segment_end):
-                            chars[ci].timestamps = [adjusted_ts]
-                            chars[ci].check_count = 1
-                            chars[ci]._update_offset_timestamps()
-                            chars[ci].push_to_ruby()
+                        # 只有后面的时间戳：行首无前方时间戳，向后找到时间戳后减去偏移作为起始时间，均分
+                        start_ts = max(0, next_ts - head_offset_ms)
+                        if segment_len == 1:
+                            chars[segment_start].timestamps = [start_ts]
+                            chars[segment_start].check_count = 1
+                            chars[segment_start]._update_offset_timestamps()
+                            chars[segment_start].push_to_ruby()
                             total_count += 1
+                        else:
+                            time_diff = next_ts - start_ts
+                            for idx, ci in enumerate(range(segment_start, segment_end)):
+                                ts = start_ts + time_diff * (idx + 1) // (segment_len + 1)
+                                chars[ci].timestamps = [ts]
+                                chars[ci].check_count = 1
+                                chars[ci]._update_offset_timestamps()
+                                chars[ci].push_to_ruby()
+                                total_count += 1
                     # 如果前后都没有时间戳，跳过这个段
 
             if total_count == 0:
