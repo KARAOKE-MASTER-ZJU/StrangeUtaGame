@@ -53,7 +53,7 @@ RubyDataLossError = RubyMoraDegradeError
 
 
 # 标点符号集合（不参与注音但可加节奏点）
-PUNCTUATION_SET = frozenset("()【】[]{}「」!?、，")
+PUNCTUATION_SET = frozenset('''()【】[]{}「」!?、，"' ''')
 
 
 class TimeTagType(Enum):
