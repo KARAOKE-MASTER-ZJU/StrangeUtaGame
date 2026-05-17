@@ -1200,14 +1200,15 @@ class EditorInterface(QWidget):
         if not selected:
             return
 
-        # 扩展匹配集：与 fulltext_interface._on_delete_rubies_by_type 完全一致
-        _SMALL_HIRAGANA = set("ぁぃぅぇぉゃゅょゎ")
-        _SMALL_KATAKANA = set("ァィゥェォャュョヮゕゖ")
-        extended = set(selected)
-        if CharType.HIRAGANA in selected:
-            extended.add(CharType.SOKUON)  # っ
-        if CharType.KATAKANA in selected:
-            extended.add(CharType.SOKUON)  # ッ
+        # 拆解选中项：区分普通 CharType 与片假名子类型
+        from .fulltext_interface import _ruby_is_all_hiragana
+        ct_selected = {x for x in selected if isinstance(x, CharType)}
+        delete_kata_hira = "katakana_hiragana_ruby" in selected
+        delete_kata_eng = "katakana_english_ruby" in selected
+
+        extended = set(ct_selected)
+        if CharType.HIRAGANA in ct_selected:
+            extended.add(CharType.SOKUON)  # 平假名选中时同时处理促音っ
 
         removed_box = [0]
 
@@ -1222,18 +1223,20 @@ class EditorInterface(QWidget):
                     if idx in kanji_linked:
                         continue  # 与汉字连词，视为汉字，保留注音
                     ct = get_char_type(ch.char)
+
+                    # 片假名（不含促音ッ，ッ/っ 由 SOKUON 路径独立处理）
+                    is_kata_family = ct == CharType.KATAKANA
+                    if is_kata_family:
+                        if delete_kata_hira or delete_kata_eng:
+                            is_hira = _ruby_is_all_hiragana(ch.ruby.text)
+                            if (is_hira and delete_kata_hira) or (not is_hira and delete_kata_eng):
+                                ch.set_ruby(None)
+                                removed += 1
+                        continue
+
                     if ct in extended:
-                        if ct == CharType.SOKUON:
-                            if ch.char == "っ" and CharType.HIRAGANA not in selected:
-                                continue
-                            if ch.char == "ッ" and CharType.KATAKANA not in selected:
-                                continue
-                        ch.set_ruby(None)
-                        removed += 1
-                    elif CharType.HIRAGANA in selected and ch.char in _SMALL_HIRAGANA:
-                        ch.set_ruby(None)
-                        removed += 1
-                    elif CharType.KATAKANA in selected and ch.char in _SMALL_KATAKANA:
+                        if ct == CharType.SOKUON and ch.char == "っ" and CharType.HIRAGANA not in ct_selected:
+                            continue
                         ch.set_ruby(None)
                         removed += 1
             if removed == 0:

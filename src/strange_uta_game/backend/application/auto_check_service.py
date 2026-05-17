@@ -2024,31 +2024,38 @@ def get_kanji_linked_indices(characters: list) -> set:
     return protected
 
 
+def _ruby_is_all_hiragana(ruby_text: str) -> bool:
+    """注音文本是否全为平假名（范围 U+3040-U+309F）。"""
+    return bool(ruby_text) and all("぀" <= c <= "ゟ" for c in ruby_text)
+
+
 def delete_rubies_by_type_names(
     project: "Project", type_names: List[str]
 ) -> int:
     """按字符类型名称列表删除注音。
 
     与 DeleteRubyByTypeDialog 的逻辑保持一致：
-    - 勾选 HIRAGANA → 同时移除小假名(ぁぃ等)与促音 っ
-    - 勾选 KATAKANA → 同时移除小假名(ァィ等)与促音 ッ
+    - 勾选 HIRAGANA → 同时移除促音 っ
+    - katakana_hiragana_ruby → 删除注音全为平假名的片假名字符（含ッ）
+    - katakana_english_ruby  → 删除注音含非平假名内容的片假名字符（含ッ）
     - 与汉字处于同一连词链中的字符视为汉字，不删除其注音。
 
     Args:
         project: 项目
-        type_names: 类型名称列表，如 ["hiragana", "katakana"]
+        type_names: 类型名称列表，如 ["hiragana", "katakana_hiragana_ruby"]
 
     Returns:
         删除的注音数量
     """
-    selected = [_RUBY_TYPE_NAME_MAP[n] for n in type_names if n in _RUBY_TYPE_NAME_MAP]
-    if not selected:
+    ct_selected = [_RUBY_TYPE_NAME_MAP[n] for n in type_names if n in _RUBY_TYPE_NAME_MAP]
+    delete_kata_hira = "katakana_hiragana_ruby" in type_names
+    delete_kata_eng = "katakana_english_ruby" in type_names
+
+    if not ct_selected and not delete_kata_hira and not delete_kata_eng:
         return 0
 
-    extended = set(selected)
-    if CharType.HIRAGANA in selected:
-        extended.add(CharType.SOKUON)
-    if CharType.KATAKANA in selected:
+    extended = set(ct_selected)
+    if CharType.HIRAGANA in ct_selected:
         extended.add(CharType.SOKUON)
 
     removed = 0
@@ -2060,18 +2067,20 @@ def delete_rubies_by_type_names(
             if idx in kanji_linked:
                 continue  # 与汉字连词，视为汉字，保留注音
             ct = get_char_type(ch.char)
+
+            # 片假名（不含促音ッ，ッ/っ 由 SOKUON 路径独立处理）
+            is_kata_family = ct == CharType.KATAKANA
+            if is_kata_family:
+                if delete_kata_hira or delete_kata_eng:
+                    is_hira = _ruby_is_all_hiragana(ch.ruby.text)
+                    if (is_hira and delete_kata_hira) or (not is_hira and delete_kata_eng):
+                        ch.set_ruby(None)
+                        removed += 1
+                continue
+
             if ct in extended:
-                if ct == CharType.SOKUON:
-                    if ch.char == "っ" and CharType.HIRAGANA not in selected:
-                        continue
-                    if ch.char == "ッ" and CharType.KATAKANA not in selected:
-                        continue
-                ch.set_ruby(None)
-                removed += 1
-            elif CharType.HIRAGANA in selected and ch.char in _SMALL_HIRAGANA:
-                ch.set_ruby(None)
-                removed += 1
-            elif CharType.KATAKANA in selected and ch.char in _SMALL_KATAKANA:
+                if ct == CharType.SOKUON and ch.char == "っ" and CharType.HIRAGANA not in ct_selected:
+                    continue
                 ch.set_ruby(None)
                 removed += 1
 

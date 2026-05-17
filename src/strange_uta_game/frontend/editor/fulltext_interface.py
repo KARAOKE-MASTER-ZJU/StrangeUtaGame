@@ -190,12 +190,24 @@ def _parse_annotated_line(
     return parse_annotated_line(line_text)
 
 
-class DeleteRubyByTypeDialog(QDialog):
-    """按字符类型选择要删除注音的对话框。"""
+def _ruby_is_all_hiragana(ruby_text: str) -> bool:
+    """注音文本是否全为平假名（含小假名、促音っ，范围 U+3040-U+309F）。"""
+    return bool(ruby_text) and all("぀" <= c <= "ゟ" for c in ruby_text)
 
-    _TYPE_LABELS = [
+
+class DeleteRubyByTypeDialog(QDialog):
+    """按字符类型选择要删除注音的对话框。
+
+    片假名拆分为两个子类型：
+    - katakana_hiragana_ruby: 注音全为平假名的片假名字符
+    - katakana_english_ruby:  注音含有非平假名内容（如英文）的片假名字符
+    两者默认均不启用。
+    """
+
+    _TYPE_LABELS: list[tuple] = [
         (CharType.HIRAGANA, "ひらがな（平假名）"),
-        (CharType.KATAKANA, "カタカナ（片假名）"),
+        ("katakana_hiragana_ruby", "カタカナ（片假名・注音为平假名）"),
+        ("katakana_english_ruby", "カタカナ（片假名・注音含有英文）"),
         (CharType.KANJI, "漢字（汉字）"),
         (CharType.ALPHABET, "アルファベット（英文字母）"),
         (CharType.NUMBER, "数字"),
@@ -205,9 +217,10 @@ class DeleteRubyByTypeDialog(QDialog):
         (CharType.SPACE, "空格"),
     ]
 
-    _TYPE_NAME_MAP = {
+    _TYPE_NAME_MAP: dict = {
         CharType.HIRAGANA: "hiragana",
-        CharType.KATAKANA: "katakana",
+        "katakana_hiragana_ruby": "katakana_hiragana_ruby",
+        "katakana_english_ruby": "katakana_english_ruby",
         CharType.KANJI: "kanji",
         CharType.ALPHABET: "alphabet",
         CharType.NUMBER: "number",
@@ -224,11 +237,11 @@ class DeleteRubyByTypeDialog(QDialog):
         """
         Args:
             parent: 父组件
-            initial_types: 初始选中的类型名称列表（config 格式），如 ["hiragana", "katakana"]
+            initial_types: 初始选中的类型名称列表（config 格式），如 ["hiragana", "katakana_hiragana_ruby"]
         """
         super().__init__(parent)
         self.setWindowTitle("按类型删除注音")
-        self.resize(320, 370)
+        self.resize(320, 400)
         self.setFont(QFont("Microsoft YaHei", 10))
 
         layout = QVBoxLayout(self)
@@ -238,13 +251,13 @@ class DeleteRubyByTypeDialog(QDialog):
         lbl.setStyleSheet("font-weight: bold;")
         layout.addWidget(lbl)
 
-        # 确定默认选中项
+        # 确定默认选中项（片假名两个子类型默认均不启用）
         if initial_types is not None:
             default_set = {self._NAME_TYPE_MAP[n] for n in initial_types if n in self._NAME_TYPE_MAP}
         else:
-            default_set = {CharType.HIRAGANA, CharType.KATAKANA}
+            default_set = {CharType.HIRAGANA}
 
-        self._checkboxes: list[tuple[CharType, QCheckBox]] = []
+        self._checkboxes: list[tuple] = []
         for char_type, label in self._TYPE_LABELS:
             cb = QCheckBox(label, self)
             cb.setChecked(char_type in default_set)
@@ -263,8 +276,8 @@ class DeleteRubyByTypeDialog(QDialog):
         btn_layout.addWidget(btn_cancel)
         layout.addLayout(btn_layout)
 
-    def selected_types(self) -> list[CharType]:
-        """返回用户选中的字符类型列表。"""
+    def selected_types(self) -> list:
+        """返回用户选中的类型键列表（CharType 或特殊字符串）。"""
         return [ct for ct, cb in self._checkboxes if cb.isChecked()]
 
     def selected_type_names(self) -> list[str]:
@@ -618,14 +631,14 @@ class RubyInterface(QWidget):
         if not selected:
             return
 
-        # 构建扩展匹配集：勾选平假名时包含小假名(ぁぃ等)+促音(っ)，勾选片假名时包含小假名(ァィ等)+促音(ッ)
-        _SMALL_HIRAGANA = set("ぁぃぅぇぉゃゅょゎ")
-        _SMALL_KATAKANA = set("ァィゥェォャュョヮゕゖ")
-        extended = set(selected)
-        if CharType.HIRAGANA in selected:
-            extended.add(CharType.SOKUON)  # っ
-        if CharType.KATAKANA in selected:
-            extended.add(CharType.SOKUON)  # ッ
+        # 拆解选中项：区分普通 CharType 与片假名子类型
+        ct_selected = {x for x in selected if isinstance(x, CharType)}
+        delete_kata_hira = "katakana_hiragana_ruby" in selected
+        delete_kata_eng = "katakana_english_ruby" in selected
+
+        extended = set(ct_selected)
+        if CharType.HIRAGANA in ct_selected:
+            extended.add(CharType.SOKUON)  # 平假名选中时同时处理促音っ
 
         removed = 0
         for sentence in self._project.sentences:
@@ -636,19 +649,20 @@ class RubyInterface(QWidget):
                 if idx in kanji_linked:
                     continue  # 与汉字连词，视为汉字，保留注音
                 ct = get_char_type(ch.char)
+
+                # 片假名（不含促音ッ，ッ/っ 由 SOKUON 路径独立处理）
+                is_kata_family = ct == CharType.KATAKANA
+                if is_kata_family:
+                    if delete_kata_hira or delete_kata_eng:
+                        is_hira = _ruby_is_all_hiragana(ch.ruby.text)
+                        if (is_hira and delete_kata_hira) or (not is_hira and delete_kata_eng):
+                            ch.set_ruby(None)
+                            removed += 1
+                    continue
+
                 if ct in extended:
-                    # SOKUON 同时覆盖平假名/片假名两侧，需按实际字符过滤
-                    if ct == CharType.SOKUON:
-                        if ch.char == "っ" and CharType.HIRAGANA not in selected:
-                            continue
-                        if ch.char == "ッ" and CharType.KATAKANA not in selected:
-                            continue
-                    ch.set_ruby(None)
-                    removed += 1
-                elif CharType.HIRAGANA in selected and ch.char in _SMALL_HIRAGANA:
-                    ch.set_ruby(None)
-                    removed += 1
-                elif CharType.KATAKANA in selected and ch.char in _SMALL_KATAKANA:
+                    if ct == CharType.SOKUON and ch.char == "っ" and CharType.HIRAGANA not in ct_selected:
+                        continue
                     ch.set_ruby(None)
                     removed += 1
 
