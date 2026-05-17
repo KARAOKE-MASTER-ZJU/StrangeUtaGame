@@ -715,9 +715,9 @@ class KaraokePreview(QWidget):
                     self.char_selected.emit(click["line_idx"], click["char_idx"])
                     self.line_clicked.emit(click["line_idx"])
 
-            # 保存快照用于双击判断，300ms 后清除
-            self._click_snapshot = click
-            self._click_timer.start()
+                # 保存快照用于双击判断，300ms 后清除
+                self._click_snapshot = click
+                self._click_timer.start()
         else:
             # _pending_click 被拖拽检测清掉了，但 focus 已在 mousePressEvent
             # 里更新。用 focus 位置作为单击坐标，确保 current 域同步。
@@ -1266,7 +1266,8 @@ class KaraokePreview(QWidget):
         self._click_timer.stop()
 
         # 优先使用快照判断双击目标（快照在单击时锁定，避免居中导致 hitbox 变化）
-        if self._click_snapshot is not None:
+        # 禁用单击跳转时不使用快照，直接走当前 hitbox 判断
+        if not self._disable_click_jump and self._click_snapshot is not None:
             snapshot = self._click_snapshot
             self._click_snapshot = None
             if snapshot["type"] == "cp":
