@@ -43,12 +43,12 @@ def release_mod(tmp_path, monkeypatch):
 
             ## [Unreleased]
 
-            ### Added
+            ### 新增功能
             - placeholder
 
             ## [0.3.2] - 2026-05-01
 
-            ### Added
+            ### 新增功能
             - 旧版本说明
         """).lstrip(),
         encoding="utf-8",
@@ -96,7 +96,7 @@ class TestExtractNotes:
         rc = release_mod.cmd_extract_notes("0.3.3", out)
         assert rc == 0
         body = out.read_text(encoding="utf-8")
-        assert "### Added" in body
+        assert "### 新增功能" in body
         # 不应该把下一段也卷进来
         assert "[0.3.2]" not in body
 

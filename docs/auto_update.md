@@ -40,18 +40,18 @@
 ```markdown
 ## [0.3.3] - 2026-05-16
 
-### Added
+### 新增功能
 - 启动时自动检查更新...
 
-### Changed
+### 特性改变
 - 版本号统一收敛到 __version__.py...
 
-### Fixed
+### 修复项目
 - 修复...
 ```
 
 * 标题严格使用 `## [X.Y.Z] - YYYY-MM-DD`，前后空一行；
-* 子标题 `### Added` / `### Changed` / `### Fixed`（按 Keep a Changelog 风格）；
+* 子标题 `### 新增功能` / `### Cha特性改变nged` / `### 修复项目`（按 Keep a Changelog 风格）；
 * 用 `scripts/release.py prepare 0.3.4` 自动注入空白段落，你只需要填条目内容。
 
 **这段内容最终会原样发到 GitHub Release body，并展示在用户的更新弹窗里**，

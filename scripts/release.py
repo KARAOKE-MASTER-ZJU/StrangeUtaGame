@@ -63,6 +63,8 @@ UPDATER_EXE = ROOT / "updater_app" / "dist" / "Updater.exe"
 MAIN_BUILD = ROOT / "build.py"
 MAIN_DIST = ROOT / "dist" / "StrangeUtaGame"
 RELEASE_DIST = ROOT / "dist"
+# 记录上次成功打包的 runtime 内容哈希，随 git 提交，供 --reuse-runtime 使用。
+RUNTIME_HASH_CACHE = ROOT / "scripts" / ".runtime-hash-cache.json"
 
 VERSION_RE = re.compile(r'^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$')
 
@@ -395,6 +397,56 @@ def _write_sha256(target: Path) -> Path:
     return sha_path
 
 
+# ───────────────────────── runtime 哈希缓存 ─────────────────────────
+
+
+def _load_runtime_cache() -> Optional[Dict]:
+    if not RUNTIME_HASH_CACHE.exists():
+        return None
+    try:
+        return json.loads(RUNTIME_HASH_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _requirements_hash() -> str:
+    """对 ``pip freeze`` 输出取 SHA-256，作为"依赖是否变化"的快速判断。
+
+    只要安装的包列表/版本不变，哈希就不变 —— 即使改了 import 语句、
+    也没有增删第三方包，runtime 里的 DLL/pyd 文件就不会变。
+    运行失败时返回空字符串（调用方视为"无法判断，保守重建"）。
+    """
+    try:
+        out = subprocess.check_output(
+            [sys.executable, "-m", "pip", "freeze"],
+            stderr=subprocess.DEVNULL,
+            encoding="utf-8",
+        )
+    except subprocess.CalledProcessError:
+        return ""
+    return hashlib.sha256(out.encode("utf-8")).hexdigest().lower()
+
+
+def _save_runtime_cache(
+    version: str,
+    content_hash: str,
+    size: int,
+    requirements_hash: str = "",
+) -> None:
+    data = {
+        "version": version,
+        "content_hash": content_hash,
+        "size": size,
+        "requirements_hash": requirements_hash,
+    }
+    RUNTIME_HASH_CACHE.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    print(f"  ✓ 已更新 runtime 哈希缓存: {RUNTIME_HASH_CACHE.relative_to(ROOT)}")
+    print("  ⚠ 记得把 scripts/.runtime-hash-cache.json 一并提交到 git！")
+
+
 # ───────────────────────── 增量打包：app + runtime 分包 ─────────────────────────
 
 # 局部约定：app 部分（用户自己的应用代码，~5MB），其余归 runtime（依赖，~178MB）。
@@ -452,13 +504,27 @@ def _pack_part_zip(zip_path: Path, dist_root: Path, targets: List[str]) -> None:
                         zf.write(f, arcname=str(rel).replace("\\", "/"))
 
 
-def _pack_parts(version: str) -> Tuple[Path, Path, List[str], List[str]]:
+def _pack_parts(
+    version: str,
+    rebuild_runtime: bool = False,
+) -> Tuple[Path, Path, List[str], List[str]]:
     """打 app + runtime 两个 part zip 并生成各自 .sha256 文件。
 
     返回 ``(app_zip_path, runtime_zip_path, app_targets, runtime_targets)``。
     重要：``dist/StrangeUtaGame/_internal/.installed_manifest.json`` **不在任何
     part targets 中**，因此它即便存在也不会影响 part-zip 的 sha256，从而避免循环
     依赖（part sha256 → 写本地清单 → 再依赖含清单的内容）。
+
+    **runtime 自动判断策略**（``rebuild_runtime=False`` 时）：
+
+    1. 读取 ``scripts/.runtime-hash-cache.json`` 中上次打包时的 ``pip freeze`` 哈希；
+    2. 对当前环境重新执行 ``pip freeze`` 并计算哈希；
+    3. 两者相同 → 依赖包未变 → 复用上次的 runtime zip（content hash 与上次一致
+       → Updater 不会让用户重新下载 runtime）；
+    4. 不同 → 重新打包，更新缓存。
+
+    ``rebuild_runtime=True`` 时跳过上述判断，强制重打（用于 PyInstaller 版本升级、
+    手动确认依赖有变化等场景）。
     """
     dist_root = MAIN_DIST
     parent = dist_root.parent
@@ -469,15 +535,59 @@ def _pack_parts(version: str) -> Tuple[Path, Path, List[str], List[str]]:
     app_zip = parent / f"StrangeUtaGame-v{version}-app.zip"
     runtime_zip = parent / f"StrangeUtaGame-v{version}-runtime.zip"
 
+    # ── app part（始终重新打包）──
     print(f"  打包 app part → {app_zip.name}（{len(app_targets)} targets）")
     _pack_part_zip(app_zip, dist_root, app_targets)
     print(f"  ✓ {app_zip.name}  ({app_zip.stat().st_size / 1024 / 1024:.1f} MB)")
     _write_sha256(app_zip)
 
-    print(f"  打包 runtime part → {runtime_zip.name}（{len(runtime_targets)} targets）")
-    _pack_part_zip(runtime_zip, dist_root, runtime_targets)
-    print(f"  ✓ {runtime_zip.name}  ({runtime_zip.stat().st_size / 1024 / 1024:.1f} MB)")
-    _write_sha256(runtime_zip)
+    # ── runtime part：自动判断是否可复用 ──
+    reused = False
+    if not rebuild_runtime:
+        cache = _load_runtime_cache()
+        current_req_hash = _requirements_hash()
+        if not current_req_hash:
+            print("  ! pip freeze 失败，无法自动判断依赖变化，重新打包 runtime")
+        elif cache and cache.get("requirements_hash") == current_req_hash:
+            prev_version = cache.get("version", "")
+            prev_hash = cache.get("content_hash", "")
+            prev_zip = parent / f"StrangeUtaGame-v{prev_version}-runtime.zip"
+            if prev_hash and prev_zip.exists():
+                print(
+                    f"  依赖未变（pip freeze hash 相同），复用 v{prev_version} runtime"
+                    f" → {runtime_zip.name}"
+                )
+                shutil.copy2(str(prev_zip), str(runtime_zip))
+                print(
+                    f"  ✓ {runtime_zip.name}"
+                    f"  ({runtime_zip.stat().st_size / 1024 / 1024:.1f} MB)"
+                    f"  [content hash 与 v{prev_version} 相同，用户不会重新下载]"
+                )
+                _write_sha256(runtime_zip)
+                # 更新缓存版本号（指向当前版本 zip，供下次使用）
+                _save_runtime_cache(
+                    version, prev_hash, runtime_zip.stat().st_size, current_req_hash
+                )
+                reused = True
+            else:
+                reason = "content_hash 缺失" if not prev_hash else f"找不到 {prev_zip.name}"
+                print(f"  ! 依赖未变，但缓存 zip 不可用（{reason}），重新打包 runtime")
+        elif cache:
+            print("  依赖已变化（pip freeze hash 不同），重新打包 runtime")
+        else:
+            print("  无缓存记录（首次构建），打包 runtime 并建立缓存")
+
+    if rebuild_runtime:
+        print("  --rebuild-runtime：强制重新打包 runtime")
+
+    if not reused:
+        print(f"  打包 runtime part → {runtime_zip.name}（{len(runtime_targets)} targets）")
+        _pack_part_zip(runtime_zip, dist_root, runtime_targets)
+        print(f"  ✓ {runtime_zip.name}  ({runtime_zip.stat().st_size / 1024 / 1024:.1f} MB)")
+        _write_sha256(runtime_zip)
+        content_hash = _content_hash_of_zip(runtime_zip)
+        req_hash = _requirements_hash() if not rebuild_runtime else _requirements_hash()
+        _save_runtime_cache(version, content_hash, runtime_zip.stat().st_size, req_hash)
 
     return app_zip, runtime_zip, app_targets, runtime_targets
 
@@ -571,7 +681,11 @@ def _dump_release_notes(version: str) -> Optional[Path]:
     return notes_path
 
 
-def cmd_build(rebuild_updater: bool = False, clean: bool = False) -> int:
+def cmd_build(
+    rebuild_updater: bool = False,
+    clean: bool = False,
+    rebuild_runtime: bool = False,
+) -> int:
     version = _read_version()
     print(f"== build for v{version} ==")
     _ensure_updater_exe(force=rebuild_updater, clean=clean)
@@ -585,7 +699,9 @@ def cmd_build(rebuild_updater: bool = False, clean: bool = False) -> int:
     #   4) 写对外发布的 manifest-vX.Y.Z.json
     print()
     print("[step] 打增量分包 part zip ...")
-    app_zip, runtime_zip, app_targets, runtime_targets = _pack_parts(version)
+    app_zip, runtime_zip, app_targets, runtime_targets = _pack_parts(
+        version, rebuild_runtime=rebuild_runtime
+    )
 
     print()
     print("[step] 写出厂本地清单到 _internal/.installed_manifest.json ...")
@@ -643,7 +759,12 @@ def cmd_build(rebuild_updater: bool = False, clean: bool = False) -> int:
     return 0
 
 
-def cmd_all(version: str, rebuild_updater: bool = False, clean: bool = False) -> int:
+def cmd_all(
+    version: str,
+    rebuild_updater: bool = False,
+    clean: bool = False,
+    rebuild_runtime: bool = False,
+) -> int:
     rc = cmd_prepare(version)
     if rc != 0:
         return rc
@@ -654,7 +775,9 @@ def cmd_all(version: str, rebuild_updater: bool = False, clean: bool = False) ->
     if answer not in ("y", "yes"):
         print("已取消 build。")
         return 0
-    return cmd_build(rebuild_updater=rebuild_updater, clean=clean)
+    return cmd_build(
+        rebuild_updater=rebuild_updater, clean=clean, rebuild_runtime=rebuild_runtime
+    )
 
 
 # ───────────────────────── entry ─────────────────────────
@@ -682,6 +805,15 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="传给 PyInstaller --clean，完整重建（改了 import 或打包配置时使用）",
     )
+    sp_build.add_argument(
+        "--rebuild-runtime",
+        action="store_true",
+        help=(
+            "强制重新打包 runtime zip，忽略 pip freeze 自动判断。"
+            "用于 PyInstaller 版本升级、或确认新增了第三方依赖但 pip freeze "
+            "哈希未变（极少见）等场景。正常情况下不需要加此标志。"
+        ),
+    )
 
     sp_all = sub.add_parser("all", help="prepare + build")
     sp_all.add_argument("version", help="目标版本号 X.Y.Z")
@@ -695,6 +827,11 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="传给 PyInstaller --clean，完整重建（改了 import 或打包配置时使用）",
     )
+    sp_all.add_argument(
+        "--rebuild-runtime",
+        action="store_true",
+        help="强制重新打包 runtime zip（正常情况下不需要）",
+    )
 
     args = p.parse_args(argv)
     if args.cmd == "prepare":
@@ -702,9 +839,18 @@ def main(argv: Optional[list] = None) -> int:
     if args.cmd == "extract-notes":
         return cmd_extract_notes(args.version, args.output)
     if args.cmd == "build":
-        return cmd_build(rebuild_updater=args.rebuild_updater, clean=args.clean)
+        return cmd_build(
+            rebuild_updater=args.rebuild_updater,
+            clean=args.clean,
+            rebuild_runtime=args.rebuild_runtime,
+        )
     if args.cmd == "all":
-        return cmd_all(args.version, rebuild_updater=args.rebuild_updater, clean=args.clean)
+        return cmd_all(
+            args.version,
+            rebuild_updater=args.rebuild_updater,
+            clean=args.clean,
+            rebuild_runtime=args.rebuild_runtime,
+        )
     p.print_help()
     return 1
 

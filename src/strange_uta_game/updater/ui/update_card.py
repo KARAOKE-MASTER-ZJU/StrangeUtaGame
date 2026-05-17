@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import (
@@ -274,6 +274,26 @@ def _trigger_manual_check(parent: "SettingsInterface", btn: PushButton) -> None:
     checker.start()
 
 
+class _LaunchUpdaterWorker(QThread):
+    """在后台线程中执行 Updater 预热（自更新）+ 启动，避免主线程卡顿。
+
+    ``_update_updater_from_remote`` 会发起 HTTP 请求下载 app-part zip，
+    可能需要数秒到数十秒，期间主线程不能卡死。
+    """
+
+    # 发射 LaunchResult（用 object 类型传递 dataclass）
+    done = pyqtSignal(object)
+
+    def __init__(self, plan: "installer.LaunchPlan", parent=None):
+        super().__init__(parent)
+        self._plan = plan
+
+    def run(self) -> None:
+        from .. import installer as _installer
+        result = _installer.launch_updater(self._plan)
+        self.done.emit(result)
+
+
 def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> None:
     """展示"有新版本"弹窗，并按用户选择联动 :mod:`installer`。"""
     release = result.release
@@ -325,8 +345,6 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
     app_exe = _installer.find_app_exe_name()
 
     proxy = UpdaterSettings.load(parent.get_settings())
-    _, _proxies = (None, None)
-    # Updater 自己解析代理；我们传 proxy_url 字符串
     from ..proxy import resolve_proxy
     info, _ = resolve_proxy(proxy.proxy_mode, proxy.proxy_manual_url)
     proxy_url = info.url if info and info.is_valid else ""
@@ -340,31 +358,52 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
         download_urls=list(result.download_candidates),
         proxy_url=proxy_url,
     )
-    launch_result = _installer.launch_updater(plan)
-    if not launch_result.launched:
-        InfoBar.error(
-            title="无法启动 Updater",
-            content=launch_result.reason or "未知错误",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=6000,
-            parent=parent,
-        )
-        return
 
-    InfoBar.success(
-        title="更新已启动",
-        content="即将退出当前应用，由 Updater 完成替换并自动重启…",
+    # 立即给用户反馈，然后在后台线程完成"自更新 Updater + 启动"
+    # （_update_updater_from_remote 有网络请求，同步调用会冻结 UI 数秒）
+    InfoBar.info(
+        title="正在准备更新",
+        content="正在获取最新更新器，请稍候…",
         orient=Qt.Orientation.Horizontal,
-        isClosable=True,
+        isClosable=False,
         position=InfoBarPosition.TOP,
-        duration=3500,
+        duration=30000,  # 兜底超时，正常会被后续 InfoBar 覆盖
         parent=parent,
     )
 
-    # 延迟 1s 退出，让 InfoBar 来得及展示
-    QTimer.singleShot(1000, _quit_app)
+    worker = _LaunchUpdaterWorker(plan, parent=parent)
+    # 挂到 parent 上防止被 GC（QThread 是 QObject，parent 管理其生命周期）
+    parent._update_launch_worker = worker  # type: ignore[attr-defined]
+
+    def _on_done(launch_result: object) -> None:
+        from .. import installer as _inst
+        lr: _inst.LaunchResult = launch_result  # type: ignore[assignment]
+        if not lr.launched:
+            InfoBar.error(
+                title="无法启动 Updater",
+                content=lr.reason or "未知错误",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=6000,
+                parent=parent,
+            )
+            return
+
+        InfoBar.success(
+            title="更新已启动",
+            content="即将退出当前应用，由 Updater 完成替换并自动重启…",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3500,
+            parent=parent,
+        )
+        # 延迟 1s 退出，让 InfoBar 来得及展示
+        QTimer.singleShot(1000, _quit_app)
+
+    worker.done.connect(_on_done)
+    worker.start()
 
 
 def _quit_app() -> None:
