@@ -3939,6 +3939,7 @@ class EditorInterface(QWidget):
             sentence = self._project.sentences[idx]
             if 0 <= char_idx < len(sentence.characters):
                 ch = sentence.characters[char_idx]
+                total_chars = len(sentence.characters)
                 # 使用带 global_offset 的时间戳，与实际渲染/导出预览一致
                 ts_parts = []
                 for ts in ch.global_timestamps:
@@ -3951,9 +3952,9 @@ class EditorInterface(QWidget):
                     ms = ets % 1000
                     ts_parts.append(f"句尾{m:02d}:{s:02d}.{ms:03d}")
                 if ts_parts:
-                    char_info = f" | 「{ch.char}」 {', '.join(ts_parts)}"
+                    char_info = f" | 字 {char_idx + 1}/{total_chars} | 「{ch.char}」 {', '.join(ts_parts)}"
                 else:
-                    char_info = f" | 「{ch.char}」 未打轴"
+                    char_info = f" | 字 {char_idx + 1}/{total_chars} | 「{ch.char}」 未打轴"
             self.lbl_line_info.setText(f"行 {idx + 1}/{total}: {preview}{char_info}")
         else:
             self.lbl_line_info.setText("当前行: -")
