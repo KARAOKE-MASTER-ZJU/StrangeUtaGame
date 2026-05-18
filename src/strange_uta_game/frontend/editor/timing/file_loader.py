@@ -487,9 +487,11 @@ class FileLoader:
                 parent=self._editor,
             )
 
-            # Nicokara 格式弹窗
+            # Nicokara 格式弹窗；非 nicokara 格式自动跑一轮保持原有注音的注音分析
             if is_nicokara:
                 self._prompt_nicokara_ruby_choice()
+            else:
+                self._editor._auto_analyze_rubies(only_noruby=True)
 
         except ValueError as e:
             # SUG 项目文件：直接加载为项目
