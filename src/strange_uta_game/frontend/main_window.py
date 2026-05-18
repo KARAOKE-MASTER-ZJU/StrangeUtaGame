@@ -140,12 +140,22 @@ class MainWindow(MSFluentWindow):
         self._apply_win10_fallback_bg()
 
     def _apply_win10_fallback_bg(self):
-        """Win10 兜底：Mica 材质不可用时，强制设置纯色背景"""
+        """强制覆盖窗口背景色，确保强制主题模式下 Win11 Mica 不漏色。
+
+        Win11 的 Mica 材质跟随 OS 系统主题，与应用内强制的浅/深色无关。
+        若不显式覆盖背景，「强制浅色 + 系统深色」时 Mica 透出深色背景，
+        导致整个窗口看起来仍是深色。深色模式同理。
+
+        解决方案：无论深浅色均设置纯色背景，完全覆盖 Mica，保证
+        强制模式和跟随系统模式下视觉一致。
+        """
         if theme.is_dark:
             bg = theme.bg_primary.name()
             self.setStyleSheet(f"MSFluentWindow {{ background-color: {bg}; }}")
         else:
-            self.setStyleSheet("")
+            # 浅色背景：用 #F9F9F9 而非空字符串，确保覆盖掉任何残留的
+            # 深色 Mica 材质（强制浅色 + 系统深色的场景）。
+            self.setStyleSheet("MSFluentWindow { background-color: #F9F9F9; }")
 
     def _init_interfaces(self):
         """初始化所有子界面"""

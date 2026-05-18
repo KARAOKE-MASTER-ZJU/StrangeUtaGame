@@ -76,25 +76,69 @@ class ShortcutSubInterface(SubSettingInterface):
         self._loading = False
         self._init_ui()
 
+        # 主题变化时刷新快捷键标签前缀颜色（深/浅模式颜色不同）
+        from strange_uta_game.frontend.theme import theme
+        theme.changed.connect(self._refresh_tag_colors)
+
+    @staticmethod
+    def _tag_colors() -> dict:
+        """返回当前主题下快捷键标签前缀颜色。
+
+        浅色模式：深蓝/深绿/深紫（对浅背景对比度高）
+        深色模式：亮蓝/亮绿/亮紫（对深背景对比度高）
+        """
+        from strange_uta_game.frontend.theme import theme
+        if theme.is_dark:
+            return {"timing": "#60CDFF", "edit": "#6BCB77", "both": "#CE93D8"}
+        return {"timing": "#0078D4", "edit": "#107C10", "both": "#5C2D91"}
+
+    @staticmethod
+    def _make_tag_html(scope: str, title: str, colors: dict) -> str:
+        """生成带颜色标签前缀的 HTML 标题字符串。"""
+        _map = {
+            "both":         (colors["both"],   "[通用]"),
+            "timing_only":  (colors["timing"], "[打轴]"),
+            "edit_only":    (colors["edit"],   "[编辑]"),
+            "split_timing": (colors["timing"], "[打轴]"),
+            "split_edit":   (colors["edit"],   "[编辑]"),
+        }
+        if scope in _map:
+            color, tag = _map[scope]
+            return f'<span style="color:{color};font-weight:bold;">{tag}</span> {title}'
+        return title
+
+    def _refresh_tag_colors(self):
+        """主题变化时重新为所有快捷键卡片标题应用正确的颜色标签。"""
+        colors = self._tag_colors()
+        for row in self._SHORTCUT_ACTIONS:
+            key, _, title, _, _, _, scope, _, _, _ = row
+            if scope == "both":
+                card = self._shortcut_cards["timing_mode"].get(key)
+                if card:
+                    card.setTitle(self._make_tag_html("both", title, colors))
+            elif scope == "timing_only":
+                card = self._shortcut_cards["timing_mode"].get(key)
+                if card:
+                    card.setTitle(self._make_tag_html("timing_only", title, colors))
+            elif scope == "edit_only":
+                card = self._shortcut_cards["edit_mode"].get(key)
+                if card:
+                    card.setTitle(self._make_tag_html("edit_only", title, colors))
+            elif scope == "split":
+                card_t = self._shortcut_cards["timing_mode"].get(key)
+                if card_t:
+                    card_t.setTitle(self._make_tag_html("split_timing", title, colors))
+                card_e = self._shortcut_cards["edit_mode"].get(key)
+                if card_e:
+                    card_e.setTitle(self._make_tag_html("split_edit", title, colors))
+
     def _init_ui(self):
-        color_timing = "#0078D4"
-        color_edit = "#107C10"
-        color_both = "#5C2D91"
+        colors = self._tag_colors()
 
         group = SettingCardGroup("快捷键", self.scrollWidget)
 
         def _wrap(t, s):
-            if s == "both":
-                return f'<span style="color:{color_both};font-weight:bold;">[通用]</span> {t}'
-            if s == "timing_only":
-                return f'<span style="color:{color_timing};font-weight:bold;">[打轴]</span> {t}'
-            if s == "edit_only":
-                return f'<span style="color:{color_edit};font-weight:bold;">[编辑]</span> {t}'
-            if s == "split_timing":
-                return f'<span style="color:{color_timing};font-weight:bold;">[打轴]</span> {t}'
-            if s == "split_edit":
-                return f'<span style="color:{color_edit};font-weight:bold;">[编辑]</span> {t}'
-            return t
+            return self._make_tag_html(s, t, colors)
 
         for row in self._SHORTCUT_ACTIONS:
             key, icon, title, content, dt, de, scope, tc, ec, ro = row

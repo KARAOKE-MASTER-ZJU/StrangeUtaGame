@@ -22,6 +22,8 @@ from qfluentwidgets import (
     SpinBox,
 )
 
+from strange_uta_game.frontend.theme import theme
+
 if TYPE_CHECKING:
     from .settings_interface import SettingsInterface
 
@@ -39,17 +41,22 @@ class CalibrationCanvas(QWidget):
         _ = a0
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(18, 18, 22))
+
+        # 背景：跟随当前主题（深色用深灰，浅色用浅灰）
+        painter.fillRect(self.rect(), theme.waveform_bg)
 
         width = max(1, self.width())
         height = max(1, self.height())
         center_x = width / 2
         center_y = height / 2
 
-        painter.setPen(QPen(QColor(235, 70, 70), 3))
+        # 中心线：使用主题强调色（红色系，深浅色均可见）
+        painter.setPen(QPen(theme.accent_warning, 3))
         painter.drawLine(int(center_x), 24, int(center_x), height - 24)
 
         painter.setPen(Qt.PenStyle.NoPen)
+        # 节拍块：深色模式用白色，浅色模式用深灰，保证对比度
+        block_base = QColor(255, 255, 255) if theme.is_dark else QColor(40, 40, 40)
         for index in range(2):
             phase = self._dialog.block_phase(index)
             x = ((phase + 0.5) % 1.0) * width
@@ -59,19 +66,14 @@ class CalibrationCanvas(QWidget):
             block_height = 44 + 44 * scale
             alpha = int(110 + 145 * proximity)
 
-            painter.setBrush(QBrush(QColor(255, 255, 255, alpha)))
+            block_color = QColor(block_base)
+            block_color.setAlpha(alpha)
+            painter.setBrush(QBrush(block_color))
             rect_x = int(round(x - block_width / 2))
             rect_y = int(round(center_y - block_height / 2))
             rect_w = int(round(block_width))
             rect_h = int(round(block_height))
-            painter.drawRoundedRect(
-                rect_x,
-                rect_y,
-                rect_w,
-                rect_h,
-                10,
-                10,
-            )
+            painter.drawRoundedRect(rect_x, rect_y, rect_w, rect_h, 10, 10)
 
 
 class CalibrationDialog(QDialog):
@@ -80,6 +82,7 @@ class CalibrationDialog(QDialog):
     def __init__(self, parent: "SettingsInterface"):
         super().__init__(parent)
         self._settings_interface = parent
+        self._canvas: Optional[CalibrationCanvas] = None  # 初始化后赋值
         self._sample_rate = 44100
         self._bpm = 120
         self._beat_interval = 60.0 / self._bpm
@@ -140,6 +143,7 @@ class CalibrationDialog(QDialog):
         root.addLayout(top_row)
 
         self.canvas = CalibrationCanvas(self, self)
+        self._canvas = self.canvas  # 同步赋值供 theme.changed 使用
         root.addWidget(self.canvas)
 
         self.lbl_hint = QLabel(
@@ -151,6 +155,9 @@ class CalibrationDialog(QDialog):
         self.animation_timer = QTimer(self)
         self.animation_timer.setInterval(16)
         self.animation_timer.timeout.connect(self.canvas.update)
+
+        # 主题变化时重绘画布（theme.changed 信号由 CalibrationCanvas.paintEvent 消费）
+        theme.changed.connect(self.canvas.update)
 
         self.spin_bpm.valueChanged.connect(self._on_bpm_changed)
         self.btn_reset.clicked.connect(self._on_reset)

@@ -139,9 +139,7 @@ class SettingsInterface(ScrollArea):
         # 标题
         self.settingLabel = QLabel("设置", self)
         self.settingLabel.setObjectName("settingLabel")
-        self.settingLabel.setStyleSheet(
-            "QLabel#settingLabel{font-size:28px;font-weight:bold;padding:10px 0;}"
-        )
+        self._update_setting_label_style()  # 应用初始颜色（含主题颜色）
 
         # 选项卡 + 堆叠区
         self.pivot = SettingPivot(self)
@@ -150,6 +148,11 @@ class SettingsInterface(ScrollArea):
         self._init_widget()
         self._init_layout()
 
+        # 主题变化时更新标题标签颜色（setStyleSheet 会在 Qt 内部创建独立 Palette
+        # 副本，阻止后续 QApplication.setPalette 的 WindowText 更新传入）
+        from strange_uta_game.frontend.theme import theme
+        theme.changed.connect(self._update_setting_label_style)
+
         # 在主事件循环空闲时预载子页面（不阻塞 MainWindow 初始化）。
         # 注意：不能用 singleShot(0)，那会在 MSFluentWindow.showEvent 处理期间
         # 触发大量子控件创建，导致窗口重新布局重置任务栏图标。
@@ -157,6 +160,21 @@ class SettingsInterface(ScrollArea):
         QTimer.singleShot(500, self._preload)
 
     # ── 初始化 ────────────────────────────────────────────────────────
+
+    def _update_setting_label_style(self):
+        """更新标题 QLabel 的样式（含主题文字颜色）。
+
+        setStyleSheet 会让 Qt 为该 widget 生成独立 Palette 副本，导致后续
+        QApplication.setPalette 的 WindowText 变化不再传入。
+        因此必须在 theme.changed 时显式写入 color，确保深/浅色正确切换。
+        """
+        from strange_uta_game.frontend.theme import theme
+        color = theme.text_primary.name()
+        self.settingLabel.setStyleSheet(
+            f"QLabel#settingLabel{{"
+            f"font-size:28px;font-weight:bold;padding:10px 0;color:{color};"
+            f"}}"
+        )
 
     def _init_widget(self):
         self.setWidget(self.scrollWidget)

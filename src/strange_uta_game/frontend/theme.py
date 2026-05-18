@@ -377,10 +377,16 @@ class Theme(QObject):
     def _on_system_theme_changed(self, scheme: Qt.ColorScheme) -> None:
         """系统主题变化回调（Win11 colorSchemeChanged 信号）
 
-        只有在 AUTO 模式下才响应系统主题变化，
-        手动设置 LIGHT/DARK 时忽略系统变化。
+        AUTO 模式：跟随系统切换应用主题。
+        LIGHT/DARK 强制模式：qfluentwidgets 内部也连接了 colorSchemeChanged，
+        其 lazy 更新会在下一个 singleShot(0) 触发。用 double-singleShot(0)
+        确保在那之后再重新强制我们的主题外观（标题栏 + 窗口背景色）。
         """
         if self._mode != ThemeMode.AUTO:
+            # double-singleShot(0)：
+            #   pass 1 → 排在 qfluentwidgets lazy-singleShot 之后入队
+            #   pass 2 → 确保 qfluentwidgets 的延迟更新全部 settle 后再覆盖
+            QTimer.singleShot(0, lambda: QTimer.singleShot(0, self._reapply_win11_appearance))
             return
 
         old_dark = self._system_is_dark
@@ -392,7 +398,28 @@ class Theme(QObject):
     def _apply_theme_change(self) -> None:
         """应用主题变更（统一入口）"""
         self._invalidate()
-        self._apply_qfluentwidgets_theme()
+        self._apply_qfluentwidgets_theme(lazy=True)
+        self._refresh_all_widgets()
+        self.changed.emit()
+
+    def _reapply_win11_appearance(self) -> None:
+        """Win11 专用：重新强制主题外观（全量刷新）。
+
+        在两种场景下通过 double-singleShot(0) 延迟调用：
+        1. 强制模式下系统主题改变时 —— Qt 平台层已把系统 QPalette 更新为暗色，
+           若不进行全量刷新，用 autoFillBackground 或 QPalette 渲染背景的子界面
+           仍会跟着系统暗色走；
+        2. 用户手动切换主题时，确保 event loop 完全 settle 后标题栏/背景状态正确。
+
+        与 _apply_theme_change 的区别：
+        - lazy=False：对 styleSheetManager 中的 **所有** 控件（含隐藏页）立即写入
+          正确的 QSS，不依赖 DirtyStyleSheetWatcher 的延迟机制，从根本上消除
+          「隐藏子界面切出来时仍显示系统颜色」的问题；
+        - _refresh_all_widgets()：unpolish/polish 所有可见控件，覆盖系统 QPalette
+          更新带来的背景色污染；
+        - 不重复调用 _invalidate()，因 _mode 未变，颜色缓存无需重建。
+        """
+        self._apply_qfluentwidgets_theme(lazy=False)
         self._refresh_all_widgets()
         self.changed.emit()
 
@@ -406,6 +433,12 @@ class Theme(QObject):
             return
         self._mode = value
         self._apply_theme_change()
+        # Win11：setTheme(lazy=True) 触发的 DwmAttribute / MSFluentWindow stylesheet
+        # 更新可能在 _apply_theme_change 的 processEvents() 之后仍有残留。
+        # 用 double-singleShot(0) 在 event loop 完全 settle 后再 re-assert 一次，
+        # 确保标题栏颜色和 Mica 覆盖背景色都处于正确状态。
+        if not self._is_win10:
+            QTimer.singleShot(0, lambda: QTimer.singleShot(0, self._reapply_win11_appearance))
 
     @property
     def is_dark(self) -> bool:
@@ -425,35 +458,46 @@ class Theme(QObject):
         """清除颜色缓存"""
         self._colors = None
 
-    def _apply_qfluentwidgets_theme(self) -> None:
-        """同步应用 qfluentwidgets 主题
+    def _apply_qfluentwidgets_theme(self, lazy: bool = True) -> None:
+        """同步应用 qfluentwidgets 主题。
+
+        Parameters
+        ----------
+        lazy : bool
+            True（默认）：仅对可见控件立即更新，隐藏控件标记 dirty-qss。
+            False：对 styleSheetManager 内所有控件立即写入 QSS（含隐藏控件），
+                   消除依赖 DirtyStyleSheetWatcher 时序的隐患。
 
         Win10 上需要多次调用以确保所有控件正确更新。
         """
         try:
             from qfluentwidgets import setTheme, Theme as QfwTheme
             target = QfwTheme.DARK if self.is_dark else QfwTheme.LIGHT
-            setTheme(target, lazy=True)
+            setTheme(target, lazy=lazy)
             # Win10 兼容：某些控件需要额外的强制刷新
             if self._is_win10:
                 app = QApplication.instance()
                 if app:
                     app.processEvents()
-                    setTheme(target, lazy=True)
+                    setTheme(target, lazy=lazy)
         except Exception:
             pass
 
     def _refresh_all_widgets(self) -> None:
-        """强制刷新所有控件的样式"""
+        """强制刷新所有顶层窗口及其子控件的样式表。
+
+        注意：qfluentwidgets 主题的应用（setTheme）已在 _apply_theme_change()
+        中调用过一次；这里只负责 unpolish/polish 刷新，不重复调用 setTheme，
+        避免多次调用引发控件中间状态渲染异常。
+        """
         app = QApplication.instance()
         if app:
-            # 先处理待处理的事件
+            # 先让 setTheme(lazy=True) 排队的事件跑完
             app.processEvents()
-            # 遍历所有顶层窗口，强制更新样式
+            # 遍历所有顶层窗口，强制重新 polish
             for widget in app.topLevelWidgets():
                 self._update_widget_style(widget)
-            # 再次应用 qfluentwidgets 主题，确保内部样式（如菜单）也被刷新
-            self._apply_qfluentwidgets_theme()
+            # 再刷新一次，确保 polish 触发的重绘已入队
             app.processEvents()
 
     def _update_widget_style(self, widget) -> None:

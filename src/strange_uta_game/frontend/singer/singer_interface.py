@@ -179,13 +179,14 @@ class TransferTargetDialog(QDialog):
 class SingerPresetLoadDialog(QDialog):
     """从软件预设加载演唱者的多选对话框（用 CheckState 驱动选中，避免 MultiSelection UI 刷新 BUG）"""
 
-    def __init__(self, presets: list, existing_names: set, parent=None):
+    def __init__(self, presets: list, existing_names: set, app_settings=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("从软件预设加载演唱者")
         self.resize(400, 450)
 
         self._presets = presets
         self._existing_names = existing_names
+        self._app_settings = app_settings
 
         self._init_ui()
         self._populate_list()
@@ -228,15 +229,29 @@ class SingerPresetLoadDialog(QDialog):
         select_layout.addWidget(self.lbl_stats)
         layout.addLayout(select_layout)
 
-        # 确定/取消按钮
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("加载选中")
-        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        button_box.accepted.connect(self._on_accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        # 按钮行
+        button_layout = QHBoxLayout()
+        
+        # 删除选中演唱者按钮
+        self.btn_delete_selected = PushButton("删除选中演唱者", self)
+        self.btn_delete_selected.setIcon(FIF.DELETE)
+        self.btn_delete_selected.clicked.connect(self._on_delete_selected)
+        button_layout.addWidget(self.btn_delete_selected)
+        
+        button_layout.addStretch()
+        
+        # 加载选中按钮
+        btn_load = PushButton("加载选中", self)
+        btn_load.setIcon(FIF.DOWNLOAD)
+        btn_load.clicked.connect(self._on_accept)
+        button_layout.addWidget(btn_load)
+        
+        # 取消按钮
+        btn_cancel = PushButton("取消", self)
+        btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(btn_cancel)
+        
+        layout.addLayout(button_layout)
 
     def _populate_list(self):
         """填充列表"""
@@ -313,6 +328,69 @@ class SingerPresetLoadDialog(QDialog):
             if item.checkState() == Qt.CheckState.Checked:
                 checked += 1
         self.lbl_stats.setText(f"已选 {checked}/{total}")
+
+    def _on_delete_selected(self):
+        """删除选中的演唱者预设"""
+        # 获取选中的预设
+        selected_presets = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                preset = item.data(Qt.ItemDataRole.UserRole)
+                if preset:
+                    selected_presets.append(preset)
+        
+        if not selected_presets:
+            InfoBar.warning(title="未选择", content="请至少选择一位演唱者",
+                            parent=self, duration=2000)
+            return
+        
+        # 二次确认
+        names = "、".join(p.get("name", "") for p in selected_presets[:5])
+        if len(selected_presets) > 5:
+            names += f" 等 {len(selected_presets)} 位"
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("确认删除")
+        msg.setText(f"确定要从预设中删除以下演唱者吗？\n\n{names}\n\n删除后将无法恢复。")
+        btn_yes = msg.addButton("删除", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_yes)
+        msg.exec()
+        
+        if msg.clickedButton() is not btn_yes:
+            return
+        
+        # 从预设中删除选中的演唱者
+        if not self._app_settings:
+            InfoBar.error(title="错误", content="无法访问设置",
+                          parent=self, duration=3000)
+            return
+        
+        try:
+            # 获取当前预设
+            current_presets = self._app_settings.load_singer_presets()
+            
+            # 构建要删除的名称集合
+            names_to_delete = {p.get("name", "") for p in selected_presets}
+            
+            # 过滤掉要删除的预设
+            updated_presets = [p for p in current_presets if p.get("name", "") not in names_to_delete]
+            
+            # 保存更新后的预设
+            self._app_settings.save_singer_presets(updated_presets)
+            
+            # 更新本地预设列表
+            self._presets = updated_presets
+            
+            # 重新填充列表
+            self._populate_list()
+            
+            InfoBar.success(title="删除成功", content=f"已删除 {len(selected_presets)} 位演唱者预设",
+                            parent=self, duration=2000)
+        except Exception as e:
+            InfoBar.error(title="删除失败", content=f"保存预设时出错: {e}",
+                          parent=self, duration=3000)
 
     def _on_accept(self):
         """确认选择"""
@@ -942,7 +1020,7 @@ class SingerManagerInterface(QWidget):
         existing_names = {s.name for s in self._project.singers}
 
         # 弹出多选对话框
-        dialog = SingerPresetLoadDialog(presets, existing_names, self)
+        dialog = SingerPresetLoadDialog(presets, existing_names, app_settings, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
