@@ -1207,8 +1207,6 @@ class AutoCheckService:
         # find_english_words 基于 text 的字符索引，与 chars/check_counts 一一对应。
         _english_syllable_check = self._flags.get("english_syllable_check", True)
         for _start, _end, _word in find_english_words(text):
-            if _end - _start <= 1:
-                continue  # 单字母词不强制（"I"/"a" 保留默认行为）
             _syllable_starts = (
                 get_syllable_start_offsets(_word) if _english_syllable_check else {0}
             )
@@ -1836,13 +1834,12 @@ class AutoCheckService:
         _english_syllable_check = self._flags.get("english_syllable_check", True)
         for start, end, word in find_english_words(sentence.text):
             _is_single = end - start <= 1
-            if not _is_single:
-                _syllable_starts = (
-                    get_syllable_start_offsets(word) if _english_syllable_check else {0}
-                )
-                for idx in range(start, end):
-                    if idx < len(check_counts):
-                        check_counts[idx] = 1 if (idx - start) in _syllable_starts else 0
+            _syllable_starts = (
+                get_syllable_start_offsets(word) if _english_syllable_check else {0}
+            )
+            for idx in range(start, end):
+                if idx < len(check_counts):
+                    check_counts[idx] = 1 if (idx - start) in _syllable_starts else 0
             if end - 1 < len(sentence.characters):
                 english_word_end_idx.add(end - 1)  # 含单字母词，确保空格豁免生效
                 if not _is_single and check_english_word_end:
