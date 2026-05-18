@@ -1634,18 +1634,19 @@ class EditorInterface(QWidget):
 
         exclude_linked = "linked" in exclude_rules
 
-        def _is_target_char(ch_obj) -> bool:
-            """判断字符是否为目标类型"""
+        def _is_target_char(ch_obj, char_idx: int, chars_list) -> bool:
+            """判断字符是否为目标类型（check_count=0 且符合适用规则）"""
             char = ch_obj.char
-            # 跳过有时间戳的字符
-            if ch_obj.timestamps:
-                return False
-            # 跳过句尾字符
-            if ch_obj.is_sentence_end:
+            # 跳过 check_count > 0 的字符（已有节奏点，无需补全）
+            if ch_obj.check_count > 0:
                 return False
             # 跳过被连词字符（如果启用排除）
-            if exclude_linked and ch_obj.linked_to_next:
-                return False
+            # 连词组中的所有字符都应被排除：当前字符 linked_to_next=True 或前一个字符 linked_to_next=True
+            if exclude_linked:
+                if ch_obj.linked_to_next:
+                    return False
+                if char_idx > 0 and chars_list[char_idx - 1].linked_to_next:
+                    return False
 
             # 捨仮名检查
             if include_chisai_kana and char in _SMALL_KANA:
@@ -1702,69 +1703,38 @@ class EditorInterface(QWidget):
 
             for line_idx, sentence in enumerate(self._project.sentences):
                 chars = sentence.characters
+                total_chars = len(chars)
                 i = 0
-                while i < len(chars):
-                    # 找到连续的待补全字符段
-                    if not _is_target_char(chars[i]):
+                while i < total_chars:
+                    # 跳过不符合适用条件的字符
+                    if not _is_target_char(chars[i], i, chars):
                         i += 1
                         continue
 
-                    # 找到连续段的结束位置
+                    # 收集连续的待补全字符段
                     segment_start = i
-                    while i < len(chars) and _is_target_char(chars[i]):
+                    while i < total_chars and _is_target_char(chars[i], i, chars):
                         i += 1
                     segment_end = i  # 不包含
 
-                    # 向前查找时间戳
-                    prev_ts = _find_prev_timestamp(line_idx, segment_start)
-
-                    # 向后查找时间戳
-                    next_ts = _find_next_timestamp(line_idx, segment_end - 1)
-
-                    # 根据找到的时间戳进行补全
                     segment_len = segment_end - segment_start
 
-                    if prev_ts is not None and next_ts is not None:
-                        # 前后都有时间戳：均匀分配
-                        if segment_len == 1:
-                            # 单个字符：取平均值
-                            avg_ts = (prev_ts + next_ts) // 2
-                            chars[segment_start].timestamps = [avg_ts]
-                            chars[segment_start].check_count = 1
-                            chars[segment_start]._update_offset_timestamps()
-                            chars[segment_start].push_to_ruby()
-                            total_count += 1
-                        else:
-                            # N 个连续字符：把时间区域均匀切 N+1 份
-                            time_diff = next_ts - prev_ts
-                            for idx, ci in enumerate(range(segment_start, segment_end)):
-                                # 计算每个字符的时间戳位置
-                                ts = prev_ts + time_diff * (idx + 1) // (segment_len + 1)
-                                chars[ci].timestamps = [ts]
-                                chars[ci].check_count = 1
-                                chars[ci]._update_offset_timestamps()
-                                chars[ci].push_to_ruby()
-                                total_count += 1
-                    elif prev_ts is not None:
-                        # 只有前面的时间戳：行尾无后方时间戳，向前找到时间戳后加上偏移作为结束时间，均分
-                        end_ts = prev_ts + tail_offset_ms
-                        if segment_len == 1:
-                            chars[segment_start].timestamps = [end_ts]
-                            chars[segment_start].check_count = 1
-                            chars[segment_start]._update_offset_timestamps()
-                            chars[segment_start].push_to_ruby()
-                            total_count += 1
-                        else:
-                            time_diff = end_ts - prev_ts
-                            for idx, ci in enumerate(range(segment_start, segment_end)):
-                                ts = prev_ts + time_diff * (idx + 1) // (segment_len + 1)
-                                chars[ci].timestamps = [ts]
-                                chars[ci].check_count = 1
-                                chars[ci]._update_offset_timestamps()
-                                chars[ci].push_to_ruby()
-                                total_count += 1
-                    elif next_ts is not None:
-                        # 只有后面的时间戳：行首无前方时间戳，向后找到时间戳后减去偏移作为起始时间，均分
+                    # 判断段的位置
+                    is_at_start = (segment_start == 0)  # 行首
+                    is_at_end = (segment_end == total_chars)  # 行尾
+
+                    # 查找前后时间戳
+                    prev_ts = _find_prev_timestamp(line_idx, segment_start)
+                    next_ts = _find_next_timestamp(line_idx, segment_end - 1)
+
+                    # 根据位置和时间戳决定处理方式
+                    if is_at_start and is_at_end:
+                        # 整行都是待补全字符，前后都没有时间戳，跳过
+                        continue
+                    elif is_at_start:
+                        # 行首：只有后方时间戳，使用 head_offset_ms
+                        if next_ts is None:
+                            continue
                         start_ts = max(0, next_ts - head_offset_ms)
                         if segment_len == 1:
                             chars[segment_start].timestamps = [start_ts]
@@ -1781,7 +1751,46 @@ class EditorInterface(QWidget):
                                 chars[ci]._update_offset_timestamps()
                                 chars[ci].push_to_ruby()
                                 total_count += 1
-                    # 如果前后都没有时间戳，跳过这个段
+                    elif is_at_end:
+                        # 行尾：只有前方时间戳，使用 tail_offset_ms
+                        if prev_ts is None:
+                            continue
+                        end_ts = prev_ts + tail_offset_ms
+                        if segment_len == 1:
+                            chars[segment_start].timestamps = [end_ts]
+                            chars[segment_start].check_count = 1
+                            chars[segment_start]._update_offset_timestamps()
+                            chars[segment_start].push_to_ruby()
+                            total_count += 1
+                        else:
+                            time_diff = end_ts - prev_ts
+                            for idx, ci in enumerate(range(segment_start, segment_end)):
+                                ts = prev_ts + time_diff * (idx + 1) // (segment_len + 1)
+                                chars[ci].timestamps = [ts]
+                                chars[ci].check_count = 1
+                                chars[ci]._update_offset_timestamps()
+                                chars[ci].push_to_ruby()
+                                total_count += 1
+                    else:
+                        # 行中：前后都应该有时间戳
+                        if prev_ts is None or next_ts is None:
+                            continue
+                        if segment_len == 1:
+                            avg_ts = (prev_ts + next_ts) // 2
+                            chars[segment_start].timestamps = [avg_ts]
+                            chars[segment_start].check_count = 1
+                            chars[segment_start]._update_offset_timestamps()
+                            chars[segment_start].push_to_ruby()
+                            total_count += 1
+                        else:
+                            time_diff = next_ts - prev_ts
+                            for idx, ci in enumerate(range(segment_start, segment_end)):
+                                ts = prev_ts + time_diff * (idx + 1) // (segment_len + 1)
+                                chars[ci].timestamps = [ts]
+                                chars[ci].check_count = 1
+                                chars[ci]._update_offset_timestamps()
+                                chars[ci].push_to_ruby()
+                                total_count += 1
 
             if total_count == 0:
                 return None
@@ -3692,7 +3701,16 @@ class EditorInterface(QWidget):
         if not engine.is_playing():
             self.transport.set_playing(False)
             self.preview.set_playing(False)
+            self.lbl_status.setText("播放完毕")
+            self._update_mode_indicator()
+            # 重置自动滚动状态
+            self._auto_scroll_suspended = False
+            self._auto_scroll_new_line_reached = False
+            self._auto_scroll_cooldown_timer.stop()
+            # 停止位置拉取定时器
             self._position_poll_timer.stop()
+            # 切换到编辑模式时校验所有行时间戳
+            self._validate_all_timestamps()
 
     # ==================== 自动滚动状态机 ====================
 
