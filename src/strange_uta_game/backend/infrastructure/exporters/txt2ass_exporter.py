@@ -301,9 +301,30 @@ class ASSDirectExporter(BaseExporter):
         for seg_idx, (ci, pi, _) in enumerate(flat_anchors):
             last_seg_of_char[ci] = seg_idx
 
+        # 预计算连词尾部字符：anchor ci 若 linked_to_next=True，则其后续
+        # 无时间戳的 linked 字符链属于该连词，应并入 pi==0 的 kanji，不作 tail_text。
+        anchor_indices_set = set(anchor_indices)
+        compound_tail: Dict[int, List[int]] = {}
+        for ci in anchor_indices:
+            if not chars[ci].linked_to_next:
+                continue
+            tail: List[int] = []
+            j = ci + 1
+            while j < len(chars):
+                if j in anchor_indices_set:
+                    break  # 后续字符自有时间戳，独立渲染，不并入本连词
+                tail.append(j)
+                if not chars[j].linked_to_next:
+                    break
+                j += 1
+            if tail:
+                compound_tail[ci] = tail
+        compound_tail_set = {j for tails in compound_tail.values() for j in tails}
+
         # 收集「该 seg 结尾要追加的无 ts 字符文字」
         tail_text: Dict[int, str] = {}
-        # 遍历 chars，把每个无 ts 字符塞到「前一个有 ts 字符的最后段」尾巴
+        # 遍历 chars，把每个无 ts 字符塞到「前一个有 ts 字符的最后段」尾巴；
+        # 已归入 compound_tail 的字符跳过（它们并入了 kanji）。
         prev_anchor_ci: Optional[int] = None
         for j, ch in enumerate(chars):
             if ch.global_timestamps:
@@ -311,6 +332,8 @@ class ASSDirectExporter(BaseExporter):
                 continue
             if j < first_anchor:
                 continue  # 已并入 pre-roll
+            if j in compound_tail_set:
+                continue  # 连词尾部字符，已并入 kanji，不重复追加
             if prev_anchor_ci is None:
                 continue
             tail_seg = last_seg_of_char[prev_anchor_ci]
@@ -325,8 +348,12 @@ class ASSDirectExporter(BaseExporter):
             ch = chars[ci]
 
             if pi == 0:
-                # 该字第一段：写字符（+ 可选首 part ruby）
+                # 该字第一段：写字符（+ 连词尾部字符 + 可选首 part ruby）
                 kanji = self._escape_ass_text(ch.char)
+                # 连词：把后续无时间戳的 linked 字符文本并入 kanji
+                if ci in compound_tail:
+                    for linked_idx in compound_tail[ci]:
+                        kanji += self._escape_ass_text(chars[linked_idx].char)
                 if ch.ruby and ch.ruby.parts:
                     first_part_text = self._escape_ass_text(ch.ruby.parts[0].text)
                     seg_body = f"{kanji}|<{first_part_text}"

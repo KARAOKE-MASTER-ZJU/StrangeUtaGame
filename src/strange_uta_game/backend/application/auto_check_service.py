@@ -1331,11 +1331,10 @@ class AutoCheckService:
         english_word_end_idx: set = set()  # 所有英文单词结尾索引（不受开关控制）
         check_english_word_end = self._flags.get("check_english_word_end", True)
         for _start, _end, _word in find_english_words(sentence.text):
-            if _end - _start <= 1:
-                continue  # 单字母词不强制
+            _is_single = _end - _start <= 1
             if _end - 1 < len(results):
-                english_word_end_idx.add(_end - 1)
-                if check_english_word_end:
+                english_word_end_idx.add(_end - 1)  # 含单字母词，确保空格豁免生效
+                if not _is_single and check_english_word_end:
                     english_sentence_end_idx.add(_end - 1)
 
         new_characters: List[Character] = []
@@ -1830,14 +1829,14 @@ class AutoCheckService:
         english_word_end_idx: set[int] = set()  # 所有英文单词结尾索引（不受开关控制）
         check_english_word_end = self._flags.get("check_english_word_end", True)
         for start, end, word in find_english_words(sentence.text):
-            if end - start <= 1:
-                continue  # 单字母词：无词组概念
-            for idx in range(start, end):
-                if idx < len(check_counts):
-                    check_counts[idx] = 1 if idx == start else 0
+            _is_single = end - start <= 1
+            if not _is_single:
+                for idx in range(start, end):
+                    if idx < len(check_counts):
+                        check_counts[idx] = 1 if idx == start else 0
             if end - 1 < len(sentence.characters):
-                english_word_end_idx.add(end - 1)
-                if check_english_word_end:
+                english_word_end_idx.add(end - 1)  # 含单字母词，确保空格豁免生效
+                if not _is_single and check_english_word_end:
                     english_sentence_end_idx.add(end - 1)
 
         # 更新字符属性

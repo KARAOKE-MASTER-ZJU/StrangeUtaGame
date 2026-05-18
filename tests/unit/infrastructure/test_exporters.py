@@ -230,6 +230,57 @@ class TestASSDirectExporter:
         finally:
             os.unlink(temp_path)
 
+    def test_generate_karaoke_text_compound_ruby(self):
+        """连词 ruby 导出：{合言葉||あ|い,こ|と,ば} 场景。
+
+        "合" 拥有所有 5 个 ruby part 和 5 个时间戳；"言"、"葉" check_count=0 无时间戳。
+        期望输出：合言葉|<あ 出现在首个 \\k 块，言葉不作为 tail 追加到末尾。
+        """
+        from strange_uta_game.backend.domain import Ruby, RubyPart
+
+        project = Project()
+        singer = project.singers[0]
+
+        sentence = Sentence.from_text("合言葉", singer.id)
+        # "合": 5 个 ruby part，5 个 checkpoint
+        ch0 = sentence.characters[0]
+        ch0.check_count = 5
+        ch0.set_ruby(Ruby(parts=[
+            RubyPart(text="あ"),
+            RubyPart(text="い"),
+            RubyPart(text="こ"),
+            RubyPart(text="と"),
+            RubyPart(text="ば"),
+        ]))
+        for i, ts in enumerate([1000, 1130, 1260, 1390, 1520]):
+            ch0.add_timestamp(ts, checkpoint_idx=i)
+        ch0.linked_to_next = True
+
+        # "言": check_count=0，无时间戳，linked_to_next=True
+        ch1 = sentence.characters[1]
+        ch1.check_count = 0
+        ch1.linked_to_next = True
+
+        # "葉": check_count=0，无时间戳，连词末尾
+        ch2 = sentence.characters[2]
+        ch2.check_count = 0
+
+        ch2.is_sentence_end = True
+        ch2.sentence_end_ts = 1650
+        ch2._update_offset_timestamps()
+        project.add_sentence(sentence)
+
+        exporter = ASSDirectExporter()
+        line_start_ms = sentence.global_timing_start_ms
+        line_end_ms = exporter._compute_line_end_ms(sentence)
+        text = exporter._generate_karaoke_text(sentence, line_start_ms, line_end_ms)
+
+        # "合言葉" 应整体出现在首个 \\k 块的注音前
+        assert "合言葉|<あ" in text, f"连词 kanji 未整体输出: {text}"
+        # "言葉" 不应出现在末尾（tail_text bug）
+        assert not text.endswith("言葉{\\k0}"), f"言葉 被错误地追加到末尾: {text}"
+        assert "ば言葉" not in text, f"言葉 混入续段尾部: {text}"
+
 
 class TestNicokaraExporter:
     """测试 Nicokara 导出器"""
