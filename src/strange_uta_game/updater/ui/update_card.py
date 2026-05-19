@@ -361,7 +361,7 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
 
     # 立即给用户反馈，然后在后台线程完成"自更新 Updater + 启动"
     # （_update_updater_from_remote 有网络请求，同步调用会冻结 UI 数秒）
-    InfoBar.info(
+    InfoBar.success(
         title="正在准备更新",
         content="正在获取最新更新器，请稍候…",
         orient=Qt.Orientation.Horizontal,
