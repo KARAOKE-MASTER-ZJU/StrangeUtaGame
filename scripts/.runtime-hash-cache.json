@@ -1,8 +1,8 @@
 {
-  "version": "0.3.16",
-  "content_hash": "d9f6c5e474581b307529326a127303be17597c1e348e3b7b63be8b226484b9a2",
-  "size": 179771457,
-  "requirements_hash": "265f50af2c82d64d38dd4c9860bf4eb85c2535bd79208a5288e92a917620ad67",
+  "version": "0.3.17",
+  "content_hash": "0369253873e24563d3536477392ee52f8f736394cd6228e095bb0600c0dbb0d5",
+  "size": 106862813,
+  "requirements_hash": "ae2e6b0f728717539290f1a32c0a4ac5fbb038069235fb422e29ee7e4d468472",
   "req_lines": [
     "PyQt6==6.11.0",
     "PyQt6-Qt6==6.11.0",
@@ -13,8 +13,9 @@
     "pedalboard==0.9.22",
     "numpy==2.4.4",
     "pykakasi==2.3.0",
-    "sudachipy==0.6.11",
-    "sudachidict-core==20260116",
+    "winrt-Windows.Globalization==3.2.1",
+    "winrt-Windows.Foundation==3.2.1",
+    "winrt-Windows.Foundation.Collections==3.2.1",
     "av==17.0.1",
     "jaconv==0.5.0",
     "pyphen==0.17.2",
@@ -32,6 +33,10 @@
     "pyqt6-fluent-widgets": "1.11.2",
     "pyreadline3": "3.5.4",
     "sounddevice": "0.5.5",
-    "soundfile": "0.13.1"
+    "soundfile": "0.13.1",
+    "winrt-runtime": "3.2.1",
+    "winrt-windows.foundation": "3.2.1",
+    "winrt-windows.foundation.collections": "3.2.1",
+    "winrt-windows.globalization": "3.2.1"
   }
 }

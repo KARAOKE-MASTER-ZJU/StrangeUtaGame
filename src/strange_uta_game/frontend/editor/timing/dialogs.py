@@ -258,10 +258,31 @@ class ModifyCharacterDialog(QDialog):
         btn_exec = PrimaryPushButton("执行", self)
         btn_exec.clicked.connect(self._on_execute)
         btn_layout.addWidget(btn_exec)
+        btn_query = PushButton("查询候补字典", self)
+        btn_query.clicked.connect(self._on_query_dict_candidates)
+        btn_layout.addWidget(btn_query)
         btn_close = PushButton("关闭", self)
         btn_close.clicked.connect(self.reject)
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
+
+    def _on_query_dict_candidates(self):
+        """查询候补字典：选中条目后按其格式填充并执行（关闭两窗口）。"""
+        from strange_uta_game.frontend.editor.timing.dict_candidate_dialog import (
+            DictCandidateDialog,
+            apply_entry_to_dialog_rows,
+        )
+
+        word = self.edit_new_chars.text().strip()
+        dlg = DictCandidateDialog(word, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        entry = dlg.get_selected_entry()
+        if not entry:
+            return
+        if apply_entry_to_dialog_rows(self, entry["word"], entry["reading"]):
+            # 执行原对话框的应用逻辑（_on_execute 内部会 accept() 关闭本窗口）
+            self._on_execute()
 
     def _append_char_row(
         self, char_str: str, ruby_str: str, check_str: str, linked: bool = False
@@ -755,12 +776,33 @@ class CharEditDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_ok = PrimaryPushButton("确定", self)
         btn_ok.clicked.connect(self._on_accept)
+        btn_query = PushButton("查询候补字典", self)
+        btn_query.clicked.connect(self._on_query_dict_candidates)
         btn_cancel = PushButton("取消", self)
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_query)
         btn_layout.addWidget(btn_cancel)
         layout.addLayout(btn_layout)
+
+    def _on_query_dict_candidates(self):
+        """查询候补字典：选中条目后按其格式填充并执行（关闭两窗口）。"""
+        from strange_uta_game.frontend.editor.timing.dict_candidate_dialog import (
+            DictCandidateDialog,
+            apply_entry_to_dialog_rows,
+        )
+
+        word = self.edit_new_chars.text().strip()
+        dlg = DictCandidateDialog(word, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        entry = dlg.get_selected_entry()
+        if not entry:
+            return
+        if apply_entry_to_dialog_rows(self, entry["word"], entry["reading"]):
+            # _on_accept 内部会 accept() 关闭本窗口
+            self._on_accept()
 
     def _append_char_row(
         self, char_str: str, ruby_str: str, check_str: str, linked: bool = False

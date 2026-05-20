@@ -129,6 +129,9 @@ class BulkChangeDialog(QDialog):
         self.btn_exec = PrimaryPushButton("执行", self)
         self.btn_exec.clicked.connect(self._on_execute)
         btn_row.addWidget(self.btn_exec)
+        self.btn_query = PushButton("查询候补字典", self)
+        self.btn_query.clicked.connect(self._on_query_dict_candidates)
+        btn_row.addWidget(self.btn_query)
         btn_close = PushButton("关闭", self)
         btn_close.clicked.connect(self.reject)
         btn_row.addWidget(btn_close)
@@ -141,6 +144,28 @@ class BulkChangeDialog(QDialog):
         # 首次填充：按初始搜索词首匹配
         self._refresh_match_count()
         self._refill_from_first_match(initial_reading)
+
+    def _on_query_dict_candidates(self):
+        """查询候补字典：以搜索词为 word，选中条目后按其格式填充并执行+关闭两窗口。"""
+        from strange_uta_game.frontend.editor.timing.dict_candidate_dialog import (
+            DictCandidateDialog,
+            apply_entry_to_dialog_rows,
+        )
+
+        word = self.edit_word.text().strip()
+        dlg = DictCandidateDialog(word, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        entry = dlg.get_selected_entry()
+        if not entry:
+            return
+        # 标记 rows 已被外部填充，避免后续搜索词变化覆盖
+        self._rows_user_edited = True
+        self._new_chars_user_edited = True
+        if apply_entry_to_dialog_rows(self, entry["word"], entry["reading"]):
+            # 批量执行（_on_execute 不关闭对话框）后，主动关闭本窗口
+            self._on_execute()
+            self.accept()
 
     # ---------- 行管理 ----------
 
