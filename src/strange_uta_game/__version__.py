@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.16"
+__version__ = "0.3.17"
 
 # Git tag 前缀。GitHub Release 的 tag 命名规则为 ``{TAG_PREFIX}{__version__}``。
 TAG_PREFIX = "SUGv"
