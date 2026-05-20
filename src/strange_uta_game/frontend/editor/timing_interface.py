@@ -718,7 +718,12 @@ class EditorInterface(QWidget):
     # ==================== 工具栏操作 ====================
 
     def _on_paste_lyrics(self):
-        """从剪贴板粘贴歌词（Ctrl+V）"""
+        """从剪贴板粘贴（Ctrl+V）。
+
+        - 空项目 / 无歌词行：维持原有"整批加载歌词文本"行为。
+        - 已有歌词：在当前光标处插入。若剪贴板内容与上次 Ctrl+C 复制的字符
+          一致，则插入带完整信息的字符副本；否则视为纯文本，逐字插入为新歌词。
+        """
         from PyQt6.QtWidgets import QApplication
 
         clipboard = QApplication.clipboard()
@@ -726,23 +731,133 @@ class EditorInterface(QWidget):
             return
 
         text = clipboard.text()
-        if not text or not text.strip():
+
+        # 空项目 / 无歌词：整批加载
+        if self._file_loader.can_load_from_clipboard():
+            if not text or not text.strip():
+                return
+            self._file_loader.load_lyrics_from_text(text)
             return
 
-        # 检查是否可以加载
-        if not self._file_loader.can_load_from_clipboard():
-            InfoBar.warning(
-                title="无法粘贴",
-                content="仅在未创建项目或项目无歌词时可粘贴歌词",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=3000,
-                parent=self,
-            )
+        # 已有歌词：在光标处插入
+        self._paste_chars_at_cursor(text)
+
+    def _on_copy_chars(self):
+        """复制选中字符的完整信息（Ctrl+C）。
+
+        focus 拖选范围优先，否则取当前字符。深拷贝后存入内部缓冲区，
+        同时把字符文本写入系统剪贴板（便于跨应用粘贴，也用于 Ctrl+V 时
+        判别"富信息粘贴 vs 纯文本插入"）。
+        """
+        from PyQt6.QtWidgets import QApplication
+
+        if not self._project:
             return
 
-        self._file_loader.load_lyrics_from_text(text)
+        if (
+            self.preview._focus_line_idx >= 0
+            and self.preview._focus_char_idx >= 0
+            and self.preview._focus_char_range_end >= 0
+        ):
+            line_idx = self.preview._focus_line_idx
+            start = min(self.preview._focus_char_idx, self.preview._focus_char_range_end)
+            end = max(self.preview._focus_char_idx, self.preview._focus_char_range_end)
+        else:
+            line_idx = self._current_line_idx
+            start = self.preview._current_char_idx
+            end = start
+
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
+            return
+        sentence = self._project.sentences[line_idx]
+        if not sentence.characters:
+            return
+
+        start = max(0, min(start, len(sentence.characters) - 1))
+        end = max(start, min(end, len(sentence.characters) - 1))
+        chars = [deepcopy(sentence.characters[i]) for i in range(start, end + 1)]
+        if not chars:
+            return
+
+        self._char_clipboard = chars
+        text = "".join(c.char for c in chars)
+        self._char_clipboard_text = text
+
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            clipboard.setText(text)
+
+        InfoBar.success(
+            title="已复制",
+            content=f"已复制 {len(chars)} 个字符",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=1500,
+            parent=self,
+        )
+
+    def _paste_chars_at_cursor(self, clipboard_text: str) -> None:
+        """在当前光标处插入字符（Ctrl+V，已有歌词时）。
+
+        富信息粘贴：剪贴板文本与上次 Ctrl+C 一致时插入字符深拷贝（保留注音/
+        节奏点/时间戳/演唱者等）。纯文本：逐字构造为新歌词字符。
+        插入经 _execute_structural_edit 包装，纳入 undo/redo。
+        """
+        if not self._project:
+            return
+
+        if (
+            self.preview._focus_line_idx >= 0
+            and self.preview._focus_char_idx >= 0
+        ):
+            line_idx = self.preview._focus_line_idx
+            if self.preview._focus_char_range_end >= 0:
+                insert_at = min(
+                    self.preview._focus_char_idx, self.preview._focus_char_range_end
+                )
+            else:
+                insert_at = self.preview._focus_char_idx
+        else:
+            line_idx = self._current_line_idx
+            insert_at = self.preview._current_char_idx
+
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
+            return
+        sentence = self._project.sentences[line_idx]
+
+        buffer = getattr(self, "_char_clipboard", None)
+        buffer_text = getattr(self, "_char_clipboard_text", None)
+        if buffer and clipboard_text == buffer_text:
+            new_chars = []
+            for c in buffer:
+                ch = deepcopy(c)
+                # 插入位非行尾时清理行尾标记与 UI 选中态，避免重复行尾/选中
+                ch.is_line_end = False
+                ch.selected_checkpoint_idx = None
+                new_chars.append(ch)
+        else:
+            if not clipboard_text or not clipboard_text.strip():
+                return
+            new_chars = [
+                Character(char=c, singer_id=sentence.singer_id)
+                for c in clipboard_text
+                if c not in ("\r", "\n")
+            ]
+
+        if not new_chars:
+            return
+
+        project = self._project
+
+        def _mutate():
+            s = project.sentences[line_idx]
+            pos = max(0, min(insert_at, len(s.characters)))
+            for off, ch in enumerate(new_chars):
+                s.insert_character(pos + off, ch)
+            return line_idx, pos + len(new_chars) - 1, 0, "lyrics"
+
+        self._execute_structural_edit("粘贴字符", _mutate)
 
     def _on_save(self):
         if not self._project:
@@ -3504,6 +3619,10 @@ class EditorInterface(QWidget):
                 return
             elif key == Qt.Key.Key_V:
                 self._on_paste_lyrics()
+                a0.accept()
+                return
+            elif key == Qt.Key.Key_C:
+                self._on_copy_chars()
                 a0.accept()
                 return
             # 其他 Ctrl 组合键：不直接 return，继续走 key_map 查找

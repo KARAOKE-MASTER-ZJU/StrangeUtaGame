@@ -1616,7 +1616,14 @@ class KaraokePreview(QWidget):
                                     painter.setPen(_rh)
                                     painter.drawText(int(ruby_x), ruby_y, _merged)
                                     painter.restore()
-                        # 连词框
+                        # 连词框：取「字符组跨度」与「ruby 串跨度」的并集——
+                        # 既至少横跨所有被链接字符，又在 ruby 比字符组更宽时
+                        # （居中向两侧溢出）完整覆盖 ruby。ruby 本体仍按 ruby_x
+                        # 居中绘制，不随框变化。
+                        _box_left = min(int(curr_x), int(ruby_x))
+                        _box_right = max(
+                            int(curr_x) + int(_grp_w), int(ruby_x) + int(ruby_text_w)
+                        )
                         painter.save()
                         _fc = QColor(base_color)
                         _fc.setAlpha(120)
@@ -1625,9 +1632,9 @@ class KaraokePreview(QWidget):
                         painter.setPen(_fp)
                         painter.setBrush(Qt.BrushStyle.NoBrush)
                         painter.drawRoundedRect(
-                            int(ruby_x) - 2,
+                            _box_left - 2,
                             ruby_y - fm_ruby.ascent() - 1,
-                            int(ruby_text_w) + 4,
+                            (_box_right - _box_left) + 4,
                             fm_ruby.height() + 2,
                             2,
                             2,

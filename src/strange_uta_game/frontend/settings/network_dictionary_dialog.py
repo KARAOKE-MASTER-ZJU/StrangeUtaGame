@@ -384,7 +384,7 @@ class NetworkDictionaryDialog(QDialog):
 
         InfoBar.success(
             title="开始拉取",
-            content=f"后台同步 {len(targets)} 个源，UI 不会卡顿",
+            content=f"后台同步 {len(targets)} 个源中...",
             orient=Qt.Orientation.Horizontal,
             isClosable=True,
             position=InfoBarPosition.TOP,
