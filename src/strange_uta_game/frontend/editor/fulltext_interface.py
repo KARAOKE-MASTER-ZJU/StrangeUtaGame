@@ -307,6 +307,7 @@ class RubyInterface(QWidget):
     """
 
     rubies_changed = pyqtSignal()
+    close_requested = pyqtSignal()  # 底部「关闭」按钮请求关闭承载它的对话框
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -367,7 +368,7 @@ class RubyInterface(QWidget):
         self.spin_font = SpinBox(self)
         self.spin_font.setRange(8, 48)
         self.spin_font.setValue(12)
-        self.spin_font.setFixedWidth(90)
+        self.spin_font.setMinimumWidth(130)
         self.spin_font.valueChanged.connect(self._apply_font_size)
         batch_layout.addWidget(self.spin_font)
 
@@ -393,8 +394,13 @@ class RubyInterface(QWidget):
         theme.changed.connect(self._on_theme_changed)
         layout.addWidget(self.text_edit, stretch=1)
 
-        # 应用 / 还原
+        # 底部栏：左下角信息，右下角 应用更改 / 还原 / 关闭
         action_layout = QHBoxLayout()
+
+        self.lbl_stats = CaptionLabel("共 0 行，0 个注音")
+        action_layout.addWidget(self.lbl_stats)
+
+        action_layout.addStretch()
 
         self.btn_apply = PrimaryPushButton("应用更改", self)
         self.btn_apply.setIcon(FIF.ACCEPT)
@@ -408,10 +414,10 @@ class RubyInterface(QWidget):
         self.btn_revert.setEnabled(False)
         action_layout.addWidget(self.btn_revert)
 
-        action_layout.addStretch()
-
-        self.lbl_stats = CaptionLabel("共 0 行，0 个注音")
-        action_layout.addWidget(self.lbl_stats)
+        self.btn_close = PushButton("关闭", self)
+        self.btn_close.setIcon(FIF.CLOSE)
+        self.btn_close.clicked.connect(self.close_requested.emit)
+        action_layout.addWidget(self.btn_close)
 
         layout.addLayout(action_layout)
 
@@ -532,7 +538,13 @@ class RubyInterface(QWidget):
         sel = QTextEdit.ExtraSelection()
         sel.format.setBackground(theme.editor_current_line)
         sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-        sel.cursor = QTextCursor(block)
+        # 选中整个文本块（而非折叠光标），使自动换行占多视觉行的长行整行高亮
+        cursor = QTextCursor(block)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+        cursor.movePosition(
+            QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor
+        )
+        sel.cursor = cursor
         self.text_edit.setExtraSelections([sel])
 
     def _on_theme_changed(self):
@@ -996,6 +1008,7 @@ class FullTextEditDialog(QDialog):
 
         self.interface = RubyInterface(self)
         self.interface.set_store(store)
+        self.interface.close_requested.connect(self.accept)
         if getattr(store, "project", None) is not None:
             self.interface.set_project(store.project)
         layout.addWidget(self.interface, stretch=1)
