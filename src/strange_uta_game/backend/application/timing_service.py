@@ -677,6 +677,20 @@ class TimingService:
         if fn is not None:
             fn(callback)
 
+    def prewarm_speeds(
+        self,
+        speed_min: float = 0.2,
+        speed_max: float = 2.0,
+    ) -> None:
+        """以指定速度范围触发后台预渲染（幂等，已渲染/已入队的速度会被跳过）。
+
+        UI 层在音频加载完成后以实际滑块上下限调用，确保只派发范围内的任务。
+        若引擎不支持预渲染则静默忽略。
+        """
+        fn = getattr(self._audio_engine, "prewarm_speeds", None)
+        if fn is not None:
+            fn(speed_min=speed_min, speed_max=speed_max)
+
     def swap_audio_engine(self, new_engine: IAudioEngine) -> None:
         """运行时替换音频引擎（用于切换"高质量变速"开关）。
 

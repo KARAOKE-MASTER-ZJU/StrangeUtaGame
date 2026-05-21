@@ -2179,9 +2179,11 @@ class EditorInterface(QWidget):
                 self.transport.slider_volume.blockSignals(True)
                 self.transport.slider_volume.setValue(default_volume)
                 self.transport.slider_volume.blockSignals(False)
+                speed_min = settings.get("audio.speed_slider_min", 0.5)
+                speed_max = settings.get("audio.speed_slider_max", 1.0)
                 self.transport.set_speed_range(
-                    settings.get("audio.speed_slider_min", 0.5),
-                    settings.get("audio.speed_slider_max", 1.0),
+                    speed_min,
+                    speed_max,
                     emit_signal=False,
                 )
                 default_speed = settings.get("audio.default_speed", 1.0)
@@ -2189,6 +2191,12 @@ class EditorInterface(QWidget):
                     int(default_speed * 100), emit_signal=False
                 )
                 self._timing_service.set_speed(speed_pct / 100.0)
+                # 用实际滑块范围重新触发预渲染，过滤掉用户不会用到的速度档。
+                # 已渲染/已入队的速度幂等跳过，无重复开销。
+                self._timing_service.prewarm_speeds(
+                    speed_min=speed_min,
+                    speed_max=speed_max,
+                )
 
         # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
         if hasattr(self, "_store") and self._store:

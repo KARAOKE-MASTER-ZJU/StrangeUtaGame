@@ -123,6 +123,14 @@ class BassTsmEngine(IAudioEngine):
 
         self._stream_lock = threading.RLock()
 
+        # QW 防抖：用户连续按 QW 调速时，实时引擎立即响应，但 TSM 渲染任务
+        # 派发延迟 500ms——只有 500ms 内没有再次调速，才实际提交渲染任务。
+        # 这样可以避免每按一次 QW 都派发一个抢占任务，产生大量无效渲染。
+        _DEBOUNCE_DELAY_S = 0.5
+        self._tsm_debounce_delay: float = _DEBOUNCE_DELAY_S
+        self._tsm_debounce_timer: Optional[threading.Timer] = None
+        self._tsm_debounce_lock = threading.Lock()
+
         self._ensure_initialized()
 
     # ════════════════════════════════════ init / latency
@@ -150,7 +158,7 @@ class BassTsmEngine(IAudioEngine):
             self._initialized = True
             self._cache_output_latency()
             return True
-        print(f"[BassTsmEngine] BASS_Init failed (error {err}), will retry later")
+        print(f"[TSM引擎] BASS 初始化失败（错误码 {err}），稍后重试")
         self._initialized = False
         return False
 
@@ -225,6 +233,8 @@ class BassTsmEngine(IAudioEngine):
             self._cache_output_latency()
 
             # Pre-render common speeds in the background (non-blocking).
+            # load() 使用默认全范围预热；上层（UI）加载完成后应调用
+            # prewarm_speeds(speed_min, speed_max) 以精确滑块范围覆盖。
             self._prewarm_common_speeds()
 
             if progress_cb:
@@ -306,13 +316,30 @@ class BassTsmEngine(IAudioEngine):
         except Exception:
             return False
 
-    def _prewarm_common_speeds(self) -> None:
+    def _prewarm_common_speeds(
+        self,
+        speed_min: float = 0.2,
+        speed_max: float = 2.0,
+    ) -> None:
+        """后台预渲染常用速度档。
+
+        仅渲染 [speed_min, speed_max] 范围内的速度，与 UI 滑块上下限保持一致，
+        避免派发用户永远不会用到的无效渲染任务。
+
+        预热任务不传 done_cb，因为它们在后台静默完成，不需要触发换源逻辑。
+        换源仅由用户主动调用 set_speed() 后的 ensure(preempt=True) 触发。
+        """
         # Users almost always slow down for timing (0.9 → 0.2), so render the
         # high-to-low slow-down speeds first, in descending order of likelihood.
         # A couple of speed-ups trail at the end.
         order = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 1.25, 1.5]
-        for prio, speed in enumerate(order):
-            self._cache.ensure(speed, priority=prio, done_cb=self._on_render_ready)
+        prio = 0
+        for speed in order:
+            if speed_min - 1e-9 <= speed <= speed_max + 1e-9:
+                # 不传 done_cb：预热任务完成后不触发 _on_render_ready，
+                # 实际速度只由用户指令（set_speed）管理。
+                self._cache.ensure(speed, priority=prio)
+                prio += 1
 
     def _free_stream(self) -> None:
         if self._stream:
@@ -320,6 +347,11 @@ class BassTsmEngine(IAudioEngine):
             self._stream = 0
 
     def release(self) -> None:
+        # 取消防抖 timer，防止 engine 释放后回调仍然触发
+        with self._tsm_debounce_lock:
+            if self._tsm_debounce_timer is not None:
+                self._tsm_debounce_timer.cancel()
+                self._tsm_debounce_timer = None
         with self._stream_lock:
             self.stop()
             self._free_stream()
@@ -382,7 +414,7 @@ class BassTsmEngine(IAudioEngine):
             )
         if not new_stream:
             err = _bass.BASS_ErrorGetCode()
-            print(f"[BassTsmEngine] open stream failed (error {err}, tempo={self._is_tempo})")
+            print(f"[TSM引擎] 流打开失败（错误码 {err}，模式={'实时' if self._is_tempo else '文件'}）")
             return False
 
         scale = self._effective_scale()
@@ -399,8 +431,7 @@ class BassTsmEngine(IAudioEngine):
             err = _bass.BASS_ErrorGetCode()
             _bass.BASS_StreamFree(new_stream)
             print(
-                f"[BassTsmEngine] play new stream failed "
-                f"(error {err}, tempo={self._is_tempo})"
+                f"[TSM引擎] 新流播放失败（错误码 {err}，模式={'实时' if self._is_tempo else '文件'}）"
             )
             return False
 
@@ -445,6 +476,12 @@ class BassTsmEngine(IAudioEngine):
         _bass.BASS_ChannelSetPosition(self._stream, byte_pos, BASS_POS_BYTE)
 
     def set_speed(self, speed: float) -> None:
+        """设置播放速度。
+
+        实际速度（_speed）只由此方法管理，不受后台渲染完成/启动渲染的影响。
+        _notify_render 仅在有后台渲染任务进行中时上报进度，不在此处调用，
+        避免干扰 UI 层对渲染状态的判断。
+        """
         if not 0.2 <= speed <= 2.0:
             raise ValueError(f"速度 {speed} 超出范围 [0.2, 2.0]")
         with self._stream_lock:
@@ -452,17 +489,17 @@ class BassTsmEngine(IAudioEngine):
             q = _quantize(self._speed)
 
             # Already playing the clean rendered file for this speed?
+            # 直接返回，不发 _notify_render：没有后台渲染任务在跑，无需上报进度。
             if not self._is_tempo and abs(q - self._speed_scale) < 1e-9:
                 self._pending_speed = None
-                self._notify_render(q, 1.0)
                 return
 
             ready = self._rendered_path(q)
             if ready is not None:
                 # Clean offline render available → play it immediately.
+                # 直接切换文件流，不发 _notify_render：渲染早已完成，无需进度上报。
                 self._switch_to_file(q, ready)
                 self._pending_speed = None
-                self._notify_render(q, 1.0)
                 return
 
             # Not rendered yet → play the requested speed RIGHT NOW via real-time
@@ -473,9 +510,55 @@ class BassTsmEngine(IAudioEngine):
             else:
                 self._switch_to_tempo(self._speed)
             self._pending_speed = q
+            # 防抖派发 TSM 渲染任务：实时引擎已立即响应（retune/switch_to_tempo），
+            # 但抢占渲染任务需要等 500ms 内没有再次调速才提交，避免 QW 连续调速
+            # 时产生大量无效抢占任务。
+            self._schedule_tsm_render(q)
+
+    def _schedule_tsm_render(self, q: float) -> None:
+        """防抖调度 TSM 渲染任务。
+
+        取消上一个未触发的 timer，重新计时 500ms。到期后若目标速度未变，
+        才实际提交 ensure(preempt=True) 渲染任务。
+        """
+        with self._tsm_debounce_lock:
+            if self._tsm_debounce_timer is not None:
+                self._tsm_debounce_timer.cancel()
+                self._tsm_debounce_timer = None
+                print(f"[TSM防抖] 重置防抖计时器，新目标速度 {q}x")
+            else:
+                print(f"[TSM防抖] 启动防抖计时器，目标速度 {q}x，等待 {int(self._tsm_debounce_delay * 1000)}ms")
+            t = threading.Timer(
+                self._tsm_debounce_delay,
+                self._fire_tsm_render,
+                args=(q,),
+            )
+            t.daemon = True
+            t.name = "TSMDebounce"
+            self._tsm_debounce_timer = t
+            t.start()
+
+    def _fire_tsm_render(self, q: float) -> None:
+        """防抖到期后实际提交渲染任务（在 TSMDebounce 线程执行）。
+
+        若用户在 500ms 内再次调速，_pending_speed 已更新，此处通过比较确认
+        目标速度未变后才派发任务，避免为过时速度浪费渲染资源。
+        """
+        with self._tsm_debounce_lock:
+            self._tsm_debounce_timer = None
+        # 确认目标速度未发生变化
+        with self._stream_lock:
+            if self._pending_speed is None or abs(self._pending_speed - q) > 1e-9:
+                print(
+                    f"[TSM防抖] 速度 {q}x 防抖到期，但目标速度已变更为"
+                    f" {self._pending_speed}x，放弃派发"
+                )
+                return
+            print(f"[TSM防抖] 速度 {q}x 防抖到期，派发渲染任务（抢占模式）")
             # UI 主动申请：最高优先级 + 抢占当前预热渲染，尽快产出干净音频。
+            # progress_cb 负责上报渲染进度给 UI，done_cb 负责触发换源。
             self._cache.ensure(
-                self._speed,
+                q,
                 priority=-1,
                 progress_cb=self._render_progress_cb,
                 done_cb=self._on_render_ready,
@@ -489,8 +572,8 @@ class BassTsmEngine(IAudioEngine):
         self._speed_scale = q
         self._current_source_path = path
         self._build_stream_locked(target_original_ms=cur_ms, resume=resume)
-        kind = "原始 1.0x" if abs(q - 1.0) < 1e-9 else "预渲染(无损/无爆音)"
-        print(f"[BassTsmEngine] 速度 {q:.2f}x → {kind} 文件: {Path(path).name}")
+        kind = "原始 1.0x" if abs(q - 1.0) < 1e-9 else "预渲染（无损）"
+        print(f"[TSM引擎] 切换音源 → {kind}，速度 {q:.2f}x，文件: {Path(path).name}")
 
     def _switch_to_tempo(self, speed: float) -> None:
         cur_ms = self._read_position_ms(apply_latency=False)
@@ -499,10 +582,7 @@ class BassTsmEngine(IAudioEngine):
         self._tempo_speed = speed
         self._current_source_path = self._source_1x_path
         self._build_stream_locked(target_original_ms=cur_ms, resume=resume)
-        print(
-            f"[BassTsmEngine] 速度 {speed:.2f}x → 实时 BASS_FX(临时, 可能爆音), "
-            f"后台渲染中, 完成后自动换无损"
-        )
+        print(f"[TSM引擎] 切换音源 → 实时变速（临时，可能爆音），速度 {speed:.2f}x，后台渲染中...")
 
     def _retune_tempo(self, speed: float) -> None:
         """Change an existing real-time BASS_FX tempo stream in place."""
@@ -525,6 +605,19 @@ class BassTsmEngine(IAudioEngine):
             return "original"
         return "rendered"
 
+    def prewarm_speeds(
+        self,
+        speed_min: float = 0.2,
+        speed_max: float = 2.0,
+    ) -> None:
+        """以指定速度范围触发后台预渲染（公共接口，供 UI 层调用）。
+
+        已渲染或已入队的速度会被幂等跳过。UI 层在 _on_audio_loaded 时
+        以实际滑块上下限调用此方法，确保只派发用户可能用到的速度任务。
+        """
+        with self._stream_lock:
+            self._prewarm_common_speeds(speed_min=speed_min, speed_max=speed_max)
+
     def _on_render_ready(self, speed: float) -> None:
         """Render done_cb — runs on the TSM finalizer thread. Just flag it;
         the actual stream swap happens on the UI thread during the next poll."""
@@ -537,11 +630,16 @@ class BassTsmEngine(IAudioEngine):
             return
         self._ready_speed = None
         if self._pending_speed is None or abs(ready - self._pending_speed) > 1e-9:
-            return  # user changed their mind; ignore stale render
+            print(
+                f"[TSM引擎] 速度 {ready}x 渲染完成，但目标速度已变更为"
+                f" {self._pending_speed}x，丢弃过时渲染，不换源"
+            )
+            return
         path = self._rendered_path(ready)
         if path is None:
             return
         # Swap the interim real-time tempo stream for the clean rendered file.
+        print(f"[TSM引擎] 速度 {ready}x 渲染完成，从实时变速切换为预渲染无损音源")
         self._switch_to_file(ready, path)
         self._pending_speed = None
         self._notify_render(ready, 1.0)
@@ -695,7 +793,7 @@ class BassTsmEngine(IAudioEngine):
         resume = self._state == PlaybackState.PLAYING
         has_source = bool(self._current_source_path or self._source_1x_path)
         try:
-            print(f"[BassTsmEngine] device recovery ({reason})...")
+            print(f"[TSM引擎] 设备恢复中（原因: {reason}）...")
             self._free_stream()
             _bass.BASS_Free()
             self._initialized = False
@@ -707,7 +805,7 @@ class BassTsmEngine(IAudioEngine):
             self._cache_output_latency()
             return ok
         except Exception as exc:
-            print(f"[BassTsmEngine] recovery failed: {exc}")
+            print(f"[TSM引擎] 设备恢复失败: {exc}")
             self._state = PlaybackState.PAUSED
             return False
         finally:

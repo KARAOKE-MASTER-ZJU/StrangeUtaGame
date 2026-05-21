@@ -109,7 +109,7 @@ def clear_cache() -> None:
             f.unlink()
         except Exception:
             pass
-    print(f"[TSM] Cache cleared: {cache_dir}")
+    print(f"[TSM缓存] 已清空全部缓存文件: {cache_dir}")
 
 
 def clear_cache_for_song(song_name: str) -> None:
@@ -126,7 +126,7 @@ def clear_cache_for_song(song_name: str) -> None:
             source.unlink()
         except Exception:
             pass
-    print(f"[TSM] Cache cleared for song: {song_name}")
+    print(f"[TSM缓存] 已清空歌曲缓存: {song_name}")
 
 
 @dataclass
@@ -214,7 +214,7 @@ def _get_executor() -> ThreadPoolExecutor:
         if _executor is None:
             max_workers = _get_max_workers()
             _executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="TSMWorker")
-            print(f"[TSM] Thread pool initialized with {max_workers} workers")
+            print(f"[TSM渲染池] 已初始化，最大 worker 数: {max_workers}")
         return _executor
 
 
@@ -297,7 +297,7 @@ class TSMRenderCache:
 
             if progress_cb:
                 progress_cb("完成", 1.0)
-            print(f"[TSM] Source MP3 saved: {source_path} ({actual_sr}Hz, {channels}ch)")
+            print(f"[TSM缓存] 源音频已保存为 MP3: {source_path} ({actual_sr}Hz, {channels}ch)")
 
     def _save_source_as_mp3(
         self,
@@ -312,7 +312,7 @@ class TSMRenderCache:
         target_sr = sample_rate
         if sample_rate not in mp3_rates:
             target_sr = min(mp3_rates, key=lambda r: abs(r - sample_rate))
-            print(f"[TSM] Resampling {sample_rate}Hz -> {target_sr}Hz for MP3")
+            print(f"[TSM缓存] 采样率不兼容，重采样 {sample_rate}Hz → {target_sr}Hz")
 
         data = pcm
         if target_sr != sample_rate:
@@ -378,7 +378,7 @@ class TSMRenderCache:
                         self._memory_cache.popitem(last=False)
                 return data
             except Exception as e:
-                print(f"[TSM] Failed to read cache: {e}")
+                print(f"[TSM缓存] 读取磁盘缓存失败: {e}")
         return None
 
     def _load_source_pcm(self) -> Optional[np.ndarray]:
@@ -430,13 +430,28 @@ class TSMRenderCache:
         # 检查磁盘缓存
         cached = self.get(q)
         if cached is not None:
-            print(f"[TSM] Cache hit for speed {q}x")
+            print(f"[TSM缓存] 缓存命中，速度 {q}x，无需渲染")
             return cached
 
-        # 检查是否已在渲染或队列中
+        # 检查是否已在活跃渲染中
         with self._active_lock:
             if q in self._active_tasks:
-                print(f"[TSM] Already rendering speed {q}x, skipping")
+                active_task = self._active_tasks[q]
+                # 如果新请求带有 done_cb（用户主动调速），需要把回调注入到
+                # 正在跑的任务里，否则预热任务完成后不会触发换源/进度上报。
+                # 用 task.lock 保护，避免与 _finalize_task / 闭包回调竞争。
+                if done_cb is not None or progress_cb is not None:
+                    with active_task.lock:
+                        if done_cb is not None:
+                            active_task.done_cb = done_cb
+                        if progress_cb is not None:
+                            active_task.progress_cb = progress_cb
+                    print(
+                        f"[TSM调度] 速度 {q}x 正在渲染中，注入用户回调"
+                        f"（换源回调={'已注入' if done_cb is not None else '无'}）"
+                    )
+                else:
+                    print(f"[TSM调度] 速度 {q}x 已在渲染中，跳过重复派发")
                 return None
 
         with self._queue_lock:
@@ -449,13 +464,13 @@ class TSMRenderCache:
                 # 已在队列。非抢占、或新优先级不更高 → 跳过；否则提升优先级
                 # （并采用本次 UI 提供的回调），让它插到队首。
                 if not preempt and priority >= existing[0]:
-                    print(f"[TSM] Already queued for speed {q}x, skipping")
+                    print(f"[TSM调度] 速度 {q}x 已在队列中，跳过重复派发")
                     return None
                 self._speed_queue = [
                     item for item in self._speed_queue if abs(item[1] - q) >= 1e-9
                 ]
                 heapq.heapify(self._speed_queue)
-                print(f"[TSM] Re-prioritizing queued speed {q}x → priority {priority}")
+                print(f"[TSM调度] 速度 {q}x 已在队列中，提升优先级至 {priority}，替换回调")
 
         # 抢占：让出当前正在渲染的其它速度，使本次请求立即获得 worker 槽。
         if preempt:
@@ -463,8 +478,10 @@ class TSMRenderCache:
 
         with self._queue_lock:
             heapq.heappush(self._speed_queue, (priority, q, progress_cb, done_cb))
-            print(f"[TSM] Queued render for speed {q}x with priority {priority}"
-                  f"{' (preempt)' if preempt else ''}")
+            print(
+                f"[TSM调度] 速度 {q}x 入队，优先级 {priority}"
+                f"{'（抢占模式）' if preempt else '（预热模式）'}"
+            )
 
         self._ensure_scheduler_running()
         return None
@@ -483,7 +500,18 @@ class TSMRenderCache:
                 task.cancelled = True
                 for f in task.futures:
                     f.cancel()
-                requeue.append((task.priority, spd, task.progress_cb, task.done_cb))
+                # 清空已渲染的 chunk 数据，防止被抢占后残留的脏数据
+                # 在下次重新入队渲染时污染新 SpeedTask（闭包回调已绑定旧
+                # task，但旧 task.results 里的数据已无意义，及时释放内存）。
+                with task.lock:
+                    task.results.clear()
+                # 被抢占的任务降级为预热任务：清除 done_cb 和 progress_cb。
+                # 理由：当前用户目标速度已经变成 keep_speed，这个任务的速度
+                # 对用户而言不再是"期望换源"的目标。若将来用户再次调到该
+                # 速度，set_speed() 会通过 ensure(preempt=True) 重新注入正确
+                # 的 done_cb；若用户从未再调到该速度，则它仅作后台预热存在。
+                # 保留原始优先级（非 -1）用于后续调度排序。
+                requeue.append((task.priority, spd, None, None))
                 del self._active_tasks[spd]
 
         if not requeue:
@@ -492,7 +520,7 @@ class TSMRenderCache:
             for item in requeue:
                 if not any(abs(qs - item[1]) < 1e-9 for _, qs, _, _ in self._speed_queue):
                     heapq.heappush(self._speed_queue, item)
-                    print(f"[TSM] Preempted speed {item[1]}x, re-queued at priority {item[0]}")
+                    print(f"[TSM调度] 速度 {item[1]}x 被抢占，降级为预热任务，重新入队（优先级 {item[0]}）")
 
     # ---------- 调度 ----------
 
@@ -543,7 +571,7 @@ class TSMRenderCache:
                 continue
 
             chunks = _split_chunks(len(source_pcm), self._sample_rate)
-            print(f"[TSM] Speed {speed}x: {len(chunks)} chunks, submitting to global pool")
+            print(f"[TSM渲染] 速度 {speed}x 开始渲染，共 {len(chunks)} 块，提交至线程池")
 
             # 创建速度任务
             speed_task = SpeedTask(
@@ -560,13 +588,16 @@ class TSMRenderCache:
                 self._active_tasks[speed] = speed_task
 
             # 将所有块提交到全局线程池
+            # 使用闭包回调，直接绑定 speed_task 引用，避免通过 chunk_index
+            # 反查活跃任务表时发生跨任务数据污染（尤其是抢占重入场景）。
             executor = _get_executor()
+            chunk_done_cb = self._make_chunk_done_callback(speed_task)
             for chunk in chunks:
                 future = executor.submit(
                     self._render_chunk,
                     speed_task, source_pcm, chunk, current_version,
                 )
-                future.add_done_callback(self._on_chunk_done)
+                future.add_done_callback(chunk_done_cb)
                 speed_task.futures.append(future)
 
     def _render_chunk(
@@ -599,57 +630,62 @@ class TSMRenderCache:
             return (chunk.index, rendered.astype(np.float32))
 
         except Exception as e:
-            print(f"[TSM] Chunk {chunk.index} render error for speed {task.speed}x: {e}")
+            print(f"[TSM渲染] 速度 {task.speed}x 第 {chunk.index} 块渲染出错: {e}")
             return None
 
-    def _on_chunk_done(self, future: Future) -> None:
-        """块完成回调（在 TSMWorker 线程中执行）。
-
-        此回调必须极轻量：只做结果存储、进度上报、完成检测和 finalizer 投递，
-        绝不执行 merge / MP3编码 / 磁盘IO 等重操作（那些移到 TSMFinalizer 线程）。
+    def _make_chunk_done_callback(self, task: SpeedTask) -> Callable[["Future"], None]:
+        """为指定 SpeedTask 创建块完成回调，通过闭包直接持有 task 引用，
+        避免通过 chunk_index 反查活跃任务表而引入跨任务数据污染。
         """
-        try:
-            result = future.result()
-        except CancelledError:
-            return
-        if result is None:
-            return
+        def _on_chunk_done(future: Future) -> None:
+            """块完成回调（在 TSMWorker 线程中执行）。
 
-        chunk_index, rendered_pcm = result
-
-        # 找到对应的 SpeedTask（用 chunk_index 在活跃任务中反查）
-        task = None
-        with self._active_lock:
-            for t in self._active_tasks.values():
-                if chunk_index in t.pending_chunks:
-                    task = t
-                    break
-
-        if task is None or task.cancelled:
-            return
-
-        all_done = False
-        with task.lock:
-            task.results[chunk_index] = rendered_pcm
-            task.pending_chunks.discard(chunk_index)
-            progress = len(task.results) / len(task.chunks)
-            # 检查是否所有块都成功完成
-            if (len(task.results) == len(task.chunks)
-                    and not task.completed.is_set()
-                    and all(v is not None for v in task.results.values())):
-                task.completed.set()
-                all_done = True
-
-        # 报告渲染进度（Worker 线程，轻量）
-        if task.progress_cb is not None:
+            此回调必须极轻量：只做结果存储、进度上报、完成检测和 finalizer 投递，
+            绝不执行 merge / MP3编码 / 磁盘IO 等重操作（那些移到 TSMFinalizer 线程）。
+            """
             try:
-                task.progress_cb(task.speed, progress * 0.9)
-            except Exception:
-                pass
+                result = future.result()
+            except CancelledError:
+                return
+            if result is None:
+                return
 
-        # 所有块完成 → 投递到专用 finalizer 线程执行 merge+保存，立即返回
-        if all_done:
-            _get_finalizer_executor().submit(self._finalize_task, task)
+            # 任务已被取消（抢占等），丢弃结果，不写入 task.results
+            if task.cancelled:
+                return
+
+            chunk_index, rendered_pcm = result
+
+            all_done = False
+            with task.lock:
+                # 二次确认：取消标志可能在获取锁之前刚被设置
+                if task.cancelled:
+                    return
+                task.results[chunk_index] = rendered_pcm
+                task.pending_chunks.discard(chunk_index)
+                progress = len(task.results) / len(task.chunks)
+                # 检查是否所有块都成功完成
+                if (len(task.results) == len(task.chunks)
+                        and not task.completed.is_set()
+                        and all(v is not None for v in task.results.values())):
+                    task.completed.set()
+                    all_done = True
+
+            # 报告渲染进度（Worker 线程，轻量）
+            # 用 task.lock 读取 progress_cb，防止与 ensure() 的回调升级竞争。
+            with task.lock:
+                progress_cb = task.progress_cb
+            if progress_cb is not None:
+                try:
+                    progress_cb(task.speed, progress * 0.9)
+                except Exception:
+                    pass
+
+            # 所有块完成 → 投递到专用 finalizer 线程执行 merge+保存，立即返回
+            if all_done:
+                _get_finalizer_executor().submit(self._finalize_task, task)
+
+        return _on_chunk_done
 
     def _finalize_task(self, task: SpeedTask) -> None:
         """在 TSMFinalizer 线程中执行：merge + MP3编码 + 磁盘写入。
@@ -658,10 +694,16 @@ class TSMRenderCache:
         不会占用渲染 worker 槽，也不会在 Worker 的 done_callback 里阻塞。
         """
         try:
-            print(f"[TSM] All chunks done for speed {task.speed}x, merging...")
-            if task.progress_cb:
+            print(f"[TSM渲染] 速度 {task.speed}x 全部块完成，开始合并...")
+            # 用 task.lock 读取回调，防止与 ensure() 的回调升级竞争。
+            # 在 merge 前快照一次，后续复用快照值（merge 期间回调不可能再变）。
+            with task.lock:
+                progress_cb = task.progress_cb
+                done_cb = task.done_cb
+
+            if progress_cb:
                 try:
-                    task.progress_cb(task.speed, 0.95)
+                    progress_cb(task.speed, 0.95)
                 except Exception:
                     pass
 
@@ -670,26 +712,26 @@ class TSMRenderCache:
             # 保存到磁盘
             cache_path = _get_cache_path(self._song_name, task.speed)
             self._save_as_mp3(final_pcm, cache_path)
-            print(f"[TSM] Render complete for speed {task.speed}x, saved to {cache_path}")
+            print(f"[TSM渲染] 速度 {task.speed}x 渲染完成，已写入缓存: {cache_path.name}")
 
             # 释放 chunk results 占用的内存（merge 后不再需要）
             with task.lock:
                 task.results.clear()
 
-            if task.progress_cb:
+            if progress_cb:
                 try:
-                    task.progress_cb(task.speed, 1.0)
+                    progress_cb(task.speed, 1.0)
                 except Exception:
                     pass
 
-            if task.done_cb:
+            if done_cb:
                 try:
-                    task.done_cb(task.speed)
+                    done_cb(task.speed)
                 except Exception as e:
-                    print(f"[TSM] done_cb error: {e}")
+                    print(f"[TSM渲染] 速度 {task.speed}x 换源回调执行出错: {e}")
 
         except Exception as e:
-            print(f"[TSM] Merge error for speed {task.speed}x: {e}")
+            print(f"[TSM渲染] 速度 {task.speed}x 合并出错: {e}")
         finally:
             with self._active_lock:
                 self._active_tasks.pop(task.speed, None)
