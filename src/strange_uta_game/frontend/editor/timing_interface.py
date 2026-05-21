@@ -2449,11 +2449,20 @@ class EditorInterface(QWidget):
             return
 
         # 无 checkpoint 分支也触发 timing_service 移动（便于随后空格赋时间戳）
-        # 优先向前查找最近的CP，找不到再向后找
+        # 优先向前查找最近的CP，找不到再向后找。
+        # 抑制 _apply_checkpoint_position 的居中滚动：用户操作的是 focus 域，
+        # 视口应留在被点击字符所在行，不跳到 cp 所在行。
         if self._timing_service:
-            self._timing_service.move_to_checkpoint(
-                line_idx, char_idx, 0, prefer_backward=True
-            )
+            self._suppress_cp_cursor_move = True
+            try:
+                self._timing_service.move_to_checkpoint(
+                    line_idx, char_idx, 0, prefer_backward=True
+                )
+            finally:
+                self._suppress_cp_cursor_move = False
+            self._current_line_idx = line_idx
+            pos = self._timing_service.get_current_position()
+            self.preview._current_char_idx = pos.char_idx
 
         self._update_line_info()
         self._update_time_tags_display()
@@ -3005,8 +3014,19 @@ class EditorInterface(QWidget):
         self.preview._focus_line_idx = new_line
         self.preview._focus_char_idx = new_char
         self.preview._focus_char_range_end = new_char
-        # 驱动 current 跟随：找最近 cp 反馈到 current
-        self._timing_service.move_to_checkpoint(new_line, new_char, 0)
+        # 驱动 current 跟随：找最近 cp 反馈到 current。
+        # 抑制 _apply_checkpoint_position 的居中滚动，以 focus 域为基准。
+        self._suppress_cp_cursor_move = True
+        try:
+            self._timing_service.move_to_checkpoint(
+                new_line, new_char, 0, prefer_backward=True
+            )
+        finally:
+            self._suppress_cp_cursor_move = False
+        self._current_line_idx = new_line
+        pos = self._timing_service.get_current_position()
+        self.preview._current_char_idx = pos.char_idx
+        self._update_line_info()
         self._update_time_tags_display()
         self._update_status()
         self.preview.update()
@@ -3070,7 +3090,18 @@ class EditorInterface(QWidget):
         self.preview._focus_char_range_end = new_char
         # 驱动 current 跟随：让 TimingService 找最近 cp，
         # 反馈经 _apply_checkpoint_position 更新 current 域。
-        self._timing_service.move_to_checkpoint(new_line, new_char, 0)
+        # 抑制居中滚动，以 focus 域为基准。
+        self._suppress_cp_cursor_move = True
+        try:
+            self._timing_service.move_to_checkpoint(
+                new_line, new_char, 0, prefer_backward=True
+            )
+        finally:
+            self._suppress_cp_cursor_move = False
+        self._current_line_idx = new_line
+        pos = self._timing_service.get_current_position()
+        self.preview._current_char_idx = pos.char_idx
+        self._update_line_info()
         self._update_time_tags_display()
         self._update_status()
 

@@ -410,14 +410,17 @@ class TimingService:
 
         if prefer_backward:
             # 优先向前查找：找最后一个 pos_key <= target 的 checkpoint
+            # 反向遍历，找到第一个 <= target 即可 early break
             best_idx: Optional[int] = None
-            for i, pos in enumerate(self._global_checkpoints):
+            for i in range(len(self._global_checkpoints) - 1, -1, -1):
+                pos = self._global_checkpoints[i]
                 pos_key = (pos.line_idx, pos.char_idx, pos.checkpoint_idx)
                 if pos_key == target:
                     best_idx = i
                     break
                 if pos_key <= target:
                     best_idx = i
+                    break
 
             # 向前找不到时，向后查找
             if best_idx is None:
@@ -427,7 +430,7 @@ class TimingService:
                         best_idx = i
                         break
         else:
-            # 默认行为：向后查找（保持原有逻辑）
+            # 默认行为：向后查找
             best_idx = None
             for i, pos in enumerate(self._global_checkpoints):
                 pos_key = (pos.line_idx, pos.char_idx, pos.checkpoint_idx)
@@ -436,6 +439,7 @@ class TimingService:
                     break
                 if pos_key >= target and best_idx is None:
                     best_idx = i
+                    break
 
         if best_idx is not None:
             pos = self._global_checkpoints[best_idx]
