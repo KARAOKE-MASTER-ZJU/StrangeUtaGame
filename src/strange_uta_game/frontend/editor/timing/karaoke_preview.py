@@ -1621,11 +1621,13 @@ class KaraokePreview(QWidget):
                         # 字符级 horizontalAdvance 导致相邻 ruby 框互相重叠。
                         _ink_left = float('inf')
                         _ink_right = float('-inf')
+                        _cum = 0
                         for _gci in _grp:
-                            _char_x = curr_x + _group_char_pixel_starts[char_pos][_gci]
+                            _char_x = curr_x + _cum
                             _char_ink_x = _char_x + _char_ink_offsets[_gci]
                             _ink_left = min(_ink_left, _char_ink_x)
                             _ink_right = max(_ink_right, _char_ink_x + _char_ink_widths[_gci])
+                            _cum += char_widths[_gci]
                         _box_left = int(_ink_left)
                         _box_right = int(_ink_right)
                         painter.save()
