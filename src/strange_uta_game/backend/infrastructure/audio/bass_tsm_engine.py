@@ -68,7 +68,13 @@ from .bass_engine import (
     BASS_STREAM_PRESCAN,
     BASS_UNICODE,
 )
-from .tsm_cache import TSMRenderCache, _get_cache_path, _quantize
+from .tsm_cache import (
+    TSMRenderCache,
+    _get_cache_dir,
+    _get_cache_path,
+    _get_source_mp3_path,
+    _quantize,
+)
 
 # SoundTouch anti-alias filter length (taps). Longer = less aliasing/metallic
 # artifact at the cost of a little CPU. Not exported by bass_engine.
@@ -171,13 +177,31 @@ class BassTsmEngine(IAudioEngine):
             # Original-timeline duration from the source PCM.
             self._duration_ms = int(len(pcm) / sr * 1000) if sr else 0
 
-            # Feed the offline stretcher (clears its old cache internally).
+            # Feed the offline stretcher. NOTE: set_source() calls clear_cache()
+            # which deletes ALL .cache/*.mp3 — including a video-extracted or
+            # soundfile-fallback source that lives in .cache. So if our playback
+            # source is inside the cache dir, it is now gone; fall back to the
+            # canonical re-encoded source mp3 that set_source just wrote (it
+            # survives because clear_cache runs before it is written). PCM was
+            # already decoded above, so the deletion does not affect waveform.
             if progress_cb:
                 progress_cb("准备变速缓存...", 0.6)
             song_name = Path(file_path).stem
             self._cache.set_source(song_name, pcm, sr)
 
-            # Active stream = 1.0x original (clean file mode).
+            if self._path_in_cache_dir(playback_path):
+                src_mp3 = _get_source_mp3_path(song_name)
+                if src_mp3.exists():
+                    # Drop a now-redundant soundfile-fallback wav (survives the
+                    # mp3-only clear_cache) before repointing to the source mp3.
+                    if playback_path.endswith("_bass_src.wav"):
+                        try:
+                            Path(playback_path).unlink()
+                        except Exception:
+                            pass
+                    playback_path = str(src_mp3)
+
+            # Active stream = 1.0x source (clean file mode).
             self._source_1x_path = playback_path
             self._current_source_path = playback_path
             self._speed = 1.0
@@ -265,6 +289,15 @@ class BassTsmEngine(IAudioEngine):
             return pcm, int(info.freq) or 44100, ch
         finally:
             _bass.BASS_StreamFree(ds)
+
+    @staticmethod
+    def _path_in_cache_dir(path: str) -> bool:
+        """True if ``path`` lives in the TSM .cache dir (and thus may be wiped
+        by clear_cache during set_source)."""
+        try:
+            return Path(path).resolve().parent == _get_cache_dir().resolve()
+        except Exception:
+            return False
 
     def _prewarm_common_speeds(self) -> None:
         # Users almost always slow down for timing (0.9 → 0.2), so render the
