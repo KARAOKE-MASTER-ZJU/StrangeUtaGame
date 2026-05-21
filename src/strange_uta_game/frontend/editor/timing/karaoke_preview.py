@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import sys
 from typing import Optional
 
@@ -341,7 +342,7 @@ class KaraokePreview(QWidget):
         self._update_display()
 
     def _find_line_for_time(self, time_ms: int) -> Optional[int]:
-        """查找当前时间对应的歌词行索引（使用快照索引，O(1)判断）。
+        """查找当前时间对应的歌词行索引（使用快照索引，O(log n)判断）。
 
         Args:
             time_ms: 当前播放时间（毫秒）
@@ -353,19 +354,12 @@ class KaraokePreview(QWidget):
         if not points:
             return None
 
-        # 时间倒退（拖动进度条）：重置索引
-        if self._current_switch_idx > 0:
-            if time_ms < points[self._current_switch_idx][0]:
-                self._current_switch_idx = 0
-
-        # 从当前位置向后推进
-        while self._current_switch_idx < len(points) - 1:
-            next_time, _ = points[self._current_switch_idx + 1]
-            if time_ms < next_time:
-                break
-            self._current_switch_idx += 1
-
-        return points[self._current_switch_idx][1]
+        # Manual seeks can jump backwards or far forwards. The old incremental
+        # scan reset to 0 on backwards seeks, making late-song jumps O(n).
+        idx = bisect_right(points, (time_ms, sys.maxsize)) - 1
+        idx = max(0, min(idx, len(points) - 1))
+        self._current_switch_idx = idx
+        return points[idx][1]
 
     def set_current_time_ms(self, time_ms: int):
         self._current_time_ms = time_ms
@@ -420,7 +414,9 @@ class KaraokePreview(QWidget):
         else:
             center = max(0, min(self._current_line_idx, n - 1))
         warmed = 0
-        for offset in range(n):
+        max_radius = max(4, budget * 2, self._visible_lines)
+        max_radius = min(max_radius, n - 1)
+        for offset in range(max_radius + 1):
             # 扩散序：0, +1, -1, +2, -2, +3, -3, ...
             if offset == 0:
                 candidates = (center,)

@@ -122,6 +122,9 @@ _bass.BASS_StreamFree.argtypes = [ctypes.c_uint]
 _bass.BASS_ErrorGetCode.restype = ctypes.c_int
 _bass.BASS_ErrorGetCode.argtypes = []
 
+_bass.BASS_PluginLoad.restype = ctypes.c_uint
+_bass.BASS_PluginLoad.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+
 # BASS_INFO struct — for reading output buffer latency
 class BASS_INFO(ctypes.Structure):
     _fields_ = [
@@ -160,6 +163,34 @@ class BASS_CHANNELINFO(ctypes.Structure):
 
 _bass.BASS_ChannelGetInfo.restype = ctypes.c_int
 _bass.BASS_ChannelGetInfo.argtypes = [ctypes.c_uint, ctypes.POINTER(BASS_CHANNELINFO)]
+
+_BASS_PLUGIN_HANDLES: dict[str, int] = {}
+
+
+def _load_bass_plugin(name: str) -> int:
+    """Load an optional BASS add-on from the active DLL dir or bundled root."""
+    if name in _BASS_PLUGIN_HANDLES:
+        return _BASS_PLUGIN_HANDLES[name]
+
+    candidates = [_BASS_DIR / name]
+    if _BASS_ROOT != _BASS_DIR:
+        candidates.append(_BASS_ROOT / name)
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        handle = _bass.BASS_PluginLoad(ctypes.c_wchar_p(str(path)), BASS_UNICODE)
+        if handle:
+            _BASS_PLUGIN_HANDLES[name] = handle
+            print(f"[BassEngine] BASS plugin loaded: {path}")
+            return handle
+        print(f"[BassEngine] BASS plugin load failed: {path} (error {_bass.BASS_ErrorGetCode()})")
+
+    _BASS_PLUGIN_HANDLES[name] = 0
+    return 0
+
+
+_load_bass_plugin("bassflac.dll")
 
 # ═══════════════════════════════════════════════════════════════════
 # ctypes signatures — BASS_FX
