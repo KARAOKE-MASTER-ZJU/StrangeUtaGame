@@ -457,6 +457,8 @@ class BassTsmEngine(IAudioEngine):
         self._speed_scale = q
         self._current_source_path = path
         self._build_stream_locked(target_original_ms=cur_ms, resume=resume)
+        kind = "原始 1.0x" if abs(q - 1.0) < 1e-9 else "预渲染(无损/无爆音)"
+        print(f"[BassTsmEngine] 速度 {q:.2f}x → {kind} 文件: {Path(path).name}")
 
     def _switch_to_tempo(self, speed: float) -> None:
         cur_ms = self._read_position_ms(apply_latency=False)
@@ -465,6 +467,23 @@ class BassTsmEngine(IAudioEngine):
         self._tempo_speed = speed
         self._current_source_path = self._source_1x_path
         self._build_stream_locked(target_original_ms=cur_ms, resume=resume)
+        print(
+            f"[BassTsmEngine] 速度 {speed:.2f}x → 实时 BASS_FX(临时, 可能爆音), "
+            f"后台渲染中, 完成后自动换无损"
+        )
+
+    def get_speed_mode(self) -> str:
+        """当前变速音源类型，便于上层/调试判断是否已用上无爆音音频。
+
+        - "original": 1.0x 原始音频
+        - "rendered": 已切到离线预渲染文件（无损/无爆音）
+        - "realtime": 实时 BASS_FX 临时变速（渲染未就绪，可能爆音）
+        """
+        if self._is_tempo:
+            return "realtime"
+        if abs(self._speed_scale - 1.0) < 1e-9:
+            return "original"
+        return "rendered"
 
     def _on_render_ready(self, speed: float) -> None:
         """Render done_cb — runs on the TSM finalizer thread. Just flag it;

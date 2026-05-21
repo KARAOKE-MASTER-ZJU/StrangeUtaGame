@@ -191,10 +191,12 @@ class TransportBar(QFrame):
         ``speed`` 已经由引擎量化（保留 2 位小数），直接 ``{:.2f}`` 显示。
         """
         if progress >= 0.999:
+            # 渲染完成 → 已切到无损预渲染音频（标签清空即代表“无爆音版生效”）
             self.lbl_render.setText("")
         else:
+            # 渲染中：此刻听到的是实时 BASS_FX 变速（可能爆音），完成后自动换无损
             pct = max(0, min(99, int(progress * 100)))
-            self.lbl_render.setText(f"{speed:.2f}× 渲染 {pct}%")
+            self.lbl_render.setText(f"{speed:.2f}× 实时变速·渲染中 {pct}%")
 
 
 # ──────────────────────────────────────────────
