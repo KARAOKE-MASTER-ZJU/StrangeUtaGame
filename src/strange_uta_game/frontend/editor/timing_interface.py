@@ -20,7 +20,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -2059,110 +2059,143 @@ class EditorInterface(QWidget):
             )
 
     def load_audio(self, file_path: str) -> bool:
+        """异步加载音频到引擎。
+
+        引擎 load() 现在包含整轨解码 + TSM 源 MP3 编码 + 预渲染派发等重操作，
+        必须放到后台线程，否则会卡死 UI。UI 更新在 finished 回调里完成。
+        """
         if not self._timing_service:
             return False
 
-        try:
-            # 创建状态提示
-            state_tooltip = StateToolTip("正在加载音频", "正在读取音频文件...", self)
-            green = theme.status_complete.name()
-            state_tooltip.setStyleSheet(f"""
-                StateToolTip {{
-                    background-color: {green};
-                    border: 1px solid {green};
-                    border-radius: 8px;
-                }}
-                StateToolTip QLabel {{
-                    color: white;
-                }}
-            """)
-            state_tooltip.move(state_tooltip.getSuitablePos())
-            state_tooltip.show()
-
-            def on_progress(stage: str, value: float):
-                state_tooltip.setContent(stage)
-                from PyQt6.QtWidgets import QApplication
-                QApplication.processEvents()
-
-            self._timing_service.load_audio(file_path, progress_cb=on_progress)
-            state_tooltip.setState(True)  # 设置为完成状态
-            state_tooltip.setContent("加载完成")
-            state_tooltip.close()
-
-            info = self._timing_service.get_audio_info()
-            if info:
-                self.transport.set_duration(info.duration_ms)
-                self.timeline.set_duration(info.duration_ms)
-                self.preview.set_duration(info.duration_ms)
-                self.transport.set_position(0)
-                self.timeline.set_position(0)
-
-                # 获取音频采样数据用于波形显示
-                samples = self._timing_service.get_original_samples()
-                if samples is not None:
-                    self.timeline.set_audio_data(
-                        samples, info.sample_rate, info.channels
-                    )
-
-            self._audio_file_path = file_path
-            self.timeline.set_audio_name(Path(file_path).name)
-
-            # 应用设置中的默认音量和速度
-            if self._timing_service:
-                main_window = self.window()
-                setting_iface = getattr(main_window, "settingInterface", None)
-                if setting_iface is not None:
-                    settings = setting_iface.get_settings()
-                    # 默认音量
-                    default_volume = int(settings.get("audio.default_volume", 80))
-                    self._timing_service.set_volume(default_volume)
-                    self.transport.slider_volume.blockSignals(True)
-                    self.transport.slider_volume.setValue(default_volume)
-                    self.transport.slider_volume.blockSignals(False)
-                    # 默认速度
-                    default_speed = settings.get("audio.default_speed", 1.0)
-                    self._timing_service.set_speed(default_speed)
-                    speed_pct = int(default_speed * 100)
-                    self.transport.edit_speed.blockSignals(True)
-                    self.transport.edit_speed.setText(f"{max(20, min(200, speed_pct))}%")
-                    self.transport.edit_speed.blockSignals(False)
-
-            # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
-            if hasattr(self, "_store") and self._store:
-                self._store.set_audio_path(file_path)
-
-            InfoBar.success(
-                title="音频已加载",
-                content=Path(file_path).name,
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=3000,
-                parent=self,
-            )
-            return True
-        except AudioLoadError as e:
-            InfoBar.error(
-                title="加载失败",
-                content=str(e),
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self,
-            )
+        # 防重入：正在加载时忽略新请求
+        if getattr(self, "_audio_loading", False):
             return False
-        except Exception as e:
-            InfoBar.error(
-                title="加载失败",
-                content=str(e),
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self,
-            )
-            return False
+        self._audio_loading = True
+        # 提前置位，配合 MainWindow._on_data_changed 的幂等守卫，避免
+        # store.set_audio_path → emit("audio") → load_audio 的重入回环。
+        self._audio_file_path = file_path
+
+        # 状态提示
+        self._audio_state_tooltip = StateToolTip("正在加载音频", "正在读取音频文件...", self)
+        green = theme.status_complete.name()
+        self._audio_state_tooltip.setStyleSheet(f"""
+            StateToolTip {{
+                background-color: {green};
+                border: 1px solid {green};
+                border-radius: 8px;
+            }}
+            StateToolTip QLabel {{
+                color: white;
+            }}
+        """)
+        self._audio_state_tooltip.move(self._audio_state_tooltip.getSuitablePos())
+        self._audio_state_tooltip.show()
+
+        # 后台线程加载
+        from strange_uta_game.frontend.workers import AudioLoadWorker
+
+        engine = self._timing_service._audio_engine
+        self._audio_load_thread = QThread(self)
+        self._audio_load_worker = AudioLoadWorker(engine, file_path)
+        self._audio_load_worker.moveToThread(self._audio_load_thread)
+
+        self._audio_load_thread.started.connect(self._audio_load_worker.run)
+        self._audio_load_worker.progress.connect(self._on_audio_load_progress)
+        self._audio_load_worker.finished.connect(lambda: self._on_audio_loaded(file_path))
+        self._audio_load_worker.error.connect(self._on_audio_load_error)
+        self._audio_load_worker.finished.connect(self._cleanup_audio_load_thread)
+        self._audio_load_worker.error.connect(self._cleanup_audio_load_thread)
+
+        self._audio_load_thread.start()
+        return True
+
+    def _on_audio_load_progress(self, stage: str, value: float) -> None:
+        if getattr(self, "_audio_state_tooltip", None):
+            self._audio_state_tooltip.setContent(stage)
+
+    def _on_audio_loaded(self, file_path: str) -> None:
+        """音频后台加载完成（UI 线程）：刷新时长/波形/默认音量速度。"""
+        if getattr(self, "_audio_state_tooltip", None):
+            self._audio_state_tooltip.setState(True)
+            self._audio_state_tooltip.setContent("加载完成")
+            self._audio_state_tooltip.close()
+            self._audio_state_tooltip = None
+
+        info = self._timing_service.get_audio_info() if self._timing_service else None
+        if info:
+            self.transport.set_duration(info.duration_ms)
+            self.timeline.set_duration(info.duration_ms)
+            self.preview.set_duration(info.duration_ms)
+            self.transport.set_position(0)
+            self.timeline.set_position(0)
+
+            samples = self._timing_service.get_original_samples()
+            if samples is not None:
+                self.timeline.set_audio_data(samples, info.sample_rate, info.channels)
+
+        self._audio_file_path = file_path
+        self.timeline.set_audio_name(Path(file_path).name)
+
+        # 应用设置中的默认音量和速度
+        if self._timing_service:
+            main_window = self.window()
+            setting_iface = getattr(main_window, "settingInterface", None)
+            if setting_iface is not None:
+                settings = setting_iface.get_settings()
+                default_volume = int(settings.get("audio.default_volume", 80))
+                self._timing_service.set_volume(default_volume)
+                self.transport.slider_volume.blockSignals(True)
+                self.transport.slider_volume.setValue(default_volume)
+                self.transport.slider_volume.blockSignals(False)
+                default_speed = settings.get("audio.default_speed", 1.0)
+                self._timing_service.set_speed(default_speed)
+                speed_pct = int(default_speed * 100)
+                self.transport.edit_speed.blockSignals(True)
+                self.transport.edit_speed.setText(f"{max(20, min(200, speed_pct))}%")
+                self.transport.edit_speed.blockSignals(False)
+
+        # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
+        if hasattr(self, "_store") and self._store:
+            self._store.set_audio_path(file_path)
+
+        InfoBar.success(
+            title="音频已加载",
+            content=Path(file_path).name,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3000,
+            parent=self,
+        )
+        self._audio_loading = False
+
+    def _on_audio_load_error(self, error_msg: str) -> None:
+        if getattr(self, "_audio_state_tooltip", None):
+            self._audio_state_tooltip.close()
+            self._audio_state_tooltip = None
+        # 加载失败，复位以允许重试
+        self._audio_file_path = None
+        self._audio_loading = False
+        InfoBar.error(
+            title="加载失败",
+            content=error_msg,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self,
+        )
+
+    def _cleanup_audio_load_thread(self) -> None:
+        thread = getattr(self, "_audio_load_thread", None)
+        if thread is not None:
+            thread.quit()
+            thread.wait()
+            self._audio_load_thread = None
+        worker = getattr(self, "_audio_load_worker", None)
+        if worker is not None:
+            worker.deleteLater()
+            self._audio_load_worker = None
 
     def _update_mode_indicator(self):
         """#8：根据播放状态更新左下角模式指示器与激活的 key_map。
