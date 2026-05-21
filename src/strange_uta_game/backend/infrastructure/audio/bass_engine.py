@@ -190,7 +190,28 @@ def _load_bass_plugin(name: str) -> int:
     return 0
 
 
-_load_bass_plugin("bassflac.dll")
+def _load_all_bass_plugins() -> None:
+    """加载 _BASS_DIR 下所有 BASS 解码插件，扩展可直接播放的音频格式。
+
+    覆盖 bass_aac/bassalac/bassape/bass_ac3/bassdsd/bassflac/bassopus/
+    basswma/basswv 等 → 支持 AAC/M4A/ALAC/APE/AC3/DSD/FLAC/Opus/WMA/WavPack。
+    插件全局注册，对所有流（含 BASS_FX tempo 流）生效；缺失/失败的静默跳过，
+    不影响核心 mp3/wav/ogg。
+    """
+    # 仅枚举当前架构目录（x64）；root 下多为 32 位 DLL，在 64 位进程加载会失败。
+    # 跳过核心库与非解码 addon（basswasapi 是输出插件，不能当解码插件加载）。
+    skip = {"bass.dll", "bass_fx.dll", "basswasapi.dll"}
+    try:
+        names = sorted(p.name for p in _BASS_DIR.glob("bass*.dll"))
+    except Exception:
+        names = []
+    for name in names:
+        if name.lower() in skip:
+            continue
+        _load_bass_plugin(name)
+
+
+_load_all_bass_plugins()
 
 # ═══════════════════════════════════════════════════════════════════
 # ctypes signatures — BASS_FX

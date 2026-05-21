@@ -46,6 +46,10 @@ class TransportBar(QFrame):
         self._current_ms = 0
         self._is_playing = False
         self._is_dragging = False
+        # 速度滑块拖动中：拖动期间只更新标签，松手（sliderReleased）才应用速度，
+        # 避免每个中间值都触发变速（HQ 模式下会刷屏预渲染）。滚轮/点击/键盘
+        # 不经拖动，仍即时生效。
+        self._speed_dragging = False
         self.setFixedHeight(56)
         self._init_ui()
 
@@ -86,6 +90,8 @@ class TransportBar(QFrame):
         self.slider_speed.setValue(100)
         self.slider_speed.setFixedWidth(116)
         self.slider_speed.valueChanged.connect(self._on_speed_slider_changed)
+        self.slider_speed.sliderPressed.connect(self._on_speed_slider_pressed)
+        self.slider_speed.sliderReleased.connect(self._on_speed_slider_released)
         layout.addWidget(self.slider_speed)
 
         self.lbl_speed_value = CaptionLabel("1.00x", self)
@@ -168,7 +174,8 @@ class TransportBar(QFrame):
 
     @staticmethod
     def _hard_clamp_speed_pct(pct: int) -> int:
-        return max(25, min(200, int(pct)))
+        # 引擎支持 0.2x~2.0x；下限对齐到 20%（此前误写 25% 导致设置项最低只能 0.25x）。
+        return max(20, min(200, int(pct)))
 
     def _clamp_speed_pct(self, pct: int | float) -> int:
         pct = self._hard_clamp_speed_pct(int(round(float(pct))))
@@ -183,6 +190,18 @@ class TransportBar(QFrame):
 
     def _on_speed_slider_changed(self, pct: int):
         pct = self._clamp_speed_pct(pct)
+        self._set_speed_label(pct)
+        # 拖动中只更新标签，松手时再应用（见 _on_speed_slider_released）；
+        # 滚轮/点击/键盘/程序化设值不经拖动，立即生效。
+        if not self._speed_dragging:
+            self.speed_changed.emit(pct / 100.0)
+
+    def _on_speed_slider_pressed(self):
+        self._speed_dragging = True
+
+    def _on_speed_slider_released(self):
+        self._speed_dragging = False
+        pct = self._clamp_speed_pct(self.slider_speed.value())
         self._set_speed_label(pct)
         self.speed_changed.emit(pct / 100.0)
 

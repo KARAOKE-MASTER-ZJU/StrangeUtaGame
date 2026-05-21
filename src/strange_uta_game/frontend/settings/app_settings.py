@@ -20,12 +20,12 @@ class AppSettings:
         "audio": {
             "default_volume": 80,
             "default_speed": 1.0,
-            "speed_slider_min": 0.5,
+            "speed_slider_min": 0.2,
             "speed_slider_max": 1.0,
             "auto_play_on_load": False,
             # 高质量音频变速：开启用离线 TSM 预渲染（变速不变调、无爆音，占用 .cache
             # 磁盘缓存）；关闭仅用原版 BASS 实时变速（零缓存，但可能爆音）。
-            "hq_speed_change": False,
+            "hq_speed_change": True,
         },
         "timing": {
             "default_check_count": 1,

@@ -473,10 +473,13 @@ class BassTsmEngine(IAudioEngine):
             else:
                 self._switch_to_tempo(self._speed)
             self._pending_speed = q
+            # UI 主动申请：最高优先级 + 抢占当前预热渲染，尽快产出干净音频。
             self._cache.ensure(
                 self._speed,
+                priority=-1,
                 progress_cb=self._render_progress_cb,
                 done_cb=self._on_render_ready,
+                preempt=True,
             )
 
     def _switch_to_file(self, q: float, path: str) -> None:

@@ -35,8 +35,8 @@ class MainWindow(MSFluentWindow):
         super().__init__()
 
         # 引擎按"启用高质量音频变速"设置选择：
-        #   开        → BassTsmEngine：离线 TSM 预渲染，变速不变调、无爆音；
-        #   关（默认）→ BassEngine：原版 BASS 实时变速，零缓存但可能爆音。
+        #   开（默认）→ BassTsmEngine：离线 TSM 预渲染，变速不变调、无爆音；
+        #   关        → BassEngine：原版 BASS 实时变速，零缓存但可能爆音。
         self._audio_engine = self._make_audio_engine()
         self._command_manager = CommandManager()
         self._timing_service = TimingService(self._audio_engine, self._command_manager)
@@ -323,7 +323,7 @@ class MainWindow(MSFluentWindow):
     # ==================== 音频引擎选择 ====================
 
     def _hq_speed_enabled(self) -> bool:
-        """读取"启用高质量音频变速"设置（默认关闭）。
+        """读取"启用高质量音频变速"设置（默认开启）。
 
         优先用 settingInterface 的实时值（反映用户刚改的设置）；启动期
         settingInterface 尚未创建时回退到磁盘 AppSettings。
@@ -331,12 +331,12 @@ class MainWindow(MSFluentWindow):
         try:
             setting_iface = getattr(self, "settingInterface", None)
             if setting_iface is not None:
-                return bool(setting_iface.get_settings().get("audio.hq_speed_change", False))
+                return bool(setting_iface.get_settings().get("audio.hq_speed_change", True))
             from strange_uta_game.frontend.settings.app_settings import AppSettings
 
-            return bool(AppSettings().get("audio.hq_speed_change", False))
+            return bool(AppSettings().get("audio.hq_speed_change", True))
         except Exception:
-            return False
+            return True
 
     def _make_audio_engine(self):
         """按设置创建音频引擎。"""

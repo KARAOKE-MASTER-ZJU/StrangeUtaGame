@@ -19,12 +19,12 @@ LoadProgressCallback = Callable[[str, float], None]  # (stage, 0.0~1.0)
 
 # 常见的视频/音频容器扩展名（需要 FFmpeg 处理）
 VIDEO_EXTENSIONS = {
-    # 常见视频容器
+    # 常见视频容器（需 FFmpeg 抽取音轨）
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".m4v", ".mpg", ".mpeg", ".ts", ".3gp", ".vob", ".mts", ".m2ts",
     ".rm", ".rmvb", ".asf", ".f4v", ".ogv",
-    # 音频容器（可能需要 FFmpeg 处理）
-    ".m4a", ".m4b", ".aac", ".wma", ".opus", ".ape", ".ac3", ".dts",
+    # 仍需 FFmpeg 的音频容器（BASS 无对应插件）
+    ".dts",
 }
 
 # MP3 编码参数

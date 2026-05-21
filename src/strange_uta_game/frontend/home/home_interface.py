@@ -62,7 +62,12 @@ class HomeInterface(QWidget):
     project_save_requested = pyqtSignal()  # 请求保存当前项目
     _LYRIC_EXTENSIONS = {".lrc", ".txt", ".kra", ".ass", ".srt"}
     _PROJECT_EXTENSIONS = {".sug"}
-    _AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac"}
+    _AUDIO_EXTENSIONS = {
+        ".mp3", ".wav", ".flac", ".ogg",
+        # 由 BASS 插件直接解码（无需 FFmpeg）
+        ".m4a", ".m4b", ".aac", ".wma", ".opus", ".ape", ".ac3", ".wv",
+        ".dsf", ".dff",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -29,7 +29,12 @@ if TYPE_CHECKING:
 class FileLoader:
     """文件加载管理器 — 处理项目/音频/歌词的加载"""
 
-    _AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
+    _AUDIO_EXTENSIONS = {
+        ".mp3", ".wav", ".flac", ".ogg",
+        # 由 BASS 插件直接解码（无需 FFmpeg）
+        ".m4a", ".m4b", ".aac", ".wma", ".opus", ".ape", ".ac3", ".wv",
+        ".dsf", ".dff",
+    }
     _LYRIC_EXTENSIONS = {".lrc", ".txt", ".kra"}
     _PROJECT_EXTENSIONS = {".sug"}
 

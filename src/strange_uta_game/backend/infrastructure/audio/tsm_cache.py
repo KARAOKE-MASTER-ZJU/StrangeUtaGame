@@ -413,8 +413,14 @@ class TSMRenderCache:
         priority: int = 99,
         progress_cb: Optional[ProgressCallback] = None,
         done_cb: Optional[DoneCallback] = None,
+        preempt: bool = False,
     ) -> Optional[np.ndarray]:
-        """确保 ``speed`` 对应的 PCM 就绪。"""
+        """确保 ``speed`` 对应的 PCM 就绪。
+
+        ``preempt=True``（UI 主动申请的当前速度）：打断正在渲染的其它速度任务、
+        让出 worker 槽，使本次以最高优先级立即开跑；被打断的任务按原优先级
+        重新入队，稍后继续。
+        """
         if self._source_mp3_path is None:
             return None
         q = _quantize(speed)
@@ -434,17 +440,59 @@ class TSMRenderCache:
                 return None
 
         with self._queue_lock:
-            for _, queued_speed, _, _ in self._speed_queue:
-                if abs(queued_speed - q) < 1e-9:
+            existing = next(
+                ((pr, sp, pc, dc) for (pr, sp, pc, dc) in self._speed_queue
+                 if abs(sp - q) < 1e-9),
+                None,
+            )
+            if existing is not None:
+                # 已在队列。非抢占、或新优先级不更高 → 跳过；否则提升优先级
+                # （并采用本次 UI 提供的回调），让它插到队首。
+                if not preempt and priority >= existing[0]:
                     print(f"[TSM] Already queued for speed {q}x, skipping")
                     return None
+                self._speed_queue = [
+                    item for item in self._speed_queue if abs(item[1] - q) >= 1e-9
+                ]
+                heapq.heapify(self._speed_queue)
+                print(f"[TSM] Re-prioritizing queued speed {q}x → priority {priority}")
+
+        # 抢占：让出当前正在渲染的其它速度，使本次请求立即获得 worker 槽。
+        if preempt:
+            self._preempt_active(keep_speed=q)
 
         with self._queue_lock:
             heapq.heappush(self._speed_queue, (priority, q, progress_cb, done_cb))
-            print(f"[TSM] Queued render for speed {q}x with priority {priority}")
+            print(f"[TSM] Queued render for speed {q}x with priority {priority}"
+                  f"{' (preempt)' if preempt else ''}")
 
         self._ensure_scheduler_running()
         return None
+
+    def _preempt_active(self, keep_speed: float) -> None:
+        """打断当前正在渲染的（除 ``keep_speed`` 外）速度任务。
+
+        标记取消并取消其尚未开始的块 future（已运行的块靠 cancelled 标志早退），
+        从活跃表移除以释放速度槽，并按原优先级重新入队以便稍后续渲。
+        """
+        requeue = []
+        with self._active_lock:
+            for spd, task in list(self._active_tasks.items()):
+                if abs(spd - keep_speed) < 1e-9:
+                    continue
+                task.cancelled = True
+                for f in task.futures:
+                    f.cancel()
+                requeue.append((task.priority, spd, task.progress_cb, task.done_cb))
+                del self._active_tasks[spd]
+
+        if not requeue:
+            return
+        with self._queue_lock:
+            for item in requeue:
+                if not any(abs(qs - item[1]) < 1e-9 for _, qs, _, _ in self._speed_queue):
+                    heapq.heappush(self._speed_queue, item)
+                    print(f"[TSM] Preempted speed {item[1]}x, re-queued at priority {item[0]}")
 
     # ---------- 调度 ----------
 
