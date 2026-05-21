@@ -34,9 +34,16 @@ _CACHE_DIR_NAME = ".cache"
 
 
 def _get_cache_dir() -> Path:
-    """获取缓存目录（程序所在目录下的 .cache 文件夹）"""
+    """获取提取音频的存放目录（程序所在目录下的 .cache/extracted 子文件夹）。
+
+    注意：必须放在 .cache 的子目录里，而不是 .cache 根目录。TSM 引擎加载时会调用
+    clear_cache() 用 glob(".cache/*.mp3") 非递归删除 .cache 根目录下的所有 mp3——
+    若提取音频直接放在 .cache 根目录，加载视频后切换引擎重载时该文件已被删除，导致
+    "找不到 ffmpeg 提取的音频文件"。放到子目录可避开这次清理，使其在切换引擎/重载时
+    仍然有效。
+    """
     program_dir = Path(sys.argv[0]).resolve().parent
-    cache_dir = program_dir / _CACHE_DIR_NAME
+    cache_dir = program_dir / _CACHE_DIR_NAME / "extracted"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 

@@ -311,15 +311,29 @@ class EditorInterface(QWidget):
         layout.addLayout(status)
 
     def set_timing_service(self, timing_service: TimingService):
+        """接入 TimingService 并完成全部回调/信号接线。
+
+        本方法被设计为可重复调用（幂等）：切换音频引擎后 MainWindow 会再次调用它，
+        以把所有回调重新挂到新引擎与服务上。两处 _global_qt 信号在重连前先断开旧连接，
+        避免重复连接导致回调多次触发。
+        """
         self._timing_service = timing_service
         self._timing_service.set_callbacks(self)
         # 注册渲染进度回调：经 pyqtSignal 自动 marshal 到 UI 线程。
         self._timing_service.set_render_progress_callback(
             lambda spd, prog: self._render_progress_signal.emit(float(spd), float(prog))
         )
-        # 注册timing_servive焦点时间戳改变回调
+        # 注册timing_servive焦点时间戳改变回调（先断开旧连接保证幂等）
+        try:
+            self._timing_service._global_qt._focus_moved_signal.disconnect(self._handle_foucus_moved)
+        except (TypeError, RuntimeError):
+            pass
         self._timing_service._global_qt._focus_moved_signal.connect(self._handle_foucus_moved)
-        # 注册当前行居中滚动信号
+        # 注册当前行居中滚动信号（先断开旧连接保证幂等）
+        try:
+            self._timing_service._global_qt._center_current_line_signal.disconnect(self._handle_center_current_line)
+        except (TypeError, RuntimeError):
+            pass
         self._timing_service._global_qt._center_current_line_signal.connect(self._handle_center_current_line)
         # 传音频引擎引用给 preview，使 paintEvent 可主动拉取高精度时间
         self.preview.set_audio_engine(timing_service._audio_engine)

@@ -358,14 +358,15 @@ class MainWindow(MSFluentWindow):
         new_engine = desired()
         self._timing_service.swap_audio_engine(new_engine)
         self._audio_engine = new_engine
-        # 重新指向 preview 缓存的引擎引用
+        # 仅换引擎实例（swap_audio_engine）只迁移了位置/渲染回调，编辑器侧的其它
+        # 接线（服务回调、焦点/居中信号、preview 引擎引用）不会自动跟到新引擎，
+        # 表现为切换后回调丢失、跳转不准、数据未重新初始化。这里重走一遍完整接线
+        # （set_timing_service 已做成幂等）并完整重载当前曲目，等价于一次干净的加载。
         if editor is not None:
-            try:
-                editor.preview.set_audio_engine(new_engine)
-            except Exception:
-                pass
-            # 重载当前曲目到新引擎（清空守卫以放行）
+            editor.set_timing_service(self._timing_service)
+            # 重载当前曲目到新引擎（清空守卫与路径以放行重载）
             if audio_path:
+                editor._audio_loading = False
                 editor._audio_file_path = None
                 editor.load_audio(audio_path)
 
