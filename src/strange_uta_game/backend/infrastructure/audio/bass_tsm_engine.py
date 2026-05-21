@@ -168,6 +168,12 @@ class BassTsmEngine(IAudioEngine):
         with self._stream_lock:
             self.stop()
             self._free_stream()
+            # 立即清空源路径，防止 UI 线程 poll（_sync_state_from_bass）在
+            # clear_cache() 删文件后仍用旧路径尝试打开流（BASS error 8）。
+            self._source_1x_path = None
+            self._current_source_path = None
+            self._pending_speed = None
+            self._ready_speed = None
 
             if not Path(file_path).is_file():
                 raise AudioLoadError(f"加载音频失败: 文件不存在: {file_path}")
@@ -408,6 +414,9 @@ class BassTsmEngine(IAudioEngine):
         if self._is_tempo:
             new_stream = self._create_tempo_stream(self._source_1x_path, self._tempo_speed)
         else:
+            if not self._current_source_path:
+                print("[TSM引擎] 流打开失败：源文件路径为空（加载中或未加载）")
+                return False
             new_stream = _bass.BASS_StreamCreateFile(
                 0, ctypes.c_wchar_p(self._current_source_path), 0, 0,
                 BASS_SAMPLE_FLOAT | BASS_STREAM_PRESCAN | BASS_UNICODE,
