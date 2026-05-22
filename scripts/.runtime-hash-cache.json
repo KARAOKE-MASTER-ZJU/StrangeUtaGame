@@ -1,8 +1,8 @@
 {
-  "version": "0.3.19",
+  "version": "0.3.20",
   "content_hash": "0369253873e24563d3536477392ee52f8f736394cd6228e095bb0600c0dbb0d5",
   "size": 106862813,
-  "requirements_hash": "ae2e6b0f728717539290f1a32c0a4ac5fbb038069235fb422e29ee7e4d468472",
+  "requirements_hash": "38bd9adfccbba9ba77805f3bc80ed072d258d4549fecf53ffc739dd75f294aa5",
   "req_lines": [
     "PyQt6==6.11.0",
     "PyQt6-Qt6==6.11.0",
@@ -16,7 +16,6 @@
     "winrt-Windows.Globalization==3.2.1",
     "winrt-Windows.Foundation==3.2.1",
     "winrt-Windows.Foundation.Collections==3.2.1",
-    "av==17.0.1",
     "jaconv==0.5.0",
     "pyphen==0.17.2",
     "requests==2.32.5",
