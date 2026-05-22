@@ -525,13 +525,6 @@ class EditorInterface(QWidget):
         self._key_map_long = edit_long
         # 兼容旧引用
         self._key_map = edit_short
-        # 应用默认音量
-        default_volume = int(settings.get("audio.default_volume", 80))
-        if self._timing_service:
-            self._timing_service.set_volume(default_volume)
-        self.transport.slider_volume.blockSignals(True)
-        self.transport.slider_volume.setValue(default_volume)
-        self.transport.slider_volume.blockSignals(False)
         old_speed_pct = self.transport.get_speed_value()
         new_speed_pct = self.transport.set_speed_range(
             settings.get("audio.speed_slider_min", 0.5),
