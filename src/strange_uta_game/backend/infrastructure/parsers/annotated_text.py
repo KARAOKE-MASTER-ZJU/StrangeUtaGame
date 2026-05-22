@@ -555,9 +555,16 @@ def parse_timed_line(
                         pending_starts.append(_sub_off(_parse_ts_value(val_str), offset_ms))
                     i = close + 1
                     continue
-                # 不合规 [xxx] → 逐字当普通字符（不消耗 pending_starts）
+                # 不合规 [xxx] → 逐字当普通字符（首字正常消耗 pending_starts）
                 for literal_ch in line_text[i : close + 1]:
-                    chars.append(Character(char=literal_ch, check_count=0, singer_id=current or ""))
+                    ch = Character(char=literal_ch, singer_id=current or "")
+                    if pending_starts:
+                        ch.check_count = len(pending_starts)
+                        ch.timestamps = _build_timestamps(pending_starts)
+                        pending_starts = []
+                    else:
+                        ch.check_count = 0
+                    chars.append(ch)
                 i = close + 1
                 continue
             # 未配对 [ → 当普通字符处理
