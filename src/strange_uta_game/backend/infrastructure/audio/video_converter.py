@@ -126,11 +126,15 @@ def extract_audio(video_path: str, progress_cb: Optional[LoadProgressCallback] =
         temp_path,
     ]
 
+    # Windows 下隐藏控制台窗口，避免 GUI 应用调用 FFmpeg 时闪出黑框
+    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=600,
+            creationflags=creation_flags,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("FFmpeg 提取超时（超过 10 分钟）")
