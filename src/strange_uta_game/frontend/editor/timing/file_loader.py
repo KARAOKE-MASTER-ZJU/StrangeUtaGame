@@ -147,9 +147,9 @@ class FileLoader:
         if not is_ffmpeg_available():
             InfoBar.error(
                 title="无法读取视频文件",
-                content="当前环境未检测到 FFmpeg，请安装 FFmpeg 并将其添加到系统环境变量后重试。",
+                content="未检测到 FFmpeg，请在「设置 → 关于 → 工具配置」中浏览并设置 FFmpeg 路径。",
                 orient=Qt.Orientation.Horizontal, isClosable=True,
-                position=InfoBarPosition.TOP, duration=5000,
+                position=InfoBarPosition.TOP, duration=7000,
                 parent=self._editor,
             )
             return
