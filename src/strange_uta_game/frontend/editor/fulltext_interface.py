@@ -270,8 +270,9 @@ class _TimedFormatHighlighter(QSyntaxHighlighter):
     花括号/分隔符 { } || | ,。颜色随深/浅主题切换。
     """
 
-    # (正则, 颜色键) —— 顺序即应用顺序，后者可覆盖前者重叠区
-    _SEP_RE = re.compile(r"\|\||[{}|,]")
+    # 合规块：{原文||读音...}（原文非空）
+    _VALID_BLOCK_RE = re.compile(r"\{[^{}]+\|\|[^{}]*\}")
+    _SEP_INNER_RE = re.compile(r"\|\||[{}|,]")   # 仅在合规块内着色
     _SINGER_RE = re.compile(r"【[^】]*】")
     _END_TS_RE = re.compile(r"\[>[^\]]*\]")
     _START_TS_RE = re.compile(r"\[(?!>)[^\]]*\]")
@@ -303,8 +304,15 @@ class _TimedFormatHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:
+        # 分隔符着色仅限合规块内（不合规的 {..} 当普通文字，不着色）
+        sep_fmt = self._formats["sep"]
+        for block_m in self._VALID_BLOCK_RE.finditer(text):
+            block_start = block_m.start()
+            for sep_m in self._SEP_INNER_RE.finditer(block_m.group()):
+                self.setFormat(block_start + sep_m.start(), sep_m.end() - sep_m.start(), sep_fmt)
+
+        # 演唱者标签 / 时间戳：全局范围着色
         for regex, key in (
-            (self._SEP_RE, "sep"),
             (self._SINGER_RE, "singer"),
             (self._START_TS_RE, "start"),
             (self._END_TS_RE, "end"),

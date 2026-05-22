@@ -426,6 +426,17 @@ def _build_timestamps(slot_ms: List[Optional[int]]) -> List[int]:
     return out
 
 
+def is_valid_block_content(content: str) -> bool:
+    """``{...}`` 块内容是否合规（结构化字符有效）。
+
+    规则：必须含分隔符 ``||`` 且原文部分（``||`` 之前）非空。不合规的块
+    （如缺 ``||``、原文为空）应按普通字符解析/着色，而非结构化解释。
+    """
+    if "||" not in content:
+        return False
+    return content.split("||", 1)[0] != ""
+
+
 def _parse_block(content: str, singer_id: str, offset_ms: int = 0):
     """解析 ``{原文||读音段...}`` 块内容为 Character 列表（块内相邻字 linked）。"""
     from strange_uta_game.backend.domain.models import Character, Ruby, RubyPart
@@ -544,11 +555,13 @@ def parse_timed_line(
         if c == "{":
             close = line_text.find("}", i)
             if close != -1:
-                chars.extend(_parse_block(line_text[i + 1 : close], current, offset_ms))
-                pending_starts = []
-                i = close + 1
-                continue
-            # 未配对 → 当普通字符
+                content = line_text[i + 1 : close]
+                if is_valid_block_content(content):
+                    chars.extend(_parse_block(content, current, offset_ms))
+                    pending_starts = []
+                    i = close + 1
+                    continue
+            # 未配对或块内容不合规 → 当普通字符
 
         # 普通字符
         ch = Character(char=c, singer_id=current or "")
