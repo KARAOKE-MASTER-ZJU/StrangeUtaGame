@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -732,12 +733,15 @@ class EditorInterface(QWidget):
 
     # ==================== 工具栏操作 ====================
 
+    # 判断文本是否含内联时间戳格式（至少有一个合法起始 token）
+    _INLINE_TS_DETECT_RE = re.compile(r"\[\d+:\d{2}\.\d{2}\]")
+
     def _on_paste_lyrics(self):
         """从剪贴板粘贴（Ctrl+V）。
 
-        - 空项目 / 无歌词行：维持原有"整批加载歌词文本"行为。
-        - 已有歌词：在当前光标处插入。若剪贴板内容与上次 Ctrl+C 复制的字符
-          一致，则插入带完整信息的字符副本；否则视为纯文本，逐字插入为新歌词。
+        - 内联格式（含合法 [mm:ss.xx] token）：调用 _paste_inline_format。
+        - 空项目 / 无歌词行：整批加载歌词文本。
+        - 已有歌词：在当前光标处插入（富信息 or 纯文本）。
         """
         from PyQt6.QtWidgets import QApplication
 
@@ -746,6 +750,11 @@ class EditorInterface(QWidget):
             return
 
         text = clipboard.text()
+
+        # 内联时间戳格式优先（来自全文本编辑器的复制内容）
+        if text and self._INLINE_TS_DETECT_RE.search(text):
+            self._paste_inline_format(text)
+            return
 
         # 空项目 / 无歌词：整批加载
         if self._file_loader.can_load_from_clipboard():
@@ -756,6 +765,127 @@ class EditorInterface(QWidget):
 
         # 已有歌词：在光标处插入
         self._paste_chars_at_cursor(text)
+
+    def _paste_inline_format(self, text: str) -> None:
+        """将内联时间戳格式文本（来自全文本编辑器）粘贴进项目。
+
+        按行调用 ``parse_timed_line`` 解析，保留时间戳/ruby/演唱者/连词信息。
+
+        - 空项目：解析结果直接作为全部 Sentence 加载。
+        - 已有歌词：在当前光标行处插入——首行字符插入当前行光标位置，
+          后续行创建新 Sentence 插入到当前行之后；光标后原有字符追加到最后一行末尾。
+        """
+        if not self._project:
+            return
+
+        from strange_uta_game.backend.infrastructure.parsers.annotated_text import (
+            parse_timed_line,
+        )
+
+        # 构建 singer 映射（与全文本编辑器一致）
+        name_to_id: dict = {}
+        default_singer = ""
+        for s in self._project.singers:
+            name_to_id[s.name] = s.id
+            if s.is_default:
+                default_singer = s.id
+        if not default_singer and self._project.singers:
+            default_singer = self._project.singers[0].id
+
+        offset = getattr(self._project, "global_offset_ms", 0) or 0
+
+        # 按行解析
+        raw_lines = [seg.strip("\r") for seg in text.split("\n")]
+        if len(raw_lines) > 1 and raw_lines[-1] == "" and text.endswith("\n"):
+            raw_lines.pop()
+
+        inherited = default_singer
+        parsed_lines: list[list] = []
+        for ls in raw_lines:
+            chars, inherited = parse_timed_line(
+                ls,
+                name_to_singer_id=name_to_id,
+                default_singer_id=default_singer,
+                inherited_singer_id=inherited,
+                offset_ms=offset,
+            )
+            parsed_lines.append(chars)
+
+        if not parsed_lines:
+            return
+
+        project = self._project
+
+        # ── 空项目：直接整批加载 ──
+        if not project.sentences:
+            from strange_uta_game.backend.domain import Sentence
+
+            def _load():
+                sentences = []
+                for chars in parsed_lines:
+                    singer = (chars[0].singer_id if chars and chars[0].singer_id
+                              else default_singer)
+                    sentences.append(Sentence(singer_id=singer, characters=chars))
+                project.sentences = sentences
+                last = len(sentences) - 1
+                return last, 0, 0, "lyrics"
+
+            self._execute_structural_edit("粘贴内联格式", _load)
+            return
+
+        # ── 已有歌词：插入光标处 ──
+        if self.preview._focus_line_idx >= 0 and self.preview._focus_char_idx >= 0:
+            line_idx = self.preview._focus_line_idx
+            insert_at = (min(self.preview._focus_char_idx,
+                             self.preview._focus_char_range_end)
+                         if self.preview._focus_char_range_end >= 0
+                         else self.preview._focus_char_idx)
+        else:
+            line_idx = self._current_line_idx
+            insert_at = self.preview._current_char_idx
+
+        if line_idx < 0 or line_idx >= len(project.sentences):
+            return
+
+        from strange_uta_game.backend.domain import Sentence
+
+        sentence = project.sentences[line_idx]
+        original_len = len(sentence.characters)
+        pos = max(0, min(insert_at, original_len))
+
+        def _mutate_inline():
+            s = project.sentences[line_idx]
+            after_chars = list(s.characters[pos:])
+            s.characters = list(s.characters[:pos])
+
+            # 首行字符插入当前行
+            for ch in parsed_lines[0]:
+                ch.is_line_end = False
+                s.characters.append(ch)
+            if s.characters:
+                s.characters[-1].is_line_end = True
+
+            insert_after = line_idx
+            for i, seg_chars in enumerate(parsed_lines[1:]):
+                seg = list(seg_chars)
+                # 最后一段拼接光标后原有字符
+                if i == len(parsed_lines) - 2:
+                    seg.extend(after_chars)
+                for ch in seg:
+                    ch.is_line_end = False
+                if seg:
+                    seg[-1].is_line_end = True
+                singer = (seg[0].singer_id if seg and seg[0].singer_id
+                          else sentence.singer_id)
+                new_s = Sentence(singer_id=singer, characters=seg)
+                project.sentences.insert(insert_after + 1, new_s)
+                insert_after += 1
+
+            last_line = insert_after
+            last_char = max(0, len(project.sentences[last_line].characters) - 1)
+            return last_line, last_char, 0, "lyrics"
+
+        self._execute_structural_edit("粘贴内联格式", _mutate_inline)
 
     def _on_copy_chars(self):
         """复制选中字符的完整信息（Ctrl+C）。

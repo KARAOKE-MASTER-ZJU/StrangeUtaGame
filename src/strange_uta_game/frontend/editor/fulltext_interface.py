@@ -569,7 +569,7 @@ class RubyInterface(QWidget):
 
     def is_dirty(self) -> bool:
         """检查文本编辑器内容是否与项目数据不同"""
-        if not self._project or not self._project.sentences:
+        if not self._project:
             return False
         return self.text_edit.toPlainText() != self._lines_to_text()
 
@@ -709,7 +709,7 @@ class RubyInterface(QWidget):
 
     def _refresh_display(self):
         """刷新全部显示"""
-        has_project = self._project is not None and len(self._project.sentences) > 0
+        has_project = self._project is not None
 
         for btn in (
             self.btn_auto_all,
