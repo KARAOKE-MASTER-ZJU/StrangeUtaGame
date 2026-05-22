@@ -868,24 +868,31 @@ class EditorInterface(QWidget):
             for ch in parsed_lines[0]:
                 ch.is_line_end = False
                 s.characters.append(ch)
-            if s.characters:
-                s.characters[-1].is_line_end = True
 
             insert_after = line_idx
-            for i, seg_chars in enumerate(parsed_lines[1:]):
-                seg = list(seg_chars)
-                # 最后一段拼接光标后原有字符
-                if i == len(parsed_lines) - 2:
-                    seg.extend(after_chars)
-                for ch in seg:
+            if len(parsed_lines) == 1:
+                # 单行粘贴：光标后原有字符追加回来
+                for ch in after_chars:
                     ch.is_line_end = False
-                if seg:
-                    seg[-1].is_line_end = True
-                singer = (seg[0].singer_id if seg and seg[0].singer_id
-                          else sentence.singer_id)
-                new_s = Sentence(singer_id=singer, characters=seg)
-                project.sentences.insert(insert_after + 1, new_s)
-                insert_after += 1
+                    s.characters.append(ch)
+            else:
+                for i, seg_chars in enumerate(parsed_lines[1:]):
+                    seg = list(seg_chars)
+                    # 最后一段拼接光标后原有字符
+                    if i == len(parsed_lines) - 2:
+                        seg.extend(after_chars)
+                    for ch in seg:
+                        ch.is_line_end = False
+                    if seg:
+                        seg[-1].is_line_end = True
+                    singer = (seg[0].singer_id if seg and seg[0].singer_id
+                              else sentence.singer_id)
+                    new_s = Sentence(singer_id=singer, characters=seg)
+                    project.sentences.insert(insert_after + 1, new_s)
+                    insert_after += 1
+
+            if s.characters:
+                s.characters[-1].is_line_end = True
 
             last_line = insert_after
             last_char = max(0, len(project.sentences[last_line].characters) - 1)
