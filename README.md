@@ -10,9 +10,9 @@
 <h1>
   <picture>
     <source media="(prefers-color-scheme: dark)"
-            srcset="https://readme-typing-svg.demolab.com?font=Zen+Maru+Gothic&weight=700&size=44&duration=1800&pause=99999&color=C792EA&center=true&vCenter=true&width=520&height=64&lines=StrangeUtaGame" />
+            srcset="https://readme-typing-svg.demolab.com?font=Zen+Maru+Gothic&weight=700&size=44&duration=3000&pause=18000&color=C792EA&center=true&vCenter=true&width=520&height=64&lines=StrangeUtaGame" />
     <img alt="StrangeUtaGame"
-         src="https://readme-typing-svg.demolab.com?font=Zen+Maru+Gothic&weight=700&size=44&duration=1800&pause=99999&color=6B3FA0&center=true&vCenter=true&width=520&height=64&lines=StrangeUtaGame" />
+         src="https://readme-typing-svg.demolab.com?font=Zen+Maru+Gothic&weight=700&size=44&duration=3000&pause=18000&color=6B3FA0&center=true&vCenter=true&width=520&height=64&lines=StrangeUtaGame" />
   </picture>
 </h1>
 
@@ -32,7 +32,7 @@
     <img src="https://img.shields.io/github/issues/Xuan-cc/StrangeUtaGame?style=for-the-badge&logo=githubactions&logoColor=white&color=9575CD&labelColor=2D1B4E&label=Issues" alt="Issues" />
   </a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-7E57C2?style=for-the-badge&logo=windows&labelColor=2D1B4E" alt="Platform" />
-  <img src="https://img.shields.io/badge/Python-3.10+-B388FF?style=for-the-badge&logo=python&logoColor=white&labelColor=2D1B4E" alt="Python" />
+  <img src="https://img.shields.io/badge/Python-3.13+-B388FF?style=for-the-badge&logo=python&logoColor=white&labelColor=2D1B4E" alt="Python" />
   <img src="https://img.shields.io/badge/License-GPL_v3-CE93D8?style=for-the-badge&labelColor=2D1B4E" alt="License" />
 </p>
 
