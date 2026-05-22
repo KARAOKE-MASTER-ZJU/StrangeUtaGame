@@ -170,8 +170,9 @@ class _TimedFormatHighlighter(QSyntaxHighlighter):
     _VALID_BLOCK_RE = re.compile(r"\{[^{}]+\|\|[^{}]*\}")
     _SEP_INNER_RE = re.compile(r"\|\||[{}|,]")   # 仅在合规块内着色
     _SINGER_RE = re.compile(r"【[^】]*】")
-    _END_TS_RE = re.compile(r"\[>[^\]]*\]")
-    _START_TS_RE = re.compile(r"\[(?!>)[^\]]*\]")
+    # 仅匹配合法 token：[T] / [>T] 或 [mm:ss.xx] / [>mm:ss.xx]
+    _END_TS_RE = re.compile(r"\[>(?:T|\d+:\d{2}\.\d{2})\]")
+    _START_TS_RE = re.compile(r"\[(?:T|\d+:\d{2}\.\d{2})\]")
 
     def __init__(self, document):
         super().__init__(document)

@@ -539,15 +539,25 @@ def parse_timed_line(
             close = line_text.find("]", i)
             if close != -1:
                 inner = line_text[i + 1 : close]
-                if inner.startswith(">"):
-                    # 句尾 token → 贴到上一个字符（非法内容按 [>todo] 占位）
-                    ms = _sub_off(_parse_ts_value(inner[1:]), offset_ms)
-                    if chars:
-                        chars[-1].is_sentence_end = True
-                        chars[-1].sentence_end_ts = ms
-                else:
-                    # 起始 token（非法内容按 [todo] 占位）
-                    pending_starts.append(_sub_off(_parse_ts_value(inner), offset_ms))
+                is_end_tok = inner.startswith(">")
+                val_str = inner[1:] if is_end_tok else inner
+                # 合法 token：占位符 [T] / [>T] 或标准时间戳 [mm:ss.xx] / [>mm:ss.xx]
+                is_valid_tok = (val_str == _TODO) or (_parse_ts_value(val_str) is not None)
+                if is_valid_tok:
+                    if is_end_tok:
+                        # 句尾 token → 贴到上一个字符
+                        ms = _sub_off(_parse_ts_value(val_str), offset_ms)
+                        if chars:
+                            chars[-1].is_sentence_end = True
+                            chars[-1].sentence_end_ts = ms
+                    else:
+                        # 起始 token
+                        pending_starts.append(_sub_off(_parse_ts_value(val_str), offset_ms))
+                    i = close + 1
+                    continue
+                # 不合规 [xxx] → 逐字当普通字符（不消耗 pending_starts）
+                for literal_ch in line_text[i : close + 1]:
+                    chars.append(Character(char=literal_ch, check_count=0, singer_id=current or ""))
                 i = close + 1
                 continue
             # 未配对 [ → 当普通字符处理

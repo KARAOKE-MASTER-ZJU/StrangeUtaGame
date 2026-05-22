@@ -181,22 +181,32 @@ def test_decode_collision_text_is_independent():
     assert [c.timestamps for c in b] == [[2000], [2100], [2200]]
 
 
-def test_decode_malformed_bracket_becomes_todo():
-    """补充3：非法 [xxxx] 一律按占位处理，不丢字符。"""
-    # 起始位非法 → check_count 计入但无 ts
+def test_decode_malformed_bracket_becomes_literal():
+    """非法 [xxxx] 按普通字符逐字解析，不作为 token 处理。"""
+    # 起始位非法 → 整个 [99x] 变成 5 个普通字符，不影响后续字的 pending_starts
     chars, _ = parse_timed_line("[99x]あ[oops]い")
-    assert [c.char for c in chars] == ["あ", "い"]
-    assert chars[0].check_count == 1 and chars[0].timestamps == []
-    assert chars[1].check_count == 1 and chars[1].timestamps == []
-    # 句尾位非法 → 句尾标记但无 ts
+    # '[','9','9','x',']', 'あ', '[','o','o','p','s',']', 'い'
+    assert [c.char for c in chars] == list("[99x]あ[oops]い")
+    assert all(c.check_count == 0 for c in chars)  # 全部裸字符
+
+    # 合法起始 token + 后接非法句尾 token → あ 正常带 ts，非法 [>bad] 变 6 个普通字符
     chars2, _ = parse_timed_line("[00:01.00]う[>bad]")
-    assert chars2[0].timestamps == [1000]
-    assert chars2[0].is_sentence_end and chars2[0].sentence_end_ts is None
-    # 块内非法起始 token → 占位
+    assert chars2[0].char == "う" and chars2[0].timestamps == [1000]
+    assert not chars2[0].is_sentence_end   # [>bad] 未被识别为句尾
+    assert [c.char for c in chars2[1:]] == list("[>bad]")  # 字面量字符
+    assert all(c.check_count == 0 for c in chars2[1:])
+
+    # 块内非法起始 token → 仍按结构化块处理，首 checkpoint 占位（block 内不改行为）
     chars3, _ = parse_timed_line("{漢||[bad]か|[00:02.00]ん}")
     assert chars3[0].check_count == 2
     assert chars3[0].timestamps == []  # 首 cp 占位 → 截断
     assert [p.text for p in chars3[0].ruby.parts] == ["か", "ん"]
+
+    # 占位符 [T] / [>T] 仍然合法
+    chars4, _ = parse_timed_line("[T]あ[>T]")
+    assert chars4[0].char == "あ"
+    assert chars4[0].check_count == 1 and chars4[0].timestamps == []
+    assert chars4[0].is_sentence_end and chars4[0].sentence_end_ts is None
 
 
 def test_centisecond_rounding():
