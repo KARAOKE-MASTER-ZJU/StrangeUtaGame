@@ -1604,6 +1604,7 @@ class AutoCheckService:
         keep_existing_timetags: bool = True,
         only_noruby: bool = False,
         apply_user_dict: bool = True,
+        progress_callback=None,
     ) -> None:
         """分析并应用到整个项目
 
@@ -1615,12 +1616,17 @@ class AutoCheckService:
             apply_user_dict: 是否执行 Phase 5 用户词典覆盖（默认 True）。
                 传 False 时推迟词典覆盖，由调用方在删除注音后手动调用
                 :meth:`apply_user_dict_to_project`。
+            progress_callback: 可选回调 (current: int, total: int)，每处理完一行后调用。
         """
-        for sentence in project.sentences:
+        sentences = project.sentences
+        total = len(sentences)
+        for i, sentence in enumerate(sentences):
             self.apply_to_sentence(
                 sentence, split_config, keep_existing_timetags, only_noruby,
                 apply_user_dict=apply_user_dict,
             )
+            if progress_callback is not None:
+                progress_callback(i + 1, total)
 
         # check_count 变更后，自动顺延越界的选中 cp
         project.shift_selected_checkpoint_if_lost()

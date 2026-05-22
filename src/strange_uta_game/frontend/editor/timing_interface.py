@@ -891,7 +891,10 @@ class EditorInterface(QWidget):
                     return line_idx, pos + len(new_chars) - 1, 0, "lyrics"
 
                 self._execute_structural_edit("粘贴字符", _mutate)
-                self._analyze_rubies_subset(line_idx, affected, "粘贴字符注音分析")
+                self._analyze_rubies_specs_async(
+                    [(line_idx, affected)], "粘贴字符注音分析",
+                    show_winrt_dialog=False,
+                )
                 return
 
             # 多行：拆行粘贴
@@ -942,22 +945,21 @@ class EditorInterface(QWidget):
                 return last_line, last_char, 0, "lyrics"
 
             self._execute_structural_edit("粘贴字符", _mutate_multi)
-            # 首行：仅分析光标后新增的字符
+            # 收集所有受影响行/范围，合并为一次异步分析，避免多个 InfoBar
+            _paste_specs: list = []
             if lines[0]:
-                affected_first = set(range(pos, pos + len(lines[0])))
-                self._analyze_rubies_subset(line_idx, affected_first, "粘贴字符注音分析")
-            # 中间行：整行新增
+                _paste_specs.append((line_idx, set(range(pos, pos + len(lines[0])))))
             for li in range(line_idx + 1, line_idx + len(lines) - 1):
-                self._analyze_rubies_subset(li, None, "粘贴字符注音分析")
-            # 末行：仅分析段文本部分，排除拼接的原有字符
+                _paste_specs.append((li, None))
             if len(lines) > 1 and lines[-1]:
-                affected_last = (
+                _affected_last = (
                     set(range(0, len(lines[-1]))) if has_after else None
                 )
-                self._analyze_rubies_subset(
-                    line_idx + len(lines) - 1,
-                    affected_last,
-                    "粘贴字符注音分析",
+                _paste_specs.append((line_idx + len(lines) - 1, _affected_last))
+            if _paste_specs:
+                self._analyze_rubies_specs_async(
+                    _paste_specs, "粘贴字符注音分析",
+                    show_winrt_dialog=False,
                 )
 
     def _on_save(self):
@@ -4350,64 +4352,116 @@ class EditorInterface(QWidget):
         self.preview._update_display()
 
     def _auto_analyze_rubies(self, only_noruby: bool = False):
-        """执行注音分析（核心逻辑，供多处复用）
+        """执行注音分析（核心逻辑，供多处复用）。
+
+        分析在后台 QThread 中进行，不阻塞 UI。分析结果通过信号回调到主线程，
+        再手动构建 SentenceSnapshotCommand 纳入 undo/redo 栈。
 
         Args:
             only_noruby: True=仅分析未注音字符，False=全部重新分析
         """
         if not self._project:
             return
-        # 注音前确保 WinRT 日语引擎可用，否则弹引导（含 UAC 安装）
+        if getattr(self, "_ruby_analyzing", False):
+            return
+
         from strange_uta_game.frontend.winrt_japanese_guide import (
             ensure_winrt_japanese,
         )
-
         if not ensure_winrt_japanese(self):
             return
-        try:
-            from strange_uta_game.backend.application import AutoCheckService
-            from strange_uta_game.backend.application.auto_check_service import (
-                delete_rubies_by_type_names,
-            )
-            from strange_uta_game.frontend.settings.settings_interface import (
-                AppSettings,
-            )
 
-            app_settings = AppSettings()
-            auto_check_flags = app_settings.get_all().get("auto_check", {})
-            user_dict = app_settings.load_effective_dictionary()
-            annotate_katakana_with_english = app_settings.get(
-                "ruby_dictionary.annotate_katakana_with_english", False
-            )
-            auto_check = AutoCheckService(
-                auto_check_flags=auto_check_flags,
-                user_dictionary=user_dict,
-                annotate_katakana_with_english=annotate_katakana_with_english,
-            )
-            delete_types = auto_check_flags.get("delete_ruby_types", [])
+        from strange_uta_game.backend.application import AutoCheckService
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        from strange_uta_game.frontend.workers import RubyAnalyzeWorker
 
-            deleted_count = [0]
+        app_settings = AppSettings()
+        auto_check_flags = app_settings.get_all().get("auto_check", {})
+        user_dict = app_settings.load_effective_dictionary()
+        annotate_katakana_with_english = app_settings.get(
+            "ruby_dictionary.annotate_katakana_with_english", False
+        )
+        delete_types = auto_check_flags.get("delete_ruby_types", [])
 
-            def _mutate():
-                auto_check.apply_to_project(
+        # AutoCheckService（含 WinRTAnalyzer）在主线程创建，确保 WinRT STA apartment 正确。
+        auto_check = AutoCheckService(
+            auto_check_flags=auto_check_flags,
+            user_dictionary=user_dict,
+            annotate_katakana_with_english=annotate_katakana_with_english,
+        )
+
+        # 在主线程提前快照 before 状态和光标位置（worker 运行期间不能读 self._project）
+        before_sentences = deepcopy(self._project.sentences)
+        undo_pos = (self._current_line_idx, self.preview._current_char_idx)
+        focus_line_idx = self._current_line_idx
+        focus_char_idx = self.preview._current_char_idx
+
+        project_copy = deepcopy(self._project)
+
+        green = theme.status_complete.name()
+        state_tooltip = StateToolTip("正在分析注音", "准备中...", self)
+        state_tooltip.setStyleSheet(f"""
+            StateToolTip {{
+                background-color: {green};
+                border: 1px solid {green};
+                border-radius: 8px;
+            }}
+            StateToolTip QLabel {{
+                color: white;
+            }}
+        """)
+        state_tooltip.move(state_tooltip.getSuitablePos())
+        state_tooltip.show()
+        self._ruby_analyzing = True
+
+        worker = RubyAnalyzeWorker(project_copy, auto_check, only_noruby, delete_types)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        # 保存强引用，防止 PyQt6 弱引用机制在函数返回后回收 worker/thread
+        self._ruby_analyze_worker = worker
+        self._ruby_analyze_thread = thread
+
+        def _on_progress(current: int, total: int) -> None:
+            state_tooltip.setContent(f"已处理 {current}/{total} 行")
+
+        def _cleanup() -> None:
+            self._ruby_analyze_worker = None
+            self._ruby_analyze_thread = None
+            self._ruby_analyzing = False
+
+        def _on_finished(analyzed_project, deleted_count: int) -> None:
+            state_tooltip.setState(True)
+            _cleanup()
+
+            after_sentences = analyzed_project.sentences
+            command_manager = (
+                self._timing_service.command_manager if self._timing_service else None
+            )
+            if command_manager is not None:
+                command = SentenceSnapshotCommand(
                     self._project,
-                    only_noruby=only_noruby,
-                    apply_user_dict=not bool(delete_types),
+                    before_sentences,
+                    after_sentences,
+                    "注音分析",
                 )
-                auto_check.update_checkpoints_for_project(self._project)
-                if delete_types:
-                    deleted_count[0] = delete_rubies_by_type_names(
-                        self._project, delete_types
-                    )
-                    auto_check.apply_user_dict_to_project(self._project)
-                return (self._current_line_idx, self.preview._current_char_idx, None, "rubies")
+                command.undo_position = undo_pos
+                command.redo_position = (focus_line_idx, focus_char_idx)
+                command_manager.execute(command)
+            else:
+                self._project.sentences = deepcopy(after_sentences)
 
-            self._execute_structural_edit("注音分析", _mutate)
+            self._sync_after_structure_change(
+                change_type="rubies",
+                focus_line_idx=focus_line_idx,
+                focus_char_idx=focus_char_idx,
+                checkpoint_idx=None,
+            )
 
-            if deleted_count[0] > 0:
+            if deleted_count > 0:
                 InfoBar.success(
                     title="注音分析完成",
-                    content=f"已重新分析注音，并自动删除了 {deleted_count[0]} 个注音",
+                    content=f"已重新分析注音，并自动删除了 {deleted_count} 个注音",
                     orient=Qt.Orientation.Horizontal,
                     isClosable=True,
                     position=InfoBarPosition.TOP,
@@ -4424,16 +4478,30 @@ class EditorInterface(QWidget):
                     duration=3000,
                     parent=self,
                 )
-        except Exception as e:
+
+        def _on_error(err: str) -> None:
+            state_tooltip.setState(True)
+            _cleanup()
             InfoBar.warning(
                 title="注音分析失败",
-                content=str(e),
+                content=err,
                 orient=Qt.Orientation.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
                 duration=3000,
                 parent=self,
             )
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(_on_progress)
+        worker.finished.connect(_on_finished)
+        worker.error.connect(_on_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        thread.start()
 
     def _on_analyze_rubies(self):
         """工具栏「注音分析」— 弹三选项对话框"""
@@ -4470,51 +4538,105 @@ class EditorInterface(QWidget):
         line_idx: int,
         restrict_indices: Optional[set],
         label: str,
+        *,
+        show_winrt_dialog: bool = True,
     ) -> None:
-        """对单行（restrict_indices=None）或行内选定字符执行注音分析。
-
-        与「注音分析」不同，仅作用于指定范围，其余字符的注音/节奏点保留，
-        用于「加部分歌词时只分析新增部分」的场景。经 _execute_structural_edit
-        包装，纳入 undo/redo。
-        """
-        if not self._project:
-            return
-        from strange_uta_game.frontend.winrt_japanese_guide import (
-            ensure_winrt_japanese,
+        """对单行（restrict_indices=None）或行内选定字符执行注音分析（异步）。"""
+        self._analyze_rubies_specs_async(
+            [(line_idx, restrict_indices)], label,
+            show_winrt_dialog=show_winrt_dialog,
         )
 
-        if not ensure_winrt_japanese(self):
+    def _analyze_rubies_specs_async(
+        self,
+        specs: list,
+        label: str,
+        *,
+        show_winrt_dialog: bool = True,
+    ) -> None:
+        """对多个指定行/范围批量执行注音分析（后台 QThread，不阻塞 UI）。
+
+        Args:
+            specs: list of (line_idx, restrict_indices | None)
+            label: 用于 InfoBar 标题和 undo 描述
+            show_winrt_dialog: False 时 WinRT 不可用则静默跳过（粘贴触发时用）
+        """
+        if not self._project or not specs:
             return
-        try:
-            from strange_uta_game.backend.application import AutoCheckService
-            from strange_uta_game.frontend.settings.settings_interface import (
-                AppSettings,
-            )
+        if getattr(self, "_ruby_subset_analyzing", False):
+            return
 
-            app_settings = AppSettings()
-            auto_check_flags = app_settings.get_all().get("auto_check", {})
-            user_dict = app_settings.load_effective_dictionary()
-            annotate_katakana_with_english = app_settings.get(
-                "ruby_dictionary.annotate_katakana_with_english", False
-            )
-            auto_check = AutoCheckService(
-                auto_check_flags=auto_check_flags,
-                user_dictionary=user_dict,
-                annotate_katakana_with_english=annotate_katakana_with_english,
-            )
+        from strange_uta_game.backend.infrastructure.parsers.ruby_analyzer import (
+            winrt_japanese_status,
+        )
+        from strange_uta_game.frontend.winrt_japanese_guide import ensure_winrt_japanese
 
-            def _mutate():
-                sentence = self._project.sentences[line_idx]
-                auto_check.apply_to_sentence(
-                    sentence,
-                    only_noruby=False,
-                    restrict_indices=restrict_indices,
+        if show_winrt_dialog:
+            if not ensure_winrt_japanese(self):
+                return
+        else:
+            available, _ = winrt_japanese_status()
+            if not available:
+                return
+
+        from strange_uta_game.backend.application import AutoCheckService
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        from strange_uta_game.frontend.workers import RubySubsetAnalyzeWorker
+
+        app_settings = AppSettings()
+        auto_check_flags = app_settings.get_all().get("auto_check", {})
+        user_dict = app_settings.load_effective_dictionary()
+        annotate_katakana_with_english = app_settings.get(
+            "ruby_dictionary.annotate_katakana_with_english", False
+        )
+        auto_check = AutoCheckService(
+            auto_check_flags=auto_check_flags,
+            user_dictionary=user_dict,
+            annotate_katakana_with_english=annotate_katakana_with_english,
+        )
+
+        before_sentences = deepcopy(self._project.sentences)
+        undo_pos = (self._current_line_idx, self.preview._current_char_idx)
+        focus_line_idx = specs[0][0]
+        focus_char_idx = self.preview._current_char_idx
+
+        project_copy = deepcopy(self._project)
+        self._ruby_subset_analyzing = True
+
+        worker = RubySubsetAnalyzeWorker(project_copy, auto_check, specs)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        self._ruby_subset_analyze_worker = worker
+        self._ruby_subset_analyze_thread = thread
+
+        def _cleanup() -> None:
+            self._ruby_subset_analyze_worker = None
+            self._ruby_subset_analyze_thread = None
+            self._ruby_subset_analyzing = False
+
+        def _on_finished(analyzed_project) -> None:
+            _cleanup()
+            after_sentences = analyzed_project.sentences
+            command_manager = (
+                self._timing_service.command_manager if self._timing_service else None
+            )
+            if command_manager is not None:
+                command = SentenceSnapshotCommand(
+                    self._project, before_sentences, after_sentences, label
                 )
-                auto_check.update_checkpoints_from_rubies(sentence)
-                return (line_idx, self.preview._current_char_idx, None, "rubies")
+                command.undo_position = undo_pos
+                command.redo_position = (focus_line_idx, focus_char_idx)
+                command_manager.execute(command)
+            else:
+                self._project.sentences = deepcopy(after_sentences)
 
-            self._execute_structural_edit(label, _mutate)
-
+            self._sync_after_structure_change(
+                change_type="rubies",
+                focus_line_idx=focus_line_idx,
+                focus_char_idx=focus_char_idx,
+                checkpoint_idx=None,
+            )
             InfoBar.success(
                 title=f"{label}完成",
                 content="已分析所选范围的注音",
@@ -4524,16 +4646,27 @@ class EditorInterface(QWidget):
                 duration=2500,
                 parent=self,
             )
-        except Exception as e:
+
+        def _on_error(err: str) -> None:
+            _cleanup()
             InfoBar.warning(
                 title=f"{label}失败",
-                content=str(e),
+                content=err,
                 orient=Qt.Orientation.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
                 duration=3000,
                 parent=self,
             )
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(_on_finished)
+        worker.error.connect(_on_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
     def _on_analyze_rubies_by_line(self):
         """工具栏「按行注音分析」— 仅分析当前行。"""

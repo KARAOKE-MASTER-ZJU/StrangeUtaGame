@@ -149,6 +149,112 @@ class ProjectSaveWorker(QObject):
 
 
 # ──────────────────────────────────────────────
+# 注音分析
+# ──────────────────────────────────────────────
+
+
+class RubyAnalyzeWorker(QObject):
+    """在后台线程对项目副本执行注音分析。
+
+    AutoCheckService 由调用方在主线程创建（确保 WinRT STA apartment 正确初始化），
+    worker 只负责在自己线程调用 init_apartment 后执行分析计算，避免阻塞 UI。
+    """
+
+    progress = pyqtSignal(int, int)    # (current_line, total_lines)
+    finished = pyqtSignal(object, int) # (analyzed_project_copy, deleted_count)
+    error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        project_copy: "Project",
+        auto_check,
+        only_noruby: bool,
+        delete_types: list,
+    ):
+        super().__init__()
+        self._project = project_copy
+        self._auto_check = auto_check
+        self._only_noruby = only_noruby
+        self._delete_types = delete_types
+
+    def run(self) -> None:
+        try:
+            # 为 worker 线程初始化 WinRT COM STA apartment，
+            # 确保在非主线程调用 WinRT 静态方法时 apartment 已就绪。
+            try:
+                from winrt._winrt import STA, init_apartment
+                init_apartment(STA)
+            except Exception:
+                pass
+
+            def _progress_cb(current: int, total: int) -> None:
+                self.progress.emit(current, total)
+
+            self._auto_check.apply_to_project(
+                self._project,
+                only_noruby=self._only_noruby,
+                apply_user_dict=not bool(self._delete_types),
+                progress_callback=_progress_cb,
+            )
+            self._auto_check.update_checkpoints_for_project(self._project)
+
+            deleted_count = 0
+            if self._delete_types:
+                from strange_uta_game.backend.application.auto_check_service import (
+                    delete_rubies_by_type_names,
+                )
+                deleted_count = delete_rubies_by_type_names(
+                    self._project, self._delete_types
+                )
+                self._auto_check.apply_user_dict_to_project(self._project)
+
+            self.finished.emit(self._project, deleted_count)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ──────────────────────────────────────────────
+# 注音分析（局部）
+# ──────────────────────────────────────────────
+
+
+class RubySubsetAnalyzeWorker(QObject):
+    """对指定行/字符范围列表执行注音分析，避免 UI 阻塞。
+
+    specs: list of (line_idx: int, restrict_indices: set | None)
+        restrict_indices=None 表示整行分析。
+    """
+
+    finished = pyqtSignal(object)  # analyzed project copy
+    error = pyqtSignal(str)
+
+    def __init__(self, project_copy: "Project", auto_check, specs: list):
+        super().__init__()
+        self._project = project_copy
+        self._auto_check = auto_check
+        self._specs = specs
+
+    def run(self) -> None:
+        try:
+            try:
+                from winrt._winrt import STA, init_apartment
+                init_apartment(STA)
+            except Exception:
+                pass
+
+            for line_idx, restrict_indices in self._specs:
+                sentence = self._project.sentences[line_idx]
+                self._auto_check.apply_to_sentence(
+                    sentence, only_noruby=False, restrict_indices=restrict_indices
+                )
+                self._auto_check.update_checkpoints_from_rubies(sentence)
+
+            self.finished.emit(self._project)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ──────────────────────────────────────────────
 # 歌词
 # ──────────────────────────────────────────────
 
