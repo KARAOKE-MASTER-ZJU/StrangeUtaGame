@@ -64,9 +64,9 @@
 
 ## 💜 简介 / About
 
-> **StrangeUtaGame**（简称 **SUG**）是一款受 [RhythmicaLyrics](http://suwa.pupu.jp/RhythmicaLyrics.html) 启发的**卡拉 OK 歌词打轴软件**。它在保留 Rhythmica 工作流的同时，重写了音频引擎与渲染管线，专注于**低延迟、高精度**的时间标签制作，并把对中文创作者友好的体验放在首位 —— **无需日语转区**、**全格式音视频导入**、**高质量变速**。  
+> **StrangeUtaGame**（简称 **SUG**）是一款受 [RhythmicaLyrics](http://suwa.pupu.jp/RhythmicaLyrics.html) 启发的**卡拉 OK 歌词打轴软件**。它在保留 RhythmicaLyrics工作流的同时，重写了音频引擎与渲染管线，专注于**低延迟、高精度**的时间标签制作，并把对中文创作者友好的体验放在首位 —— **无需日语转区**、**全格式音视频导入**、**高质量变速**、**演唱者管理**。  
 >
-> **StrangeUtaGame (SUG)** is a karaoke timing tool inspired by *RhythmicaLyrics*. It rebuilds the audio engine and rendering pipeline around **ultra-low latency and frame-accurate timestamping**, with a focus on a smoother experience for Chinese-speaking creators — **no Japanese locale switch required**, **import any audio/video format**, and **studio-grade time-stretching**.
+> **StrangeUtaGame (SUG)** is a karaoke timing tool inspired by *RhythmicaLyrics*. It rebuilds the audio engine and rendering pipeline around **ultra-low latency and frame-accurate timestamping**, with a focus on a smoother experience for Chinese-speaking creators — **no Japanese locale switch required**, **import any audio/video format**, and **studio-grade time-stretching**, **Singer Management**.
 
 <table>
 <tr>
@@ -75,8 +75,8 @@
 **🎯 适合谁 / Who it's for**
 
 - 翻唱、镜音、Vocaloid 字幕组
-- ASS / Aegisub 打轴爱好者
-- 想要更现代 UI、更稳定体验的 Rhythmica 用户
+- NicokaraMaker / ASS / Aegisub 打轴爱好者
+- 想要更现代 UI、更稳定体验的 RL 用户
 
 </td>
 <td width="50%" valign="top">
@@ -681,8 +681,7 @@ git push origin feat/your-idea
 
 **🌍 翻译 / Translate**
 
-新增语言：复制 `locales/zh_CN.json` 并翻译；保持键名一致即可。  
-Drop a translated copy of `locales/zh_CN.json` and keep keys intact.
+新增语言：Todo..
 
 </td>
 </tr>
@@ -726,7 +725,7 @@ No 🙅 — the name is just a bit of fun. **Uta** means "song" in Japanese; the
 
 <br/>
 
-- 相比 **Rhythmica**：现代 UI、毫秒级低延迟回放、无需日语转区、原生 UTF-8。  
+- 相比 **RL**：现代 UI、毫秒级低延迟回放、无需日语转区、原生 UTF-8。  
 - 相比 **Aegisub kara-templater**：SUG 专注「**打轴**」这一步，导出后再交给 Aegisub 做样式与特效，两者互补。  
 
 </details>
@@ -742,12 +741,12 @@ Officially **Windows 10/11** only for now. The code is Python + Qt and should be
 </details>
 
 <details>
-<summary><b>Q4. 我之前的 Rhythmica 工程能直接导入吗？</b> &nbsp; <i>Can I import my existing Rhythmica project?</i></summary>
+<summary><b>Q4. 我之前的 RhythmicaLyrics工程能直接导入吗？</b> &nbsp; <i>Can I import my existing RhythmicaLyricsproject?</i></summary>
 
 <br/>
 
-支持导入 Rhythmica 导出的 ASS / LRC / TXT 与 <b>RL 编辑模式</b> 文本格式；联网词典同时兼容 RhythmicaLyrics 官方接口，原有词典资产可直接复用。  
-ASS / LRC / TXT and the <b>RL edit-mode</b> text format from Rhythmica can be imported; the online dictionary is wire-compatible with the RhythmicaLyrics official endpoint, so your existing dictionary assets keep working.
+支持导入 RhythmicaLyrics导出的 ASS / LRC / TXT 与 <b>RL 编辑模式</b> 文本格式；联网词典同时兼容 RhythmicaLyrics 官方接口，原有词典资产可直接复用。  
+ASS / LRC / TXT and the <b>RL edit-mode</b> text format from RhythmicaLyricscan be imported; the online dictionary is wire-compatible with the RhythmicaLyrics official endpoint, so your existing dictionary assets keep working.
 
 </details>
 
