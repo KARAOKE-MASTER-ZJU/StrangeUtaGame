@@ -30,6 +30,7 @@ from qfluentwidgets import (
     PushButton,
     PrimaryPushButton,
     SpinBox,
+    SwitchButton,
     InfoBar,
     InfoBarPosition,
     FluentIcon as FIF,
@@ -133,6 +134,7 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._show_ch_width = True
         self._line_number_area = _LineNumberArea(self)
         self._line_info_area = _LineInfoArea(self)
         self.blockCountChanged.connect(lambda _=0: self._update_width())
@@ -144,6 +146,8 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
         return 10 + self.fontMetrics().horizontalAdvance("9") * digits + 6
 
     def line_info_area_width(self) -> int:
+        if not self._show_ch_width:
+            return 0
         fm = self.fontMetrics()
         return fm.horizontalAdvance("99.9ch") + 16
 
@@ -151,6 +155,13 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
         self.setViewportMargins(
             self.line_number_area_width(), 0, self.line_info_area_width(), 0
         )
+
+    def set_show_ch_width(self, show: bool):
+        if self._show_ch_width == show:
+            return
+        self._show_ch_width = show
+        self._line_info_area.setVisible(show)
+        self._update_width()
 
     def _on_update_request(self, rect, dy):
         if dy:
@@ -457,13 +468,27 @@ class RubyInterface(QWidget):
 
         # 字号调整（与上面按钮同栏；也可用 Alt+滚轮）
         batch_layout.addSpacing(12)
+
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        _settings = AppSettings()
+        _saved_font_size = _settings.get("fulltext_editor.font_size", 12)
+        _saved_show_ch = _settings.get("fulltext_editor.show_ch_width", True)
+
         batch_layout.addWidget(CaptionLabel("字号"))
         self.spin_font = SpinBox(self)
         self.spin_font.setRange(8, 48)
-        self.spin_font.setValue(12)
+        self.spin_font.setValue(_saved_font_size)
         self.spin_font.setMinimumWidth(130)
         self.spin_font.valueChanged.connect(self._apply_font_size)
         batch_layout.addWidget(self.spin_font)
+
+        batch_layout.addSpacing(12)
+        batch_layout.addWidget(CaptionLabel("字宽统计"))
+        self.switch_ch_width = SwitchButton(self)
+        self.switch_ch_width.setChecked(_saved_show_ch)
+        self.switch_ch_width.setMinimumWidth(50)
+        self.switch_ch_width.checkedChanged.connect(self._on_ch_width_toggled)
+        batch_layout.addWidget(self.switch_ch_width)
 
         batch_layout.addStretch()
 
@@ -486,6 +511,8 @@ class RubyInterface(QWidget):
         from strange_uta_game.frontend.theme import theme
         theme.changed.connect(self._on_theme_changed)
         layout.addWidget(self.text_edit, stretch=1)
+
+        self.text_edit.set_show_ch_width(_saved_show_ch)
 
         # 底部栏：左下角信息，右下角 应用更改 / 还原 / 关闭
         action_layout = QHBoxLayout()
@@ -656,10 +683,21 @@ class RubyInterface(QWidget):
         self.text_edit._update_width()
         self.text_edit._line_number_area.update()
         self.text_edit._line_info_area.update()
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        _settings = AppSettings()
+        _settings.set("fulltext_editor.font_size", pt)
+        _settings.save()
 
     def _on_zoom_requested(self, delta: int):
         """Alt+滚轮：调整字号 SpinBox（其 valueChanged 再驱动实际字号）。"""
         self.spin_font.setValue(self.spin_font.value() + delta)
+
+    def _on_ch_width_toggled(self, checked: bool):
+        self.text_edit.set_show_ch_width(checked)
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        _settings = AppSettings()
+        _settings.set("fulltext_editor.show_ch_width", checked)
+        _settings.save()
 
     # ==================== 内部方法 ====================
 

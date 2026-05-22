@@ -56,6 +56,10 @@
     "space_as_line_end": true,
     "english_syllable_check": true
   },
+  "fulltext_editor": {
+    "font_size": 12,
+    "show_ch_width": true
+  },
   "ui": {
     "theme": "auto",
     "language": "zh_CN",
