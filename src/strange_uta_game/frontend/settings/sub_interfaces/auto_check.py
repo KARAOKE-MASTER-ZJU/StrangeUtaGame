@@ -20,7 +20,11 @@ class AutoCheckSubInterface(SubSettingInterface):
             items=[
                 ("hiragana", "ひらがな（平假名）"), ("katakana", "カタカナ（片假名）"),
                 ("kanji", "漢字（汉字）"), ("alphabet", "アルファベット（英文字母）"),
-                ("digit", "数字"), ("symbol", "記号（符号）"), ("space", "空格"),
+                ("digit", "数字"), ("symbol", "記号（符号）"),
+                ("space", "空格"),
+                ("space_after_japanese", "  ↳日语后空格check"),
+                ("space_after_alphabet", "  ↳字母后空格check"),
+                ("space_after_symbol", "  ↳符号/数字后空格check"),
             ], parent=g)
         self.card_check_rules = MultiBoolSettingCard(
             FIF.SETTING, "check 规则", "选择启用哪些自动节奏点规则",
@@ -29,9 +33,9 @@ class AutoCheckSubInterface(SubSettingInterface):
                 ("check_long_vowel", "长音符号check"), ("small_kana", "小写假名check"),
                 ("check_parentheses", "括号内文字check"), ("checkpoint_on_punctuation", "标点参与节奏点"),
                 ("check_empty_lines", "空行check"), ("check_line_start", "行首check"),
-                ("check_line_end", "行尾check"), ("space_after_japanese", "日语后空格check"),
-                ("space_after_alphabet", "字母后空格check"), ("space_after_symbol", "符号数字后空格check"),
-                ("space_as_line_end", "空格视为句尾"), ("check_english_word_end", "英文单词结尾句尾"),
+                ("check_line_end", "行尾check"),
+                ("check_space_as_line_end", "空格视为句尾"),
+                ("check_english_word_end", "英文单词结尾句尾"),
                 ("english_syllable_check", "按音节Check英文单词"),
             ], parent=g)
         self.card_auto_on_load = SwitchSettingCard(FIF.ACCEPT, "读取时自动check",
@@ -67,6 +71,9 @@ class AutoCheckSubInterface(SubSettingInterface):
             "digit": s.get("auto_check.digit", False),
             "symbol": s.get("auto_check.symbol", False),
             "space": s.get("auto_check.space", False),
+            "space_after_japanese": s.get("auto_check.space_after_japanese", True),
+            "space_after_alphabet": s.get("auto_check.space_after_alphabet", True),
+            "space_after_symbol": s.get("auto_check.space_after_symbol", True),
         })
         self.card_check_rules.setValues({
             "check_n": s.get("auto_check.check_n", True),
@@ -78,10 +85,7 @@ class AutoCheckSubInterface(SubSettingInterface):
             "check_empty_lines": s.get("auto_check.check_empty_lines", False),
             "check_line_start": s.get("auto_check.check_line_start", False),
             "check_line_end": s.get("auto_check.check_line_end", True),
-            "space_after_japanese": s.get("auto_check.space_after_japanese", True),
-            "space_after_alphabet": s.get("auto_check.space_after_alphabet", True),
-            "space_after_symbol": s.get("auto_check.space_after_symbol", True),
-            "space_as_line_end": s.get("auto_check.check_space_as_line_end", True),
+            "check_space_as_line_end": s.get("auto_check.check_space_as_line_end", True),
             "check_english_word_end": s.get("auto_check.check_english_word_end", True),
             "english_syllable_check": s.get("auto_check.english_syllable_check", True),
         })

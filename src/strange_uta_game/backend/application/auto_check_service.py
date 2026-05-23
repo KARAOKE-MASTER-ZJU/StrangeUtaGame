@@ -52,6 +52,21 @@ _RUBY_ALLOWED_TYPES = {
     CharType.NUMBER,
 }
 
+# 字符类型 → 标志键映射（用于标志过滤器，提取为模块级常量避免循环内重复构造）
+# 注意：CharType.SPACE 不在此表中，空格由 _apply_flags_filter 单独处理
+# （需要同时读取 space_after_* 三个子选项，逻辑与其他类型不同）
+_TYPE_FLAG_MAP: Dict[CharType, str] = {
+    CharType.HIRAGANA: "hiragana",
+    CharType.KATAKANA: "katakana",
+    CharType.KANJI: "kanji",
+    CharType.ALPHABET: "alphabet",
+    CharType.NUMBER: "digit",
+    CharType.SYMBOL: "symbol",
+}
+
+# 小型假名集合（不含促音 っ/ッ，促音由独立的 check_sokuon 标志控制）
+_SMALL_KANA_SET = frozenset("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮゕゖ")
+
 
 def _has_latin(s: str) -> bool:
     """是否含有 ASCII 英文字母（用于词边界判定）。"""
@@ -743,6 +758,110 @@ class AutoCheckService:
                 return [reading[ri : ri + try_len]] + rest
         return None
 
+    def _apply_flags_filter(
+        self,
+        chars: List[str],
+        check_counts: List[int],
+        text: str,
+    ) -> None:
+        """将自动打勾过滤标志应用到 check_counts（原位修改）。
+
+        执行顺序（顺序即优先级，后者可覆盖前者）：
+        1. check_line_start —— 首先为行首字符设定"至少 1 cp"基线
+        2. 字符类型/特殊字符过滤 —— 可将 check_line_start 的基线覆盖回 0
+        3. 括号内字符过滤
+        4. 标点符号最终覆盖 —— 始终最后执行，优先级最高
+
+        将 check_line_start 置于类型过滤**之前**，是修复"行首标点被强制打 CP"
+        bug 的关键：类型过滤（如 symbol=False）对标点的清零可覆盖基线，
+        而标点最终覆盖（PUNCTUATION_SET）在最后兜底。
+        """
+        if not self._flags:
+            # 无标志时：仅执行标点最终覆盖（默认不打 CP）
+            for i, ch in enumerate(chars):
+                if i < len(check_counts) and ch in PUNCTUATION_SET:
+                    check_counts[i] = 0
+            return
+
+        # Step 1: check_line_start —— 在类型过滤之前设基线，后续过滤可覆盖
+        if self._flags.get("check_line_start", False) and check_counts and text.strip():
+            check_counts[0] = max(check_counts[0], 1)
+
+        # Step 2: 逐字符类型/特殊字符过滤（优先级高于 check_line_start 的基线）
+        for i, char in enumerate(chars):
+            if i >= len(check_counts):
+                break
+
+            ct = get_char_type(char) if len(char) == 1 else CharType.OTHER
+
+            # 空格：主开关 + 上下文子选项共同决定是否打 CP（set-to-1 语义）
+            # 须先于通用 _TYPE_FLAG_MAP 检查处理，因为空格逻辑与其他类型不同
+            if ct == CharType.SPACE:
+                if not self._flags.get("space", True) or i == 0:
+                    # 主开关关闭，或行首空格：不打 CP
+                    check_counts[i] = 0
+                else:
+                    prev_ct = (
+                        get_char_type(chars[i - 1])
+                        if len(chars[i - 1]) == 1
+                        else CharType.OTHER
+                    )
+                    if prev_ct in (
+                        CharType.HIRAGANA,
+                        CharType.KATAKANA,
+                        CharType.KANJI,
+                        CharType.SOKUON,
+                        CharType.LONG_VOWEL,
+                    ):
+                        check_counts[i] = 1 if self._flags.get("space_after_japanese", True) else 0
+                    elif prev_ct == CharType.ALPHABET:
+                        check_counts[i] = 1 if self._flags.get("space_after_alphabet", True) else 0
+                    elif prev_ct in (CharType.SYMBOL, CharType.NUMBER):
+                        check_counts[i] = 1 if self._flags.get("space_after_symbol", True) else 0
+                    else:
+                        check_counts[i] = 0  # 其他上下文（如行首、连续空格等）
+                continue
+
+            flag_key = _TYPE_FLAG_MAP.get(ct)
+            if flag_key and not self._flags.get(flag_key, True):
+                check_counts[i] = 0
+                continue
+
+            if char in ("ん", "ン") and not self._flags.get("check_n", False):
+                check_counts[i] = 0
+                continue
+
+            if ct == CharType.SOKUON and not self._flags.get("check_sokuon", False):
+                check_counts[i] = 0
+                continue
+
+            if ct == CharType.LONG_VOWEL and not self._flags.get("check_long_vowel", True):
+                check_counts[i] = 0
+                continue
+
+            if char in _SMALL_KANA_SET and not self._flags.get("small_kana", False):
+                check_counts[i] = 0
+                continue
+
+        # Step 3: 括号内字符过滤
+        if not self._flags.get("check_parentheses", True):
+            in_paren = False
+            for i, char in enumerate(chars):
+                if char in ("(", "（"):
+                    in_paren = True
+                elif char in (")", "）"):
+                    in_paren = False
+                elif in_paren and i < len(check_counts):
+                    check_counts[i] = 0
+
+        # Step 4: 标点符号最终覆盖（优先级最高，始终最后执行）
+        # PUNCTUATION_SET 中的字符：禁用时强制 0，启用时至少 1
+        # 空格（含 PUNCTUATION_SET 中的 ' '）已在 Step 2 处理，跳过
+        _enable_punct_cp = self._flags.get("checkpoint_on_punctuation", False)
+        for i, ch in enumerate(chars):
+            if i < len(check_counts) and ch in PUNCTUATION_SET and not ch.isspace():
+                check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
+
     def analyze_sentence(
         self, sentence: Sentence, split_config: Optional[SplitConfig] = None
     ) -> List[AutoCheckResult]:
@@ -1091,94 +1210,8 @@ class AutoCheckService:
                 if check_counts[i] > 1:
                     check_counts[i] = 1
 
-        # 应用自动打勾过滤规则
-        if self._flags:
-            for i, char in enumerate(chars):
-                if i >= len(check_counts):
-                    break
-
-                ct = get_char_type(char) if len(char) == 1 else CharType.OTHER
-
-                type_flag_map = {
-                    CharType.HIRAGANA: "hiragana",
-                    CharType.KATAKANA: "katakana",
-                    CharType.KANJI: "kanji",
-                    CharType.ALPHABET: "alphabet",
-                    CharType.NUMBER: "digit",
-                    CharType.SYMBOL: "symbol",
-                    CharType.SPACE: "space",
-                }
-                flag_key = type_flag_map.get(ct)
-                if flag_key and not self._flags.get(flag_key, True):
-                    check_counts[i] = 0
-                    continue
-
-                if char in ("ん", "ン") and not self._flags.get("check_n", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.SOKUON and not self._flags.get("check_sokuon", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.LONG_VOWEL and not self._flags.get("check_long_vowel", True):
-                    check_counts[i] = 0
-                    continue
-
-                # 小写假名（排除促音っ/ッ，已有独立flag）
-                _SMALL_KANA = set("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮゕゖ")
-                if char in _SMALL_KANA and not self._flags.get("small_kana", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.SPACE and i > 0:
-                    prev_char = chars[i - 1]
-                    prev_ct = (
-                        get_char_type(prev_char)
-                        if len(prev_char) == 1
-                        else CharType.OTHER
-                    )
-                    if prev_ct in (
-                        CharType.HIRAGANA,
-                        CharType.KATAKANA,
-                        CharType.KANJI,
-                        CharType.SOKUON,
-                        CharType.LONG_VOWEL,
-                    ):
-                        if not self._flags.get("space_after_japanese", True):
-                            check_counts[i] = 0
-                    elif prev_ct == CharType.ALPHABET:
-                        if not self._flags.get("space_after_alphabet", True):
-                            check_counts[i] = 0
-                    elif prev_ct in (CharType.SYMBOL, CharType.NUMBER):
-                        if not self._flags.get("space_after_symbol", True):
-                            check_counts[i] = 0
-
-            if not self._flags.get("check_parentheses", True):
-                in_paren = False
-                for i, char in enumerate(chars):
-                    if char in ("(", "（"):
-                        in_paren = True
-                    elif char in (")", "）"):
-                        in_paren = False
-                    elif in_paren and i < len(check_counts):
-                        check_counts[i] = 0
-
-            # 空行（text.strip() 为空）不应被 check_line_start 强制打 CP
-            if (
-                self._flags.get("check_line_start", False)
-                and check_counts
-                and text.strip()
-            ):
-                check_counts[0] = max(check_counts[0], 1)
-
-        # 标点符号：默认不参与节奏点；开关启用时强制 1
-        _enable_punct_cp = (
-            self._flags.get("checkpoint_on_punctuation", False) if self._flags else False
-        )
-        for i, ch in enumerate(chars):
-            if i < len(check_counts) and ch in PUNCTUATION_SET:
-                check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
+        # 应用自动打勾过滤规则（含 check_line_start 和标点最终覆盖）
+        self._apply_flags_filter(chars, check_counts, text)
 
         # 批 18 #9：英文词组节奏点规则（按音节首字=1，其余=0；关闭时整词首字=1）
         # 必须放在 e2k mora 分配之后，覆盖 e2k 命中分支的 per-char mora 计数。
@@ -1732,94 +1765,9 @@ class AutoCheckService:
                 if check_counts[i] > 1:
                     check_counts[i] = 1
 
-        # 应用自动打勾过滤规则（与 analyze_sentence 相同逻辑）
+        # 应用自动打勾过滤规则（含 check_line_start 和标点最终覆盖）
         chars = [c.char for c in sentence.characters]
-        if self._flags:
-            for i, ch in enumerate(chars):
-                if i >= len(check_counts):
-                    break
-
-                ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
-
-                type_flag_map = {
-                    CharType.HIRAGANA: "hiragana",
-                    CharType.KATAKANA: "katakana",
-                    CharType.KANJI: "kanji",
-                    CharType.ALPHABET: "alphabet",
-                    CharType.NUMBER: "digit",
-                    CharType.SYMBOL: "symbol",
-                    CharType.SPACE: "space",
-                }
-                flag_key = type_flag_map.get(ct)
-                if flag_key and not self._flags.get(flag_key, True):
-                    check_counts[i] = 0
-                    continue
-
-                if ch in ("ん", "ン") and not self._flags.get("check_n", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.SOKUON and not self._flags.get("check_sokuon", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.LONG_VOWEL and not self._flags.get("check_long_vowel", True):
-                    check_counts[i] = 0
-                    continue
-
-                _SMALL_KANA = set("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮゕゖ")
-                if ch in _SMALL_KANA and not self._flags.get("small_kana", False):
-                    check_counts[i] = 0
-                    continue
-
-                if ct == CharType.SPACE and i > 0:
-                    prev_char = chars[i - 1]
-                    prev_ct = (
-                        get_char_type(prev_char)
-                        if len(prev_char) == 1
-                        else CharType.OTHER
-                    )
-                    if prev_ct in (
-                        CharType.HIRAGANA,
-                        CharType.KATAKANA,
-                        CharType.KANJI,
-                        CharType.SOKUON,
-                        CharType.LONG_VOWEL,
-                    ):
-                        if not self._flags.get("space_after_japanese", True):
-                            check_counts[i] = 0
-                    elif prev_ct == CharType.ALPHABET:
-                        if not self._flags.get("space_after_alphabet", True):
-                            check_counts[i] = 0
-                    elif prev_ct in (CharType.SYMBOL, CharType.NUMBER):
-                        if not self._flags.get("space_after_symbol", True):
-                            check_counts[i] = 0
-
-            if not self._flags.get("check_parentheses", True):
-                in_paren = False
-                for i, ch in enumerate(chars):
-                    if ch in ("(", "（"):
-                        in_paren = True
-                    elif ch in (")", "）"):
-                        in_paren = False
-                    elif in_paren and i < len(check_counts):
-                        check_counts[i] = 0
-
-            # 空行（text.strip() 为空）不应被 check_line_start 强制打 CP
-            if (
-                self._flags.get("check_line_start", False)
-                and check_counts
-                and sentence.text.strip()
-            ):
-                check_counts[0] = max(check_counts[0], 1)
-
-        # 标点符号：默认不参与节奏点；开关启用时强制 1
-        _enable_punct_cp2 = (
-            self._flags.get("checkpoint_on_punctuation", False) if self._flags else False
-        )
-        for i, ch in enumerate(chars):
-            if i < len(check_counts) and ch in PUNCTUATION_SET:
-                check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp2 else 0
+        self._apply_flags_filter(chars, check_counts, sentence.text)
 
         # 批 18 #9：英文词组节奏点规则（按音节首字=1，其余=0，末字母标句尾）
         # find_english_words 基于 sentence.text 的字符索引，与 sentence.characters 一一对应

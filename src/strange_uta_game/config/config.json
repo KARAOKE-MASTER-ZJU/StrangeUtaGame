@@ -38,7 +38,7 @@
     "check_empty_lines": false,
     "check_line_start": true,
     "check_line_end": true,
-    "space_after_japanese": false,
+    "space_after_japanese": true,
     "space_after_alphabet": false,
     "space_after_symbol": true,
     "small_kana": false,
