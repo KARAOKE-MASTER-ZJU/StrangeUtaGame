@@ -1581,19 +1581,30 @@ class KaraokePreview(QWidget):
                                     painter.setPen(_rh)
                                     painter.drawText(int(ruby_x), ruby_y, _merged)
                                     painter.restore()
-                        # 连词框：基于字符组墨水边界（ink bounds）绘制，避免
-                        # 字符级 horizontalAdvance 导致相邻 ruby 框互相重叠。
-                        _ink_left = float('inf')
-                        _ink_right = float('-inf')
+                        # 连词框：取 Ruby 拼接串墨水边界和字符组墨水边界中
+                        # 宽度更大的一方绘制，保证框不会因某一种画法偏窄。
+                        # --- 方法1：Ruby 拼接串墨水边界 ---
+                        _ruby_box_left = _r_ink_x
+                        _ruby_box_right = _r_ink_x + _r_ink_w
+                        _ruby_box_w = _r_ink_w
+                        # --- 方法2：字符组墨水边界并集 ---
+                        _char_ink_left = float('inf')
+                        _char_ink_right = float('-inf')
                         _cum = 0
                         for _gci in _grp:
                             _char_x = curr_x + _cum
                             _char_ink_x = _char_x + _char_ink_offsets[_gci]
-                            _ink_left = min(_ink_left, _char_ink_x)
-                            _ink_right = max(_ink_right, _char_ink_x + _char_ink_widths[_gci])
+                            _char_ink_left = min(_char_ink_left, _char_ink_x)
+                            _char_ink_right = max(_char_ink_right, _char_ink_x + _char_ink_widths[_gci])
                             _cum += char_widths[_gci]
-                        _box_left = int(_ink_left)
-                        _box_right = int(_ink_right)
+                        _char_box_w = _char_ink_right - _char_ink_left
+                        # --- 取宽度更大者 ---
+                        if _ruby_box_w >= _char_box_w:
+                            _box_left = int(_ruby_box_left)
+                            _box_right = int(_ruby_box_right)
+                        else:
+                            _box_left = int(_char_ink_left)
+                            _box_right = int(_char_ink_right)
                         painter.save()
                         _fc = QColor(base_color)
                         _fc.setAlpha(120)
