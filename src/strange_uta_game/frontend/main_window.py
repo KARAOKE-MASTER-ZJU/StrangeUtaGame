@@ -464,7 +464,6 @@ class MainWindow(MSFluentWindow):
 
     def _on_startup_update_check(self, result_obj: object) -> None:
         """处理启动期 UpdateChecker 的回调。"""
-        """处理启动器 字典update 相关内容"""
         try:
             from strange_uta_game.__version__ import __version__
             from strange_uta_game.updater.settings import UpdaterSettings
@@ -584,7 +583,7 @@ class MainWindow(MSFluentWindow):
                 # 用强制退出而非 QApplication.quit()
                 QTimer.singleShot(1200, self.request_force_quit)
 
-            worker.done.connect(_on_launch_done)
+            worker.done.connect(_on_launch_done, Qt.ConnectionType.QueuedConnection)
             worker.start()
         except Exception:
             import logging

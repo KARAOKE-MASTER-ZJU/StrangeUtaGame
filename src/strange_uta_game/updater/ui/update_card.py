@@ -387,7 +387,7 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
     # 用 Python 引用（_update_launch_worker）防 GC 即可，由 os._exit(0) 统一结束。
     worker = _LaunchUpdaterWorker(plan, parent=None)
     parent._update_launch_worker = worker  # type: ignore[attr-defined]
-    worker.progress.connect(_update_prep_text)
+    worker.progress.connect(_update_prep_text, Qt.ConnectionType.QueuedConnection)
 
     def _on_done(launch_result: object) -> None:
         from .. import installer as _inst
@@ -416,7 +416,7 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
         # 延迟 1s 退出，让 InfoBar 来得及展示
         QTimer.singleShot(1000, _quit_app)
 
-    worker.done.connect(_on_done)
+    worker.done.connect(_on_done, Qt.ConnectionType.QueuedConnection)
     worker.start()
 
 
