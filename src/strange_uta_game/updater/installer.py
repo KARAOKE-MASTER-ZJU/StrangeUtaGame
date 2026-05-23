@@ -144,6 +144,98 @@ def _copy_updater_to_temp(updater_exe: Path) -> Path:
 # ───────────────────────── 主入口 ─────────────────────────
 
 
+def _fetch_remote_manifest(
+    plan: LaunchPlan,
+    proxies_dict: Optional[dict],
+) -> Optional[dict]:
+    """从各下载源尝试拉取 ``manifest-vX.Y.Z.json``，返回解析后的 dict 或 None。
+
+    manifest 是一个小 JSON 文件，包含各 part 的 sha256 内容哈希，用于在下载
+    app.zip 之前先判断是否需要更新，避免不必要的大文件下载。
+    """
+    import requests
+
+    for _source_id, url in plan.download_urls:
+        prefix = url.rsplit("/", 1)[0]
+        manifest_url = f"{prefix}/manifest-v{plan.target_version}.json"
+        try:
+            resp = requests.get(
+                manifest_url,
+                headers={"User-Agent": "StrangeUtaGame-MainApp/self-update"},
+                proxies=proxies_dict,
+                timeout=(5, 15),
+                allow_redirects=True,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data.get("parts"), dict):
+                    log.info("[self-update] manifest 获取成功（version=%s）", data.get("version"))
+                    return data
+        except Exception as e:
+            log.debug("[self-update] manifest 拉取失败（%s）: %s", _source_id, e)
+    return None
+
+
+def _read_local_manifest(plan: LaunchPlan) -> Optional[dict]:
+    """读取本地 ``_internal/.installed_manifest.json``，不存在或解析失败返回 None。"""
+    p = plan.app_dir / plan.internal_dir_name / ".installed_manifest.json"
+    if not p.exists():
+        return None
+    try:
+        import json
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _verify_zip_sha256(zip_path: str, url: str, proxies_dict: Optional[dict]) -> bool:
+    """下载 ``{url}.sha256`` 并校验 zip 文件的 raw sha256。
+
+    校验失败或无法拉取 sha256 文件时返回 ``True``（降级为跳过校验），不阻断流程。
+    """
+    import requests
+    import hashlib
+    import re
+
+    sha_url = url + ".sha256"
+    log.info("[self-update] 校验 app.zip sha256: %s", sha_url)
+    try:
+        resp = requests.get(
+            sha_url,
+            headers={"User-Agent": "StrangeUtaGame-MainApp/self-update"},
+            proxies=proxies_dict,
+            timeout=(5, 15),
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            log.warning("[self-update] 获取 sha256 文件失败 HTTP %s，跳过校验", resp.status_code)
+            return True
+        m = re.search(r"\b([0-9a-fA-F]{64})\b", resp.text)
+        if not m:
+            log.warning("[self-update] sha256 文件内容无法解析，跳过校验")
+            return True
+        expected = m.group(1).lower()
+    except Exception as e:
+        log.warning("[self-update] 获取 sha256 文件异常（跳过校验）: %s", e)
+        return True
+
+    h = hashlib.sha256()
+    try:
+        with open(zip_path, "rb") as f:
+            for chunk in iter(lambda: f.read(64 * 1024), b""):
+                h.update(chunk)
+    except OSError as e:
+        log.warning("[self-update] 读取下载文件失败（跳过校验）: %s", e)
+        return True
+
+    actual = h.hexdigest().lower()
+    if actual != expected:
+        log.error("[self-update] app.zip sha256 不匹配（期望 %s, 实际 %s）", expected, actual)
+        return False
+    log.info("[self-update] app.zip sha256 校验通过")
+    return True
+
+
 def _update_updater_from_remote(
     plan: LaunchPlan,
     proxies: Optional[dict] = None,
@@ -156,6 +248,13 @@ def _update_updater_from_remote(
     Updater.exe 并替换本地版本。这样即使旧 updater 没有自更新代码，
     也能通过主程序间接触发更新。
 
+    流程：
+    1. 先拉取 manifest JSON（小文件），对比 ``parts.app.sha256`` 与本地
+       ``.installed_manifest.json`` 中记录的值；一致则 Updater.exe 未变，
+       直接返回，**不发起任何 zip 下载**。
+    2. sha256 不一致（或本地无清单）时，才下载 app.zip，并验证其 sha256。
+    3. 从 zip 中提取新 Updater.exe 并替换。
+
     返回 ``True`` 表示成功更新了 Updater.exe（或已是最新），``False`` 表示
     失败但不影响后续流程（降级使用旧 updater）。
 
@@ -165,38 +264,81 @@ def _update_updater_from_remote(
 
     app_dir = plan.app_dir
     local_updater = app_dir / UPDATER_EXE_NAME
+    proxies_dict = {"http": plan.proxy_url, "https": plan.proxy_url} if plan.proxy_url else None
 
-    # 构造 app part zip 的 URL（从 download_urls 推导）
-    # download_urls 格式: [(source_id, full_zip_url), ...]
+    # ── Step 1: 先用 manifest sha256 判断 Updater.exe 是否需要更新 ─────────────
+    # 拉取远端 manifest（小 JSON），读取本地清单，对比 app part sha256。
+    # 一致 → Updater.exe 未变化 → 直接返回，完全不下载 app.zip。
+    remote_manifest = _fetch_remote_manifest(plan, proxies_dict)
+    local_manifest = _read_local_manifest(plan)
+
+    remote_app_sha = ""
+    local_app_sha = ""
+    if remote_manifest:
+        remote_app_sha = (remote_manifest.get("parts", {}).get("app") or {}).get("sha256", "")
+    if local_manifest:
+        local_app_sha = (local_manifest.get("parts", {}).get("app") or {}).get("sha256", "")
+
+    if remote_app_sha and local_app_sha:
+        if remote_app_sha == local_app_sha:
+            log.info(
+                "[self-update] app sha256 一致（%s…），Updater.exe 无需更新，跳过下载",
+                remote_app_sha[:12],
+            )
+            return True
+        log.info(
+            "[self-update] app sha256 不同（本地 %s…, 远端 %s…），需更新 Updater.exe",
+            local_app_sha[:12],
+            remote_app_sha[:12],
+        )
+    else:
+        if not remote_app_sha:
+            log.info("[self-update] 无法获取远端 manifest sha256，尝试下载 app.zip 兜底")
+        else:
+            log.info("[self-update] 本地无安装清单（首次升级），下载 app.zip 更新 Updater.exe")
+
+    # ── Step 2: 下载 app.zip ─────────────────────────────────────────────────
+    # 直接落到 Updater 的 parts 工作目录（%TEMP%/StrangeUtaGameUpdater/parts/），
+    # 与 Updater 走增量更新时的落盘路径完全一致。
+    # 成功下载并校验后不删除该文件——Updater 启动后发现文件已存在，会发 Range
+    # 请求确认完整性（服务器返回 HTTP 416），然后直接走本地内容哈希校验，
+    # 完全跳过重新下载，彻底消除对同一文件的二次下载浪费。
     app_zip_name = f"StrangeUtaGame-v{plan.target_version}-app.zip"
+    shared_parts_dir = Path(tempfile.gettempdir()) / TMP_DIR_NAME / "parts"
+    try:
+        shared_parts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    canonical_zip = shared_parts_dir / app_zip_name
+
     candidates: List[Tuple[str, str]] = []
     for source_id, url in plan.download_urls:
-        # URL 形如 https://.../StrangeUtaGame-vX.Y.Z.zip
-        # 替换为  https://.../StrangeUtaGame-vX.Y.Z-app.zip
         prefix = url.rsplit("/", 1)[0]
-        app_url = f"{prefix}/{app_zip_name}"
-        candidates.append((source_id, app_url))
-
-    proxies_dict = {"http": plan.proxy_url, "https": plan.proxy_url} if plan.proxy_url else None
+        candidates.append((source_id, f"{prefix}/{app_zip_name}"))
 
     _RETRY_COUNT = 3
     _RETRY_INTERVAL = 2.0
+    _last_source_id: Optional[str] = None
 
     for source_id, url in candidates:
         log.info("[self-update] 尝试下载 app part: %s", url)
-        tmp_zip: Optional[str] = None
         try:
-            # 流式下载到临时文件，避免把整个 zip 包加载进内存；带重试
             import time as _time
+
+            # 切换到新源时删除上一个源的残留文件，防止跨源数据混合导致 zip 损坏
+            if _last_source_id is not None and canonical_zip.exists():
+                log.info("[self-update] 切换源 [%s] → [%s]，删除残留部分文件",
+                         _last_source_id, source_id)
+                try:
+                    canonical_zip.unlink()
+                except OSError as _e:
+                    log.warning("[self-update] 删除残留文件失败: %s", _e)
+            _last_source_id = source_id
+
             last_err = ""
             downloaded = False
             for attempt in range(1, _RETRY_COUNT + 1):
                 try:
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".zip", prefix="sug_selfupdate_", delete=False
-                    ) as tf:
-                        tmp_zip = tf.name
-
                     with requests.get(
                         url,
                         headers={"User-Agent": "StrangeUtaGame-MainApp/self-update"},
@@ -209,19 +351,13 @@ def _update_updater_from_remote(
                             last_err = f"HTTP {resp.status_code}"
                             log.warning("[self-update] %s from %s (attempt %d/%d)",
                                         last_err, source_id, attempt, _RETRY_COUNT)
-                            # 清理空的临时文件
-                            try:
-                                os.unlink(tmp_zip)
-                            except OSError:
-                                pass
-                            tmp_zip = None
                             if attempt < _RETRY_COUNT:
                                 _time.sleep(_RETRY_INTERVAL)
                             continue
                         total = int(resp.headers.get("Content-Length") or 0)
                         done = 0
                         last_pct = -1
-                        with open(tmp_zip, "wb") as f:
+                        with open(canonical_zip, "wb") as f:
                             for chunk in resp.iter_content(chunk_size=64 * 1024):
                                 if chunk:
                                     f.write(chunk)
@@ -233,8 +369,8 @@ def _update_updater_from_remote(
                                             progress_cb(
                                                 f"正在获取最新更新器… "
                                                 f"{pct}%  "
-                                                f"({done // 1024 // 1024:.1f} / "
-                                                f"{total // 1024 // 1024:.1f} MB)"
+                                                f"({done / 1024 / 1024:.1f} / "
+                                                f"{total / 1024 / 1024:.1f} MB)"
                                             )
                     downloaded = True
                     break
@@ -242,64 +378,76 @@ def _update_updater_from_remote(
                     last_err = f"网络错误: {e}"
                     log.warning("[self-update] %s from %s (attempt %d/%d)",
                                 last_err, source_id, attempt, _RETRY_COUNT)
-                    if tmp_zip:
-                        try:
-                            os.unlink(tmp_zip)
-                        except OSError:
-                            pass
-                        tmp_zip = None
                     if attempt < _RETRY_COUNT:
                         _time.sleep(_RETRY_INTERVAL)
 
             if not downloaded:
                 log.warning("[self-update] 源 %s 全部重试失败: %s", source_id, last_err)
+                # 删除可能损坏的部分文件
+                try:
+                    canonical_zip.unlink()
+                except OSError:
+                    pass
                 continue
 
-            # 从临时 zip 中提取 Updater.exe
-            with zipfile.ZipFile(tmp_zip) as zf:
-                names = zf.namelist()
-                # 查找 Updater.exe（可能在根目录或子目录下）
+            # ── Step 3: 校验 app.zip sha256 ─────────────────────────────────
+            if not _verify_zip_sha256(str(canonical_zip), url, proxies_dict):
+                log.warning("[self-update] app.zip sha256 校验失败，放弃此源")
+                try:
+                    canonical_zip.unlink()
+                except OSError:
+                    pass
+                continue
+
+            # ── Step 4: 提取 Updater.exe ─────────────────────────────────────
+            with zipfile.ZipFile(str(canonical_zip)) as zf:
                 updater_entry = None
-                for name in names:
+                for name in zf.namelist():
                     if name.endswith(UPDATER_EXE_NAME) and not name.endswith("/"):
                         updater_entry = name
                         break
                 if updater_entry is None:
-                    log.warning("[self-update] app part zip 中未找到 %s", UPDATER_EXE_NAME)
+                    log.warning("[self-update] app part zip 中未找到 %s，放弃此源", UPDATER_EXE_NAME)
+                    try:
+                        canonical_zip.unlink()
+                    except OSError:
+                        pass
                     continue
 
                 new_bytes = zf.read(updater_entry)
 
-                # 比较内容是否一致（避免无意义替换）
-                if local_updater.exists():
-                    local_bytes = local_updater.read_bytes()
-                    if local_bytes == new_bytes:
-                        log.info("[self-update] Updater.exe 内容一致，无需更新")
-                        return True
-
-                # 写入新 Updater.exe（带重试：Windows 下句柄释放可能有短暂延迟）
-                import time as _time
-                for _attempt in range(3):
-                    try:
-                        local_updater.write_bytes(new_bytes)
-                        break
-                    except PermissionError:
-                        if _attempt < 2:
-                            _time.sleep(1.0)
-                        else:
-                            raise
-                log.info("[self-update] 已更新 Updater.exe（%d bytes）", len(new_bytes))
+            # 双重保险：字节级对比（应对 manifest 不可用时的兜底路径）
+            if local_updater.exists() and local_updater.read_bytes() == new_bytes:
+                log.info(
+                    "[self-update] Updater.exe 字节一致，无需替换；"
+                    "app.zip 已保留在 %s 供 Updater 增量复用", canonical_zip,
+                )
                 return True
+
+            # 写入新 Updater.exe（带重试：Windows 下句柄释放可能有短暂延迟）
+            import time as _time
+            for _attempt in range(3):
+                try:
+                    local_updater.write_bytes(new_bytes)
+                    break
+                except PermissionError:
+                    if _attempt < 2:
+                        _time.sleep(1.0)
+                    else:
+                        raise
+            log.info(
+                "[self-update] 已更新 Updater.exe（%d bytes）；"
+                "app.zip 保留在 %s，Updater 增量更新时将直接复用，无需重复下载",
+                len(new_bytes), canonical_zip,
+            )
+            return True
 
         except Exception as e:
             log.warning("[self-update] 从 %s 下载/提取失败: %s", source_id, e)
-            continue
-        finally:
-            if tmp_zip:
-                try:
-                    os.unlink(tmp_zip)
-                except OSError:
-                    pass
+            try:
+                canonical_zip.unlink()
+            except OSError:
+                pass
 
     log.warning("[self-update] 所有源均失败，将使用旧版 Updater.exe")
     return False
@@ -351,36 +499,3 @@ def launch_updater(plan: LaunchPlan, progress_cb=None) -> LaunchResult:
     # * ``CREATE_NEW_PROCESS_GROUP (0x200)`` 让新进程独立于父进程的进程组，
     #   主程序退出时不会连带把 Updater 杀掉。
     flags = 0
-    if sys.platform == "win32":
-        flags = 0x00000010 | 0x00000200  # CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
-
-    try:
-        proc = subprocess.Popen(  # noqa: S603 — 受信任的本地 EXE
-            args,
-            close_fds=True,
-            cwd=str(plan.app_dir),
-            creationflags=flags,
-            # 不接管 Updater 的 stdio —— 让它的新控制台自己管，否则即便有窗口也看不到内容。
-            stdin=None,
-            stdout=None,
-            stderr=None,
-        )
-    except OSError as e:
-        return LaunchResult(
-            launched=False,
-            updater_path=str(updater),
-            temp_copy_path=str(temp_copy),
-            reason=f"启动 Updater 失败: {e}",
-        )
-
-    return LaunchResult(
-        launched=True,
-        updater_path=str(updater),
-        temp_copy_path=str(temp_copy),
-        pid=proc.pid,
-    )
-
-
-def is_updater_available() -> bool:
-    """便利方法：用于 UI 决定"立即更新"按钮是否可用。"""
-    return find_updater_exe() is not None
