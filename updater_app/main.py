@@ -838,6 +838,19 @@ def _download_part(
     dest = work_dir / "parts" / asset_name
     dest.parent.mkdir(parents=True, exist_ok=True)
 
+    # 先校验本地已有文件：主程序自更新时可能已把同名 part zip 下载到此处。
+    # 若内容哈希一致，直接复用，完全不发 HTTP 请求。
+    if dest.exists() and expected_hash:
+        if verify_content_hash(dest, expected_hash, log):
+            log.info("part %s 本地已存在且内容哈希一致（%.1f MB），跳过下载",
+                     part_id, dest.stat().st_size / 1024 / 1024)
+            return dest
+        log.info("part %s 本地文件哈希不匹配，重新下载", part_id)
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+
     log.info("下载 part %s（预期 %.1f MB）", part_id, expected_size / 1024 / 1024 if expected_size else 0)
     last_src_id = None
     for src_id, url in candidates:
