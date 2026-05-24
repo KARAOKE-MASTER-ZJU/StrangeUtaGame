@@ -205,29 +205,30 @@ class AboutSubInterface(SubSettingInterface):
                 position=InfoBarPosition.TOP, duration=3000, parent=self)
 
     def _install_ffmpeg(self):
-        import subprocess
-        cmd = (
+        import ctypes
+        # -Command 参数用双引号包裹，内部用单引号，避免转义冲突
+        ps_args = (
+            "-NoExit -Command \""
             "winget install Gyan.FFmpeg "
             "--accept-package-agreements --accept-source-agreements; "
             "Write-Host ''; "
             "Write-Host '>>> 安装完成，可关闭此窗口。<<<' -ForegroundColor Green; "
-            "pause"
+            "pause\""
         )
-        try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", cmd],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-            )
-        except Exception as e:
+        # ShellExecuteW verb=runas 触发 UAC 提权，返回值 >32 表示成功启动
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell", ps_args, None, 1
+        )
+        if ret <= 32:
             InfoBar.error(
                 title="无法启动安装",
-                content=str(e),
+                content=f"ShellExecute 返回 {ret}，请检查是否拒绝了 UAC 提权。",
                 orient=Qt.Orientation.Horizontal, isClosable=True,
                 position=InfoBarPosition.TOP, duration=6000, parent=self,
             )
             return
         InfoBar.info(
-            title="已在新窗口启动 FFmpeg 安装",
+            title="已请求管理员权限启动 FFmpeg 安装",
             content="安装完成后，重启软件即可通过环境变量自动使用，或点击「浏览」手动指定路径。",
             orient=Qt.Orientation.Horizontal, isClosable=True,
             position=InfoBarPosition.TOP, duration=8000, parent=self,
