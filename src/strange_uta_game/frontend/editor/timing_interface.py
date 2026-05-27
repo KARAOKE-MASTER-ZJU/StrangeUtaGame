@@ -149,6 +149,9 @@ class EditorInterface(QWidget):
         self._position_poll_timer.setInterval(16)  # ~60fps
         self._position_poll_timer.timeout.connect(self._poll_audio_position)
 
+        # 滚动模式：auto / always / never（由按钮循环切换，持久化到 config）
+        self._scroll_mode: str = "auto"
+
         # 自动滚动状态机：用户交互挂起 → 播放到达新行 + 3s 无交互后恢复
         self._auto_scroll_suspended: bool = False
         self._auto_scroll_new_line_reached: bool = False
@@ -283,6 +286,17 @@ class EditorInterface(QWidget):
         self.btn_clear_tags.setIcon(FIF.DELETE)
         self.btn_clear_tags.clicked.connect(self._on_clear_current_line_tags)
         bottom.addWidget(self.btn_clear_tags)
+
+        self.btn_scroll_mode = PushButton("自动滚动", self)
+        self.btn_scroll_mode.setIcon(FIF.SYNC)
+        self.btn_scroll_mode.setToolTip(
+            "切换歌词预览滚动模式：\n"
+            "自动滚动 — 操作后挂起 6 秒自动恢复\n"
+            "始终滚动 — 始终跟随播放位置\n"
+            "不滚动 — 完全停用自动滚动"
+        )
+        self.btn_scroll_mode.clicked.connect(self._on_cycle_scroll_mode)
+        bottom.addWidget(self.btn_scroll_mode)
 
         bottom.addStretch()
 
@@ -576,6 +590,11 @@ class EditorInterface(QWidget):
         # 应用禁用单击跳转设置
         disable_click_jump = settings.get("timing.disable_click_jump", False)
         self.preview.set_disable_click_jump(disable_click_jump)
+        # 应用滚动模式（设置页修改后同步到按钮和 preview）
+        scroll_mode = settings.get("timing.scroll_mode", "auto")
+        if scroll_mode != self._scroll_mode:
+            self._scroll_mode = scroll_mode
+            self._sync_scroll_mode()
         self._settings_loaded = True
 
     def _update_shortcut_hint(
@@ -4330,8 +4349,36 @@ class EditorInterface(QWidget):
 
     # ==================== 自动滚动状态机 ====================
 
+    def _on_cycle_scroll_mode(self):
+        """按钮点击：循环切换滚动模式 auto → always → never → auto，并持久化。"""
+        modes = ["auto", "always", "never"]
+        self._scroll_mode = modes[(modes.index(self._scroll_mode) + 1) % len(modes)]
+        self._sync_scroll_mode()
+        # 持久化到 config
+        main_window = self.window()
+        setting_iface = getattr(main_window, "settingInterface", None)
+        if setting_iface is not None:
+            s = setting_iface.get_settings()
+            s.set("timing.scroll_mode", self._scroll_mode)
+            s.save()
+
+    _SCROLL_MODE_LABELS = {"auto": "自动滚动", "always": "始终滚动", "never": "从不滚动"}
+
+    def _sync_scroll_mode(self):
+        """将当前 _scroll_mode 同步到按钮文字和 preview。"""
+        self.btn_scroll_mode.setText(self._SCROLL_MODE_LABELS.get(self._scroll_mode, "自动滚动"))
+        self.preview.set_scroll_mode(self._scroll_mode)
+        # 切换到 always 时：重置挂起状态并立刻滚动到当前播放行
+        if self._scroll_mode == "always":
+            self._auto_scroll_suspended = False
+            self._auto_scroll_new_line_reached = False
+            self._auto_scroll_cooldown_timer.stop()
+            self.preview.resume_auto_scroll()
+
     def _suspend_auto_scroll(self):
         """挂起自动滚动：重置冷却状态，通知 preview 暂停。"""
+        if self._scroll_mode == "always":
+            return
         self._auto_scroll_suspended = True
         self._auto_scroll_new_line_reached = False
         self._auto_scroll_cooldown_timer.stop()

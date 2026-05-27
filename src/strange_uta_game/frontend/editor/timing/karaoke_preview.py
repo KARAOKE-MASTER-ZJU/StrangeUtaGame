@@ -219,6 +219,7 @@ class KaraokePreview(QWidget):
         self._is_playing: bool = False
         self._auto_scroll_enabled: bool = True  # 自动滚动开关，特殊场景可关闭
         self._auto_scroll_suspended: bool = False  # 用户交互后挂起自动滚动
+        self._scroll_mode: str = "auto"  # auto / always / never
         self._last_auto_scroll_line_idx: int = -1  # 上次自动滚动到的行（与 _current_line_idx 独立）
         self._line_switch_points: list[tuple[int, int]] = []  # [(switch_ms, line_idx)]
         self._current_switch_idx: int = 0  # 当前快照位置
@@ -252,8 +253,20 @@ class KaraokePreview(QWidget):
         """设置是否启用自动滚动功能。特殊场景可关闭。"""
         self._auto_scroll_enabled = bool(enabled)
 
+    def set_scroll_mode(self, mode: str):
+        """设置滚动模式：auto（操作后挂起 6 秒）/ always（始终滚动）/ never（不滚动）。"""
+        self._scroll_mode = mode
+        if mode == "never":
+            self._auto_scroll_enabled = False
+        else:
+            self._auto_scroll_enabled = True
+            if mode == "always":
+                self._auto_scroll_suspended = False
+
     def _suspend_auto_scroll(self):
         """用户交互时挂起自动滚动，通知外部停止 cooldown timer。"""
+        if self._scroll_mode == "always":
+            return
         self._auto_scroll_suspended = True
         self.user_interaction_during_auto_scroll.emit()
 

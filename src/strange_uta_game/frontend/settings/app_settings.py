@@ -41,6 +41,7 @@ class AppSettings:
             "guide_symbol": "",
             "guide_count": 1,
             "guide_duration_ms": 1000,
+            "scroll_mode": "auto",  # auto / always / never
         },
         "auto_check": {
             "hiragana": True,

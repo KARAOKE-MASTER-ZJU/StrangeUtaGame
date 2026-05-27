@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from qfluentwidgets import FluentIcon as FIF, SettingCardGroup
 
-from ..cards import DoubleSpinSettingCard, SpinSettingCard, SwitchSettingCard
+from ..cards import ComboSettingCard, DoubleSpinSettingCard, SpinSettingCard, SwitchSettingCard
 from .base import SubSettingInterface
 
 
@@ -37,10 +37,16 @@ class PlaybackSubInterface(SubSettingInterface):
         self.card_jump_before = SpinSettingCard(FIF.HISTORY, "删除节奏点跳转提前量",
             "删除节奏点时跳转到该时间戳前的毫秒数",
             min_val=0, max_val=30000, step=500, suffix=" ms", parent=g)
+        self.card_scroll_mode = ComboSettingCard(
+            FIF.SYNC, "歌词预览滚动模式",
+            "打轴时歌词预览是否跟随播放位置自动滚动",
+            items=["自动滚动（操作后挂起 6 秒）", "始终滚动", "从不滚动"],
+            parent=g,
+        )
         for c in [self.card_volume, self.card_speed, self.card_speed_min,
                   self.card_speed_max, self.card_fast_forward,
                   self.card_rewind, self.card_auto_play, self.card_hq_speed,
-                  self.card_jump_before]:
+                  self.card_jump_before, self.card_scroll_mode]:
             g.addSettingCard(c)
         self.expandLayout.addWidget(g)
 
@@ -54,6 +60,10 @@ class PlaybackSubInterface(SubSettingInterface):
         self.card_auto_play.checked_changed.connect(self._notify_changed)
         self.card_hq_speed.checked_changed.connect(self._notify_changed)
         self.card_jump_before.value_changed.connect(self._notify_changed)
+        self.card_scroll_mode.index_changed.connect(self._notify_changed)
+
+    _SCROLL_MODE_TO_INDEX = {"auto": 0, "always": 1, "never": 2}
+    _INDEX_TO_SCROLL_MODE = {0: "auto", 1: "always", 2: "never"}
 
     def load_settings(self, s):
         self.card_volume.setValue(s.get("audio.default_volume", 80))
@@ -65,6 +75,8 @@ class PlaybackSubInterface(SubSettingInterface):
         self.card_auto_play.setChecked(s.get("audio.auto_play_on_load", False))
         self.card_hq_speed.setChecked(s.get("audio.hq_speed_change", True))
         self.card_jump_before.setValue(s.get("timing.jump_before_ms", 3000))
+        scroll_mode = s.get("timing.scroll_mode", "auto")
+        self.card_scroll_mode.setCurrentIndex(self._SCROLL_MODE_TO_INDEX.get(scroll_mode, 0))
 
     def collect_settings(self, s):
         s.set("audio.default_volume", self.card_volume.value())
@@ -77,6 +89,8 @@ class PlaybackSubInterface(SubSettingInterface):
         s.set("timing.fast_forward_ms", self.card_fast_forward.value())
         s.set("timing.rewind_ms", self.card_rewind.value())
         s.set("timing.jump_before_ms", self.card_jump_before.value())
+        scroll_mode = self._INDEX_TO_SCROLL_MODE.get(self.card_scroll_mode.currentIndex(), "auto")
+        s.set("timing.scroll_mode", scroll_mode)
 
     def _normalized_speed_range(self) -> tuple[float, float]:
         min_speed = max(0.2, min(2.0, self.card_speed_min.value()))
