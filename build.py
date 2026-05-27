@@ -189,6 +189,26 @@ PyInstaller.__main__.run(args)
 print("\n✓ 打包完成!")
 print(f"可执行文件位于: {PROJECT_ROOT / 'dist' / 'StrangeUtaGame'}")
 
+# ── 修复 ARM64 Windows 上 PortAudio DLL 缺失问题 ──────────────
+# sounddevice 在 ARM64 Windows 上会查找 libportaudioarm64.dll（platform.machine()
+# 返回 'ARM64'），但 portaudio-binaries 目录只包含 x64 版本。ARM64 Windows 可通过
+# x64 模拟层加载 x64 DLL，所以直接复制重命名即可。
+if sys.platform == "win32":
+    _internal = PROJECT_ROOT / "dist" / "StrangeUtaGame" / "_internal"
+    _pa_64bit = _internal / "libportaudio64bit.dll"
+    _pa_arm64 = _internal / "libportaudioarm64.dll"
+    if _pa_64bit.exists() and not _pa_arm64.exists():
+        try:
+            import shutil as _shutil
+            _shutil.copy2(str(_pa_64bit), str(_pa_arm64))
+            print(f"✓ 已生成 ARM64 PortAudio DLL: {_pa_arm64}")
+        except Exception as _e:
+            print(f"! 生成 ARM64 PortAudio DLL 失败: {_e}")
+    elif _pa_arm64.exists():
+        print(f"✓ ARM64 PortAudio DLL 已存在: {_pa_arm64}")
+    else:
+        print("! libportaudio64bit.dll 未找到，跳过 ARM64 DLL 修复")
+
 # ── 复制 Updater.exe（如已构建） ───────────────────────────────
 # Updater.exe 由 `python updater_app/build_updater.py` 独立打包，输出至
 # `updater_app/dist/Updater.exe`。本步骤幂等：若产物存在则复制到主程序 dist
