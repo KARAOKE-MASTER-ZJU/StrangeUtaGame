@@ -42,6 +42,7 @@ from strange_uta_game.backend.domain import (
     RubyPart,
     Sentence,
     Singer,
+    DistributeRubyCharsEvenly,
 )
 
 
@@ -135,19 +136,12 @@ def parse_ruby_text(raw: str, check_count: int = 1) -> Optional[Ruby]:
             return None
         return Ruby(parts=[RubyPart(text=p) for p in parts if p])
     elif mode == "char":
-        # 按字符均分（始终按字符拆分，忽略逗号）
         clean_text = text.replace(",", "")
         if not clean_text:
             return None
         if check_count <= 1:
             return Ruby(parts=[RubyPart(text=clean_text)])
-        chars = [ch for ch in clean_text]
-        if len(chars) >= check_count:
-            head = chars[:check_count - 1]
-            tail = "".join(chars[check_count - 1:])
-            parts = head + [tail]
-        else:
-            parts = chars + [""] * (check_count - len(chars))
+        parts = DistributeRubyCharsEvenly(list(clean_text), check_count)
         return Ruby(parts=[RubyPart(text=p) for p in parts if p])
     else:
         # 按 mora 均分（始终按 mora 拆分，忽略逗号）
@@ -364,15 +358,8 @@ class ModifyCharacterDialog(QDialog):
                     # 直接应用：用逗号手动分段，无逗号则不分段
                     parts = [p.strip() for p in ruby_text.split(",") if p.strip()]
                 elif mode == "char":
-                    # 按字符均分（始终按字符拆分，忽略逗号）
                     clean_text = ruby_text.replace(",", "")
-                    chars = [ch for ch in clean_text]
-                    if len(chars) >= check_count:
-                        head = chars[:check_count - 1]
-                        tail = "".join(chars[check_count - 1:])
-                        parts = head + [tail]
-                    else:
-                        parts = chars + [""] * (check_count - len(chars))
+                    parts = DistributeRubyCharsEvenly(list(clean_text), check_count)
                 else:
                     # 按 mora 均分（始终按 mora 拆分，忽略逗号）
                     from strange_uta_game.backend.infrastructure.parsers.inline_format import (
@@ -540,8 +527,10 @@ class InsertGuideSymbolDialog(QDialog):
         saved_count = settings.get("timing.guide_count", 1)
         saved_duration = settings.get("timing.guide_duration_ms", 1000)
 
+        saved_reverse = settings.get("timing.guide_reverse", False)
+
         self.setWindowTitle("插入导唱符")
-        self.resize(400, 280)
+        self.resize(400, 320)
         self.setFont(QFont("Microsoft YaHei", 10))
 
         layout = QVBoxLayout(self)
@@ -568,6 +557,11 @@ class InsertGuideSymbolDialog(QDialog):
         self.edit_duration = QLineEdit(str(saved_duration))
         self.edit_duration.setPlaceholderText("每个导唱符持续时间（毫秒）")
         form.addRow("持续时间 (ms):", self.edit_duration)
+
+        # Field 5: Reverse timestamp order
+        self.chk_reverse = QCheckBox("时间戳反向")
+        self.chk_reverse.setChecked(bool(saved_reverse))
+        form.addRow("", self.chk_reverse)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -602,12 +596,15 @@ class InsertGuideSymbolDialog(QDialog):
         except ValueError:
             duration_ms = 1000
 
+        reverse = self.chk_reverse.isChecked()
+
         # 保存设置到 AppSettings
         from strange_uta_game.frontend.settings.settings_interface import AppSettings
         settings = AppSettings()
         settings.set("timing.guide_symbol", symbol)
         settings.set("timing.guide_count", count)
         settings.set("timing.guide_duration_ms", duration_ms)
+        settings.set("timing.guide_reverse", reverse)
         settings.save()
 
         # Get reference char's timestamp and singer
@@ -640,8 +637,10 @@ class InsertGuideSymbolDialog(QDialog):
                 )
                 # Set timestamp to the first character of each symbol group
                 if ref_ts is not None and is_first_of_symbol:
-                    # For i-th symbol (0-indexed), timestamp = ref_ts - duration_ms * (count - i)
-                    ts = ref_ts - duration_ms * (count - i)
+                    if reverse:
+                        ts = ref_ts - duration_ms * (i + 1)
+                    else:
+                        ts = ref_ts - duration_ms * (count - i)
                     if ts < 0:
                         InfoBar.warning(
                             title="时间戳越界",
@@ -884,15 +883,8 @@ class CharEditDialog(QDialog):
                     # 直接应用：用逗号手动分段，无逗号则不分段
                     parts = [p.strip() for p in ruby_text.split(",") if p.strip()]
                 elif mode == "char":
-                    # 按字符均分（始终按字符拆分，忽略逗号）
                     clean_text = ruby_text.replace(",", "")
-                    chars = [ch for ch in clean_text]
-                    if len(chars) >= check_count:
-                        head = chars[:check_count - 1]
-                        tail = "".join(chars[check_count - 1:])
-                        parts = head + [tail]
-                    else:
-                        parts = chars + [""] * (check_count - len(chars))
+                    parts = DistributeRubyCharsEvenly(list(clean_text), check_count)
                 else:
                     # 按 mora 均分（始终按 mora 拆分，忽略逗号）
                     from strange_uta_game.backend.infrastructure.parsers.inline_format import (

@@ -132,6 +132,48 @@ class Ruby:
         return "".join(p.text for p in self.parts)
 
 
+def DistributeRubyCharsEvenly(chars: List[str], target_count: int) -> List[str]:
+    """将字符列表真正均分到 target_count 个组中。
+
+    每组获得 ceil(剩余字符数 / 剩余组数) 个字符。
+    前面组可能比后面组多一个字符。
+    当字符数 <= target_count 时，逐字符分配，不足补空串。
+
+    Args:
+        chars: 字符列表（已去除逗号）
+        target_count: 目标组数
+
+    Returns:
+        长度为 target_count 的字符串列表
+
+    Examples:
+        >>> DistributeRubyCharsEvenly(list("abcd"), 2)
+        ['ab', 'cd']
+        >>> DistributeRubyCharsEvenly(list("abcde"), 2)
+        ['abc', 'de']
+        >>> DistributeRubyCharsEvenly(list("abcdef"), 5)
+        ['ab', 'c', 'd', 'e', 'f']
+    """
+    import math
+    if target_count <= 0:
+        return []
+    if target_count == 1:
+        return ["".join(chars)]
+    if len(chars) <= target_count:
+        return chars + [""] * (target_count - len(chars))
+    result = []
+    remaining = len(chars)
+    remaining_parts = target_count
+    pos = 0
+    while remaining_parts > 0:
+        size = math.ceil(remaining / remaining_parts)
+        result.append("".join(chars[pos : pos + size]))
+        pos += size
+        remaining -= size
+        remaining_parts -= 1
+    return result
+
+
 # ──────────────────────────────────────────────
 # Character — 主要数据结构单元
 # ──────────────────────────────────────────────
@@ -405,12 +447,7 @@ class Character:
             return [""] * target_count
 
         if mode == "char":
-            chars = list(clean)
-            if len(chars) >= target_count:
-                head = chars[: target_count - 1]
-                tail = "".join(chars[target_count - 1 :])
-                return head + [tail]
-            return chars + [""] * (target_count - len(chars))
+            return DistributeRubyCharsEvenly(list(clean), target_count)
 
         # mode == "mora"
         moras: List[str] = []

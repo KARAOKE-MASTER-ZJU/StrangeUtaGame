@@ -24,6 +24,7 @@ from strange_uta_game.backend.domain.models import (
     Ruby,
     RubyPart,
     TimeTagType,
+    DistributeRubyCharsEvenly,
 )
 from strange_uta_game.backend.domain.entities import Sentence
 
@@ -147,11 +148,9 @@ def split_ruby_for_checkpoints(ruby_text: str, total_cps: int) -> List[str]:
     if len(moras) == total_cps:
         return moras
 
-    # mora 数量 > total_cps 时，多余 mora 合到末段
+    # mora 数量 > total_cps 时，多余 mora 均分到各段
     if len(moras) > total_cps:
-        head = moras[:total_cps - 1]
-        tail = "".join(moras[total_cps - 1:])
-        return head + [tail]
+        return DistributeRubyCharsEvenly(moras, total_cps)
 
     # 按字符拆分时跳过逗号
     chars = [ch for ch in ruby_text if ch != ',']
@@ -159,10 +158,8 @@ def split_ruby_for_checkpoints(ruby_text: str, total_cps: int) -> List[str]:
         # 字符数 ≤ cp 数: 每个 cp 分一个字符，多余 cp 分空串
         return chars + [""] * (total_cps - len(chars))
 
-    # 字符数 > cp 数: 多余字符合到末段
-    head = chars[:total_cps - 1]
-    tail = "".join(chars[total_cps - 1:])
-    return head + [tail]
+    # 字符数 > cp 数: 均分到各段
+    return DistributeRubyCharsEvenly(chars, total_cps)
 
 
 def align_ruby_parts_to_checkpoints(
