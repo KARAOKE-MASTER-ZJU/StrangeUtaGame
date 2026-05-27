@@ -247,10 +247,10 @@ class FileLoader:
                     speed_max=speed_max,
                 )
 
-        # 通知 store
+        # 通知 store：先设 original_media_path（可能标 dirty），再 emit "audio"
         if self._store:
-            self._store.set_audio_path(temp_path)
             self._store.set_original_media_path(original_path)
+            self._store.set_audio_path(temp_path)
 
         self._save_last_dir(original_path)
 
@@ -418,6 +418,11 @@ class FileLoader:
                 parent=self._editor,
             )
             return
+
+        # 自动恢复：静默预填路径，使加载完成时 set_original_media_path() 值相同
+        # → 判定为 no-op → 不触发 dirty
+        if self._store:
+            self._store.restore_media_path(media_path)
 
         if is_video_file(media_path):
             self._load_video_as_audio(media_path)

@@ -126,15 +126,18 @@ class ProjectSaveWorker(QObject):
     """后台保存项目。
 
     接收 Project 的深拷贝，避免保存过程中 UI 线程修改 project 导致数据竞争。
+    nicokara_tags 和 media_path 在创建 worker 时从主线程读取并传入，保证线程安全。
     """
 
     finished = pyqtSignal(str)  # saved path
     error = pyqtSignal(str)
 
-    def __init__(self, project: Project, file_path: str):
+    def __init__(self, project: Project, file_path: str, *, nicokara_tags=None, media_path=None):
         super().__init__()
         self._project = project
         self._file_path = file_path
+        self._nicokara_tags = nicokara_tags
+        self._media_path = media_path
 
     def run(self) -> None:
         try:
@@ -142,7 +145,12 @@ class ProjectSaveWorker(QObject):
                 SugProjectParser,
             )
 
-            SugProjectParser.save(self._project, self._file_path)
+            SugProjectParser.save(
+                self._project,
+                self._file_path,
+                nicokara_tags=self._nicokara_tags,
+                media_path=self._media_path,
+            )
             self.finished.emit(self._file_path)
         except Exception as e:
             self.error.emit(str(e))

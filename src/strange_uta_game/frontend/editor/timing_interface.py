@@ -2359,9 +2359,11 @@ class EditorInterface(QWidget):
                 )
 
         # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
+        # 先设 original_media_path（可能标 dirty），再 emit "audio"，
+        # 确保 _update_title() 读到正确的 dirty 状态。
         if hasattr(self, "_store") and self._store:
-            self._store.set_audio_path(file_path)
             self._store.set_original_media_path(file_path)
+            self._store.set_audio_path(file_path)
 
         InfoBar.success(
             title="音频已加载",
@@ -4369,8 +4371,8 @@ class EditorInterface(QWidget):
         """将当前 _scroll_mode 同步到按钮文字和 preview。"""
         self.btn_scroll_mode.setText(self._SCROLL_MODE_LABELS.get(self._scroll_mode, "自动滚动"))
         self.preview.set_scroll_mode(self._scroll_mode)
-        # 切换到 always 时：重置挂起状态并立刻滚动到当前播放行
-        if self._scroll_mode == "always":
+        # 切换到 always / auto 时：重置挂起状态并立刻滚动到当前播放行
+        if self._scroll_mode in ("always", "auto"):
             self._auto_scroll_suspended = False
             self._auto_scroll_new_line_reached = False
             self._auto_scroll_cooldown_timer.stop()

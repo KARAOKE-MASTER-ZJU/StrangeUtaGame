@@ -184,6 +184,7 @@ class MainWindow(MSFluentWindow):
         self.editorInterface = EditorInterface(self)
         self.editorInterface.setObjectName("editorInterface")
         self.editorInterface.set_timing_service(self._timing_service)
+        self.editorInterface.project_saved.connect(self._update_title)
 
         self.exportInterface = ExportInterface(self)
         self.exportInterface.setObjectName("exportInterface")
@@ -291,6 +292,21 @@ class MainWindow(MSFluentWindow):
             parent=self,
         )
 
+    def _update_title(self):
+        """刷新窗口标题栏：拼接存档文件名与保存状态。"""
+        from pathlib import Path
+        project = self._store.project if self._store else None
+        if not project:
+            self.setWindowTitle("StrangeUtaGame - 歌词打轴工具 Bilibili@不会说话的呆轩cc")
+            return
+        save_path = self._store.save_path if self._store else None
+        if save_path and not self._store.is_temp_save_path(save_path):
+            name = Path(save_path).name  # 如 "mysong.sug"
+        else:
+            name = "未命名"
+        dirty_mark = "[未保存]" if (self._store and self._store.dirty) else ""
+        self.setWindowTitle(f"StrangeUtaGame - {name}{dirty_mark} //Bilibili@不会说话的呆轩cc")
+
     def _on_data_changed(self, change_type: str):
         """响应 store 的数据变更 — 同步非 UI 组件。"""
         if change_type == "project":
@@ -298,10 +314,6 @@ class MainWindow(MSFluentWindow):
             self._command_manager.clear()
             if project:
                 self._timing_service.set_project(project)
-            if project and project.metadata and project.metadata.title:
-                self.setWindowTitle(f"StrangeUtaGame - {project.metadata.title}")
-            else:
-                self.setWindowTitle("StrangeUtaGame - 歌词打轴工具 Bilibili@不会说话的呆轩cc")
         elif change_type == "settings":
             # 同步打轴偏移到 TimingService
             settings = self.settingInterface.get_settings()
@@ -322,6 +334,7 @@ class MainWindow(MSFluentWindow):
             audio_path = self._store.audio_path
             if audio_path and getattr(self.editorInterface, "_audio_file_path", None) != audio_path:
                 self.editorInterface.load_audio(audio_path)
+        self._update_title()
 
     # ==================== 音频引擎选择 ====================
 
@@ -766,9 +779,16 @@ class MainWindow(MSFluentWindow):
 
         # 在主线程创建深拷贝，避免保存过程中 UI 修改 project
         project_copy = deepcopy(self._store.project)
+        # extras 在主线程读取，保证线程安全
+        nicokara_tags = self._store._get_nicokara_tags_for_save()
+        media_path = self._store.get_saveable_media_path()
 
         self._save_thread = QThread(self)
-        self._save_worker = ProjectSaveWorker(project_copy, file_path)
+        self._save_worker = ProjectSaveWorker(
+            project_copy, file_path,
+            nicokara_tags=nicokara_tags,
+            media_path=media_path,
+        )
         self._save_worker.moveToThread(self._save_thread)
 
         # 连接信号
@@ -800,6 +820,7 @@ class MainWindow(MSFluentWindow):
             duration=2000,
             parent=self,
         )
+        self._update_title()
 
     def _on_save_error(self, error_msg: str) -> None:
         """保存失败回调"""

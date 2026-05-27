@@ -125,8 +125,35 @@ class ProjectStore(QObject):
         return self._original_media_path
 
     def set_original_media_path(self, path: Optional[str]) -> None:
-        """设置原始媒体文件路径（音频直接路径 或 视频原始路径，不含 .cache）。"""
+        """设置原始媒体文件路径，值有变化时标记 dirty。
+
+        用于用户手动加载音频/视频的场景。路径未变化（含自动恢复后的二次调用）则跳过。
+        """
+        if self._original_media_path == path:
+            return
         self._original_media_path = path
+        if self._project:
+            self._dirty = True
+            self._schedule_auto_save()
+
+    def restore_media_path(self, path: Optional[str]) -> None:
+        """静默恢复媒体路径，不标记 dirty。
+
+        专用于从 .sug 文件自动恢复媒体路径的场景。恢复后再次调用
+        set_original_media_path() 传入相同路径时会被当作 no-op，不会触发 dirty。
+        """
+        self._original_media_path = path
+
+    def mark_dirty(self) -> None:
+        """手动标记项目为已修改，并广播通知以刷新标题栏等订阅者。
+
+        用于不经过 notify() 的外部变更场景（如 nicokara_tags 修改）。
+        """
+        if not self._project:
+            return
+        self._dirty = True
+        self._schedule_auto_save()
+        self.data_changed.emit("dirty")
 
     def get_saveable_media_path(self) -> Optional[str]:
         """返回可持久化的媒体路径，排除 .cache 临时路径。"""

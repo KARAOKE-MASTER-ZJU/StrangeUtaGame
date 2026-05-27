@@ -452,6 +452,8 @@ class ExportInterface(QWidget):
             new_tags = dialog.get_tag_data()
             settings.set("nicokara_tags", new_tags)
             settings.save()
+            if self._store:
+                self._store.mark_dirty()
 
     def _on_emoji_config(self):
         """打开分色标签设置助手对话框。
@@ -495,7 +497,9 @@ class ExportInterface(QWidget):
             return
 
         dialog = EmojiTagDialog(singer_list, self)
-        dialog.exec()  # apply_emoji_tags_to_settings 在 _on_accept 内部调用
+        if dialog.exec() == EmojiTagDialog.DialogCode.Accepted:  # apply_emoji_tags_to_settings 在 _on_accept 内部调用
+            if self._store:
+                self._store.mark_dirty()
 
     def _on_export(self):
         if not self._project:
