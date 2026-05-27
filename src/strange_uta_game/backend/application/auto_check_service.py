@@ -187,6 +187,7 @@ class AutoCheckService:
         auto_check_flags: Optional[Dict[str, Any]] = None,
         user_dictionary: Optional[List[Dict[str, Any]]] = None,
         annotate_katakana_with_english: bool = False,
+        chinese_mode: bool = False,
     ):
         """
         Args:
@@ -194,8 +195,10 @@ class AutoCheckService:
             auto_check_flags: 自动打勾过滤标志
             user_dictionary: 用户读音词典，格式 [{"enabled": bool, "word": str, "reading": str}, ...]
             annotate_katakana_with_english: 是否根据用户词典给片假名标注英文
+            chinese_mode: 中文歌词模式（跳过日文注音分析，每个汉字视为中文单字节奏点）
         """
-        self._analyzer = ruby_analyzer or create_analyzer()
+        self._chinese_mode = chinese_mode
+        self._analyzer = ruby_analyzer or (None if chinese_mode else create_analyzer())
         self._flags = auto_check_flags or {}
         self._annotate_katakana_with_english = annotate_katakana_with_english
         # 用户词典：保留词典数组顺序（上方条目优先级最高）。
@@ -862,6 +865,87 @@ class AutoCheckService:
             if i < len(check_counts) and ch in PUNCTUATION_SET and not ch.isspace():
                 check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
 
+    def _analyze_sentence_chinese(
+        self,
+        chars: List[str],
+        check_counts: List[int],
+        text: str,
+    ) -> List[AutoCheckResult]:
+        """中文歌词模式的句子分析（跳过日文注音）。
+
+        每个字符独立为一个节奏点；英文按音节；空格/标点由 flags 控制。
+        """
+        # check_line_start
+        if self._flags.get("check_line_start", False) and check_counts and text.strip():
+            check_counts[0] = max(check_counts[0], 1)
+
+        for i, char in enumerate(chars):
+            if i >= len(check_counts):
+                break
+            ct = get_char_type(char) if len(char) == 1 else CharType.OTHER
+
+            # 空格：主开关决定是否打 CP；中文模式下汉字后不使用 space_after_japanese
+            if ct == CharType.SPACE:
+                if not self._flags.get("space", True) or i == 0:
+                    check_counts[i] = 0
+                else:
+                    prev_ct = (
+                        get_char_type(chars[i - 1]) if len(chars[i - 1]) == 1 else CharType.OTHER
+                    )
+                    if prev_ct == CharType.ALPHABET:
+                        check_counts[i] = 1 if self._flags.get("space_after_alphabet", True) else 0
+                    elif prev_ct in (CharType.SYMBOL, CharType.NUMBER):
+                        check_counts[i] = 1 if self._flags.get("space_after_symbol", True) else 0
+                    else:
+                        # 汉字/其他：仅受 space 主开关控制（已通过），视为 1 cp
+                        check_counts[i] = 1
+                continue
+
+            flag_key = _TYPE_FLAG_MAP.get(ct)
+            if flag_key and not self._flags.get(flag_key, True):
+                check_counts[i] = 0
+                continue
+
+        # 括号内字符过滤
+        if not self._flags.get("check_parentheses", True):
+            in_paren = False
+            for i, char in enumerate(chars):
+                if char in ("(", "（"):
+                    in_paren = True
+                elif char in (")", "）"):
+                    in_paren = False
+                elif in_paren and i < len(check_counts):
+                    check_counts[i] = 0
+
+        # 标点符号最终覆盖
+        _enable_punct_cp = self._flags.get("checkpoint_on_punctuation", False)
+        for i, ch in enumerate(chars):
+            if i < len(check_counts) and ch in PUNCTUATION_SET and not ch.isspace():
+                check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
+
+        # 英文按音节规则
+        _english_syllable_check = self._flags.get("english_syllable_check", True)
+        for _start, _end, _word in find_english_words(text):
+            _syllable_starts = (
+                get_syllable_start_offsets(_word) if _english_syllable_check else {0}
+            )
+            for _idx in range(_start, _end):
+                if _idx < len(check_counts):
+                    check_counts[_idx] = 1 if (_idx - _start) in _syllable_starts else 0
+
+        results = []
+        for i, (char, count) in enumerate(zip(chars, check_counts)):
+            results.append(
+                AutoCheckResult(
+                    line_idx=0,
+                    char_idx=i,
+                    char=char,
+                    check_count=count,
+                    ruby=None,
+                )
+            )
+        return results
+
     def analyze_sentence(
         self, sentence: Sentence, split_config: Optional[SplitConfig] = None
     ) -> List[AutoCheckResult]:
@@ -892,6 +976,10 @@ class AutoCheckService:
 
         # 拆分文本
         chars, check_counts = split_text(text, split_config)
+
+        # 中文歌词模式：跳过日文注音分析，每字视为一个节奏点
+        if self._chinese_mode:
+            return self._analyze_sentence_chinese(chars, check_counts, text)
 
         # 分析注音
         ruby_results = self._analyzer.analyze(text)

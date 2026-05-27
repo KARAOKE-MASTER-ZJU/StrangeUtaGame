@@ -552,6 +552,28 @@ class TimingService:
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self.on_key_changed(timestamp_ms, "released")
 
+    def on_edit_mode_tag(self) -> None:
+        """编辑模式下打轴：不启动音频，读取当前进度条位置并写入当前节奏点。
+
+        根据当前 checkpoint 是否为句尾末尾 cp 自动选择 key_type：
+        - 普通 cp  → 'pressed'
+        - 句尾末尾 cp → 'released'
+        """
+        if not self._project:
+            return
+
+        sentence, char = self._get_current_checkpoint_info()
+        if sentence and char:
+            cp_idx = self._current_position.checkpoint_idx
+            is_tail = char.is_sentence_end_tail_cp(cp_idx)
+            key_type: Literal["pressed", "released"] = "released" if is_tail else "pressed"
+        else:
+            key_type = "pressed"
+
+        timing_pos_ms = self._audio_engine.get_position_ms()
+        timestamp_ms = max(0, timing_pos_ms + self._timing_offset_ms)
+        self.on_key_changed(timestamp_ms, key_type)
+
     def _add_timetag_at_current_checkpoint(self, timestamp_ms: int) -> None:
         """在当前 checkpoint 添加时间标签
 

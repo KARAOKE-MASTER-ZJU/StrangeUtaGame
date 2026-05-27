@@ -40,6 +40,9 @@ class AutoCheckSubInterface(SubSettingInterface):
             ], parent=g)
         self.card_auto_on_load = SwitchSettingCard(FIF.ACCEPT, "读取时自动check",
             "导入文本后自动执行check分析", parent=g)
+        self.card_chinese_lyrics_detection = SwitchSettingCard(FIF.LANGUAGE, "中文歌词检测",
+            "加载歌词时，若未检测到日文假名则自动切换为中文模式（汉字每字一个节奏点，跳过日文注音）",
+            parent=g)
         self.card_delete_ruby_types = MultiCheckSettingCard(
             FIF.DELETE, "自动删除注音", "自动注音完成后，自动删除指定类型的注音",
             options=[
@@ -52,7 +55,8 @@ class AutoCheckSubInterface(SubSettingInterface):
                 ("other", "その他（♪等特殊符号）"), ("space", "空格"),
             ], parent=g)
         for c in [self.card_checkpoint_chars, self.card_check_rules,
-                  self.card_auto_on_load, self.card_delete_ruby_types]:
+                  self.card_auto_on_load, self.card_chinese_lyrics_detection,
+                  self.card_delete_ruby_types]:
             g.addSettingCard(c)
         self.expandLayout.addWidget(g)
 
@@ -60,6 +64,7 @@ class AutoCheckSubInterface(SubSettingInterface):
         self.card_checkpoint_chars.selection_changed.connect(self._notify_changed)
         self.card_check_rules.selection_changed.connect(self._notify_changed)
         self.card_auto_on_load.checked_changed.connect(self._notify_changed)
+        self.card_chinese_lyrics_detection.checked_changed.connect(self._notify_changed)
         self.card_delete_ruby_types.selection_changed.connect(self._notify_changed)
 
     def load_settings(self, s):
@@ -90,6 +95,7 @@ class AutoCheckSubInterface(SubSettingInterface):
             "english_syllable_check": s.get("auto_check.english_syllable_check", True),
         })
         self.card_auto_on_load.setChecked(s.get("auto_check.auto_on_load", True))
+        self.card_chinese_lyrics_detection.setChecked(s.get("auto_check.chinese_lyrics_detection", True))
         saved_delete_types = s.get("auto_check.delete_ruby_types", [])
         # 向后兼容：将旧的 "katakana" 转换为新的两个子类型并自动更新配置
         if "katakana" in saved_delete_types:
@@ -108,4 +114,5 @@ class AutoCheckSubInterface(SubSettingInterface):
         for key, val in self.card_check_rules.values().items():
             s.set(f"auto_check.{key}", val)
         s.set("auto_check.auto_on_load", self.card_auto_on_load.isChecked())
+        s.set("auto_check.chinese_lyrics_detection", self.card_chinese_lyrics_detection.isChecked())
         s.set("auto_check.delete_ruby_types", self.card_delete_ruby_types.selectedValues())

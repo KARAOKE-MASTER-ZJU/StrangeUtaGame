@@ -456,23 +456,48 @@ class HomeInterface(QWidget):
 
                 app_settings = AppSettings()
                 auto_check_flags = app_settings.get_all().get("auto_check", {})
-                from strange_uta_game.frontend.winrt_japanese_guide import (
-                    ensure_winrt_japanese,
-                )
 
-                if auto_check_flags.get("auto_on_load", True) and ensure_winrt_japanese(
-                    self
-                ):
+                if auto_check_flags.get("auto_on_load", True):
+                    # 检测是否为中文歌词（无任何假名/长音字符）
+                    chinese_mode = False
+                    if auto_check_flags.get("chinese_lyrics_detection", True):
+                        all_text = "".join(s.text for s in project.sentences)
+                        _KANA_CHARS = frozenset(
+                            "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞた"
+                            "だちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽ"
+                            "まみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ"
+                            "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタ"
+                            "ダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポ"
+                            "マミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ"
+                            "ーｰ～〜"
+                        )
+                        if not any(c in _KANA_CHARS for c in all_text):
+                            chinese_mode = True
+
                     user_dict = app_settings.load_effective_dictionary()
                     annotate_katakana_with_english = app_settings.get(
                         "ruby_dictionary.annotate_katakana_with_english", False
                     )
-                    auto_check = AutoCheckService(
-                        auto_check_flags=auto_check_flags,
-                        user_dictionary=user_dict,
-                        annotate_katakana_with_english=annotate_katakana_with_english,
-                    )
-                    auto_check.apply_to_project(project, only_noruby=True)
+
+                    if chinese_mode:
+                        auto_check = AutoCheckService(
+                            auto_check_flags=auto_check_flags,
+                            user_dictionary=user_dict,
+                            annotate_katakana_with_english=annotate_katakana_with_english,
+                            chinese_mode=True,
+                        )
+                        auto_check.apply_to_project(project, only_noruby=True)
+                    else:
+                        from strange_uta_game.frontend.winrt_japanese_guide import (
+                            ensure_winrt_japanese,
+                        )
+                        if ensure_winrt_japanese(self):
+                            auto_check = AutoCheckService(
+                                auto_check_flags=auto_check_flags,
+                                user_dictionary=user_dict,
+                                annotate_katakana_with_english=annotate_katakana_with_english,
+                            )
+                            auto_check.apply_to_project(project, only_noruby=True)
 
                     # 自动删除指定类型的注音
                     delete_types = auto_check_flags.get("delete_ruby_types", [])
