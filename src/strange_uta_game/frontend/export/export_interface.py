@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QScrollArea,
     QMessageBox,
+    QDialog,
+    QTextEdit,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from qfluentwidgets import (
@@ -44,6 +46,78 @@ from strange_uta_game.frontend.settings.settings_interface import (
     NicokaraTagsDialog,
 )
 from strange_uta_game.frontend.theme import theme as _theme
+
+
+class RubyMismatchDialog(QDialog):
+    """注音分段不匹配对话框 — 预览按字符/mora 均分结果并支持直接应用后导出。"""
+
+    def __init__(self, detail: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("注音分段不匹配")
+        self.resize(640, 500)
+        self._action: str = "cancel"
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        desc = QLabel(
+            "以下字符的注音分段数量与节奏点数量不匹配。\n"
+            "可选择自动均分方案修复后继续导出，或忽略继续导出。"
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        self._preview = QTextEdit()
+        self._preview.setReadOnly(True)
+        self._build_preview_content(detail)
+        layout.addWidget(self._preview, 1)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+
+        self.btn_char = PrimaryPushButton("按字符均分并导出", self)
+        self.btn_mora = PrimaryPushButton("按mora均分并导出", self)
+        self.btn_ignore = PushButton("忽略并继续导出", self)
+        self.btn_cancel = PushButton("取消", self)
+
+        self.btn_char.clicked.connect(lambda: self._set_action("char"))
+        self.btn_mora.clicked.connect(lambda: self._set_action("mora"))
+        self.btn_ignore.clicked.connect(lambda: self._set_action("ignore"))
+        self.btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addWidget(self.btn_char)
+        btn_layout.addWidget(self.btn_mora)
+        btn_layout.addWidget(self.btn_ignore)
+        btn_layout.addWidget(self.btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _build_preview_content(self, detail: dict) -> None:
+        lines: list[str] = []
+        lines.append("=" * 50)
+        lines.append("【不匹配列表】")
+        lines.append("=" * 50)
+        for line in detail.get("mismatch_lines", []):
+            lines.append(f"  {line}")
+        lines.append("")
+        lines.append("=" * 50)
+        lines.append("【按字符均分预览】")
+        lines.append("=" * 50)
+        for line in detail.get("char_preview_lines", []):
+            lines.append(f"  {line}")
+        lines.append("")
+        lines.append("=" * 50)
+        lines.append("【按mora均分预览】")
+        lines.append("=" * 50)
+        for line in detail.get("mora_preview_lines", []):
+            lines.append(f"  {line}")
+        self._preview.setPlainText("\n".join(lines))
+
+    def _set_action(self, action: str) -> None:
+        self._action = action
+        self.accept()
+
+    def get_action(self) -> str:
+        return self._action
 
 
 class ExportInterface(QWidget):
@@ -557,33 +631,24 @@ class ExportInterface(QWidget):
         # 校验 rubyPart 数量与 checkCount 是否匹配
         ruby_mismatches = self._export_service.validate_ruby_parts(self._project)
         if ruby_mismatches:
-            # 构建提醒信息
-            mismatch_info = []
-            for m in ruby_mismatches[:10]:  # 最多显示 10 个
-                parts_str = ",".join(m['ruby_parts'])
-                mismatch_info.append(
-                    f"行 {m['sentence_idx']+1} 字符 '{m['char']}': "
-                    f"check_count={m['check_count']} "
-                    f"ruby_parts={m['ruby_parts_count']} "
-                    f"注音='{''.join(m['ruby_parts'])}' "
-                    f"拆分=[{parts_str}]"
-                )
-            if len(ruby_mismatches) > 10:
-                mismatch_info.append(f"...还有 {len(ruby_mismatches)-10} 个不匹配")
-
-            # 弹窗提醒用户
-            msg = QMessageBox(self)
-            msg.setWindowTitle("注音分段不匹配")
-            msg.setText("以下字符的注音分段数量与节奏点数量不匹配：")
-            msg.setInformativeText(
-                "\n".join(mismatch_info) +
-                "\n\n缺失的注音分段将自动补充为空格。是否继续导出？"
-            )
-            msg.setStandardButtons(
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            msg.setDefaultButton(QMessageBox.StandardButton.Yes)
-            if msg.exec() == QMessageBox.StandardButton.No:
+            detail = self._export_service.get_ruby_mismatch_detail(self._project)
+            dialog = RubyMismatchDialog(detail, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            action = dialog.get_action()
+            if action == "char":
+                self._export_service.apply_ruby_parts_split(self._project, "char")
+                if self._store:
+                    self._store.mark_dirty()
+                    self._store.notify("rubies")
+            elif action == "mora":
+                self._export_service.apply_ruby_parts_split(self._project, "mora")
+                if self._store:
+                    self._store.mark_dirty()
+                    self._store.notify("rubies")
+            elif action == "ignore":
+                pass  # 忽略不匹配，继续导出
+            elif action == "cancel":
                 return
 
         name = selected.data(Qt.ItemDataRole.UserRole)
