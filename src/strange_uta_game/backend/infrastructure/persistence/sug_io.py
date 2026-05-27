@@ -255,18 +255,28 @@ class SugProjectParser:
     """
 
     @staticmethod
-    def save(project: Project, file_path: str) -> None:
+    def save(
+        project: Project,
+        file_path: str,
+        *,
+        nicokara_tags: Optional[Dict[str, Any]] = None,
+        media_path: Optional[str] = None,
+    ) -> None:
         """保存项目到 SUG 文件
 
         Args:
             project: 项目对象
             file_path: 保存路径
+            nicokara_tags: Nicokara 标签数据（可选）
+            media_path: 实际媒体文件路径（可选，不含 .cache 临时路径）
 
         Raises:
             SugParseError: 保存失败
         """
         try:
-            data = SugProjectParser._project_to_dict(project)
+            data = SugProjectParser._project_to_dict(
+                project, nicokara_tags=nicokara_tags, media_path=media_path
+            )
 
             path = Path(file_path)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,7 +329,12 @@ class SugProjectParser:
     # ==================== 序列化 (Project → Dict) ====================
 
     @staticmethod
-    def _project_to_dict(project: Project) -> Dict[str, Any]:
+    def _project_to_dict(
+        project: Project,
+        *,
+        nicokara_tags: Optional[Dict[str, Any]] = None,
+        media_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """将 Project 对象转换为当前版本字典"""
         result = {
             "version": SugMigrator.CURRENT_VERSION,
@@ -354,7 +369,31 @@ class SugProjectParser:
         # 仅当global_offset_ms有值时才写入（兼容性考虑）
         if project.global_offset_ms is not None:
             result["global_offset_ms"] = project.global_offset_ms
+        if nicokara_tags:
+            result["nicokara_tags"] = nicokara_tags
+        if media_path:
+            result["media_path"] = media_path
         return result
+
+    @staticmethod
+    def load_extras(file_path: str) -> Dict[str, Any]:
+        """读取 .sug 文件中的附加字段，不解析完整项目。
+
+        Returns:
+            包含 nicokara_tags 和/或 media_path 的字典，字段缺失则不包含对应键。
+            读取失败时返回空字典。
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            result: Dict[str, Any] = {}
+            if "nicokara_tags" in data:
+                result["nicokara_tags"] = data["nicokara_tags"]
+            if "media_path" in data:
+                result["media_path"] = data["media_path"]
+            return result
+        except Exception:
+            return {}
 
     @staticmethod
     def _sentence_to_dict(sentence: Sentence) -> Dict[str, Any]:

@@ -2361,6 +2361,7 @@ class EditorInterface(QWidget):
         # 与 Home 页加载音频的动作对称：广播 audio 变更，使导出页等订阅者同步
         if hasattr(self, "_store") and self._store:
             self._store.set_audio_path(file_path)
+            self._store.set_original_media_path(file_path)
 
         InfoBar.success(
             title="音频已加载",

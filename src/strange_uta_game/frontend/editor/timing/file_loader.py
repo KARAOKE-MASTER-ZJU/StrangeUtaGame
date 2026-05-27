@@ -250,6 +250,7 @@ class FileLoader:
         # 通知 store
         if self._store:
             self._store.set_audio_path(temp_path)
+            self._store.set_original_media_path(original_path)
 
         self._save_last_dir(original_path)
 
@@ -378,6 +379,50 @@ class FileLoader:
             self._store.set_working_dir(file_path)
         else:
             self._editor.set_project(project)
+
+        self._apply_project_extras(file_path)
+
+    def _apply_project_extras(self, file_path: str) -> None:
+        """读取并应用 .sug 的附加字段（nicokara_tags、media_path）。"""
+        from strange_uta_game.backend.infrastructure.persistence.sug_io import (
+            SugProjectParser,
+        )
+
+        extras = SugProjectParser.load_extras(file_path)
+        if not extras:
+            return
+
+        # 应用 nicokara_tags 到 AppSettings
+        nicokara_tags = extras.get("nicokara_tags")
+        if nicokara_tags:
+            try:
+                settings = AppSettings()
+                settings.set("nicokara_tags", nicokara_tags)
+                settings.save()
+            except Exception:
+                pass
+
+        # 加载媒体文件
+        media_path = extras.get("media_path", "")
+        if not media_path:
+            return
+
+        if not Path(media_path).exists():
+            InfoBar.warning(
+                title="媒体文件未找到",
+                content=f"上次关联的媒体文件不存在：{Path(media_path).name}",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self._editor,
+            )
+            return
+
+        if is_video_file(media_path):
+            self._load_video_as_audio(media_path)
+        else:
+            self._editor.load_audio(media_path)
 
     def _on_project_load_error(self, error_msg: str) -> None:
         """项目加载失败的回调"""

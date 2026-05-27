@@ -75,6 +75,10 @@ class ProjectStore(QObject):
         self._project: Optional[Project] = None
         self._save_path: Optional[str] = None
         self._audio_path: Optional[str] = None
+        # 用户加载的原始媒体文件路径（音频直接路径 或 视频原始路径）。
+        # 与 _audio_path 的区别：视频加载后 _audio_path 为 .cache 提取音频，
+        # 而此字段始终存储原始文件路径，用于持久化到 .sug。
+        self._original_media_path: Optional[str] = None
         # 最近一次被加载/导入的歌词文件所在目录（不持久化，仅运行时使用，
         # 优先级介于 audio 与 last_export_dir 之间）
         self._last_lyric_dir: Optional[str] = None
@@ -115,6 +119,21 @@ class ProjectStore(QObject):
         if path:
             self._persist_last_export_dir(str(Path(path).parent))
         self.data_changed.emit("audio")
+
+    @property
+    def original_media_path(self) -> Optional[str]:
+        return self._original_media_path
+
+    def set_original_media_path(self, path: Optional[str]) -> None:
+        """设置原始媒体文件路径（音频直接路径 或 视频原始路径，不含 .cache）。"""
+        self._original_media_path = path
+
+    def get_saveable_media_path(self) -> Optional[str]:
+        """返回可持久化的媒体路径，排除 .cache 临时路径。"""
+        path = self._original_media_path
+        if path and not self._is_in_cache_dir(path):
+            return path
+        return None
 
     # ── 工作目录（默认保存/导出位置） ─────────────
 
@@ -253,6 +272,7 @@ class ProjectStore(QObject):
         self._save_path = save_path
         if audio_path is not None:
             self._audio_path = audio_path
+        self._original_media_path = None
         self._dirty = False
         self._start_periodic_save()
         self.data_changed.emit("project")
@@ -282,6 +302,17 @@ class ProjectStore(QObject):
 
     # ── 保存 ─────────────────────────────────────
 
+    def _get_nicokara_tags_for_save(self) -> Optional[dict]:
+        """读取当前 AppSettings 中的 nicokara_tags 用于持久化。"""
+        try:
+            from strange_uta_game.frontend.settings.app_settings import AppSettings
+            tags = AppSettings().get("nicokara_tags")
+            if tags:
+                return dict(tags)
+        except Exception:
+            pass
+        return None
+
     def save(self, path: Optional[str] = None) -> bool:
         """手动保存项目到指定路径。
 
@@ -300,7 +331,12 @@ class ProjectStore(QObject):
 
         old_path = self._save_path
         try:
-            SugProjectParser.save(self._project, target)
+            SugProjectParser.save(
+                self._project,
+                target,
+                nicokara_tags=self._get_nicokara_tags_for_save(),
+                media_path=self.get_saveable_media_path(),
+            )
             self._save_path = target
             self._dirty = False
             if old_path and old_path != target:
@@ -338,7 +374,12 @@ class ProjectStore(QObject):
 
         autosave_path = self._save_path + ".autosave"
         try:
-            SugProjectParser.save(self._project, autosave_path)
+            SugProjectParser.save(
+                self._project,
+                autosave_path,
+                nicokara_tags=self._get_nicokara_tags_for_save(),
+                media_path=self.get_saveable_media_path(),
+            )
         except Exception:
             pass  # auto-save 静默失败
 
@@ -363,7 +404,12 @@ class ProjectStore(QObject):
         temp_path = self.get_temp_path()
         try:
             _CACHE_DIR.mkdir(exist_ok=True)
-            SugProjectParser.save(self._project, str(temp_path))
+            SugProjectParser.save(
+                self._project,
+                str(temp_path),
+                nicokara_tags=self._get_nicokara_tags_for_save(),
+                media_path=self.get_saveable_media_path(),
+            )
         except Exception:
             pass  # 定时保存静默失败
 
