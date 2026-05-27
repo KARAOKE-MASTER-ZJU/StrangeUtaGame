@@ -298,10 +298,13 @@ class ProjectStore(QObject):
         if not target:
             return False
 
+        old_path = self._save_path
         try:
             SugProjectParser.save(self._project, target)
             self._save_path = target
             self._dirty = False
+            if old_path and old_path != target:
+                self._cleanup_temp_for_path(old_path)
             return True
         except Exception:
             return False
@@ -372,6 +375,29 @@ class ProjectStore(QObject):
             temp_filename = "." + p.name + ".temp"
             return _CACHE_DIR / temp_filename
         return _UNTITLED_TEMP
+
+    def _cleanup_temp_for_path(self, save_path: str) -> None:
+        """删除指定保存路径关联的临时文件（.cache/.xxx.sug.temp 与 autosave）。"""
+        sp = Path(save_path)
+        temp_name = "." + sp.name + ".temp"
+        temp_path = _CACHE_DIR / temp_name
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+
+        for name in (
+            str(sp.parent / ("." + sp.name + ".autosave")),
+            save_path + ".autosave",
+            save_path + ".autosave.sug",
+        ):
+            try:
+                fp = Path(name)
+                if fp.exists():
+                    fp.unlink()
+            except Exception:
+                pass
 
     def cleanup_temp_files(self) -> None:
         """删除当前项目关联的临时文件（含 .temp 与 .autosave，兼容旧命名）。"""

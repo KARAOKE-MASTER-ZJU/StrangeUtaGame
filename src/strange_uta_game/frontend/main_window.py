@@ -783,10 +783,12 @@ class MainWindow(MSFluentWindow):
 
     def _on_save_success(self, file_path: str) -> None:
         """保存成功回调"""
+        old_path = self._store._save_path
         self._store._save_path = file_path
         self._store._dirty = False
 
-        # 手动保存成功 → 清理临时文件
+        if old_path and old_path != file_path:
+            self._store._cleanup_temp_for_path(old_path)
         self._store.cleanup_temp_files()
 
         InfoBar.success(
