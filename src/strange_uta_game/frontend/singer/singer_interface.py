@@ -354,6 +354,7 @@ class SingerPresetLoadDialog(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 item.setCheckState(Qt.CheckState.Unchecked)
             else:
+                # 打开后默认全不选，上次commit提交漏拆分，使用注释提示。
                 item.setCheckState(Qt.CheckState.Unchecked)
 
             item.setData(Qt.ItemDataRole.UserRole, preset)
