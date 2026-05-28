@@ -289,6 +289,7 @@ class EditorInterface(QWidget):
         bottom.addWidget(self.btn_clear_tags)
 
         self.btn_scroll_mode = PushButton("自动滚动", self)
+        self.btn_scroll_mode.setObjectName("btnScrollMode")
         self.btn_scroll_mode.setIcon(FIF.SYNC)
         self.btn_scroll_mode.setToolTip(
             "切换歌词预览滚动模式：\n"
@@ -297,6 +298,7 @@ class EditorInterface(QWidget):
             "不滚动 — 完全停用自动滚动"
         )
         self.btn_scroll_mode.clicked.connect(self._on_cycle_scroll_mode)
+        theme.changed.connect(self._update_scroll_mode_btn_style)
         bottom.addWidget(self.btn_scroll_mode)
 
         bottom.addStretch()
@@ -4413,8 +4415,9 @@ class EditorInterface(QWidget):
     _SCROLL_MODE_LABELS = {"auto": "自动滚动", "always": "始终滚动", "never": "从不滚动"}
 
     def _sync_scroll_mode(self):
-        """将当前 _scroll_mode 同步到按钮文字和 preview。"""
+        """将当前 _scroll_mode 同步到按钮文字、颜色和 preview。"""
         self.btn_scroll_mode.setText(self._SCROLL_MODE_LABELS.get(self._scroll_mode, "自动滚动"))
+        self._update_scroll_mode_btn_style()
         self.preview.set_scroll_mode(self._scroll_mode)
         # 切换到 always / auto 时：重置挂起状态并立刻滚动到当前播放行
         if self._scroll_mode in ("always", "auto"):
@@ -4422,6 +4425,37 @@ class EditorInterface(QWidget):
             self._auto_scroll_new_line_reached = False
             self._auto_scroll_cooldown_timer.stop()
             self.preview.resume_auto_scroll()
+
+    def _update_scroll_mode_btn_style(self):
+        """根据当前滚动模式和主题刷新按钮背景色。"""
+        # 三种模式各自映射到 theme 里语义最接近的颜色
+        _mode_bg = {
+            "auto":   theme.accent_secondary,  # 蓝：智能/条件行为
+            "always": theme.status_complete,   # 绿：始终激活
+            "never":  theme.status_none,       # 灰：已停用
+        }
+        bg = _mode_bg.get(self._scroll_mode, theme.accent_secondary)
+        bg_hex     = bg.name()
+        bg_hover   = bg.lighter(115).name()
+        bg_pressed = bg.darker(110).name()
+        # 按背景亮度自动选择文字颜色以保证对比度
+        lum = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+        text_hex = "#1a1a1a" if lum > 150 else "#ffffff"
+        self.btn_scroll_mode.setStyleSheet(f"""
+            #btnScrollMode {{
+                background-color: {bg_hex};
+                color: {text_hex};
+                border: none;
+                border-radius: 5px;
+                padding: 5px 12px;
+            }}
+            #btnScrollMode:hover {{
+                background-color: {bg_hover};
+            }}
+            #btnScrollMode:pressed {{
+                background-color: {bg_pressed};
+            }}
+        """)
 
     def _suspend_auto_scroll(self):
         """挂起自动滚动：重置冷却状态，通知 preview 暂停。"""
