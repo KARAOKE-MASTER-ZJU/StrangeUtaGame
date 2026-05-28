@@ -67,6 +67,7 @@ class AppSettings:
             "checkpoint_on_punctuation": False,
             "check_english_word_end": True,
             "chinese_lyrics_detection": True,
+            "romanize_ruby": False,
             "delete_ruby_types": [],
         },
         "ui": {

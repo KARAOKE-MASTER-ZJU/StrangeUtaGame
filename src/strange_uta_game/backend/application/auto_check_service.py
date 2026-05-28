@@ -38,6 +38,9 @@ from strange_uta_game.backend.infrastructure.parsers.english_ruby import (
 from strange_uta_game.backend.infrastructure.parsers.e2k_engine import (
     EnglishToKanaEngine,
 )
+from strange_uta_game.backend.infrastructure.parsers.romaji import (
+    romanize_ruby_parts,
+)
 
 
 # 允许自动注音的字符类型白名单（第十批 #5）：
@@ -200,6 +203,7 @@ class AutoCheckService:
         self._chinese_mode = chinese_mode
         self._analyzer = ruby_analyzer or (None if chinese_mode else create_analyzer())
         self._flags = auto_check_flags or {}
+        self._romanize_ruby = bool(self._flags.get("romanize_ruby", False))
         self._annotate_katakana_with_english = annotate_katakana_with_english
         # 用户词典：保留词典数组顺序（上方条目优先级最高）。
         # 在 apply_to_sentence 末尾以子串严格匹配方式覆盖 Character[]，
@@ -232,6 +236,73 @@ class AutoCheckService:
                 self._kanji_dict = json.loads(dict_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+
+    def _should_make_romaji_self_ruby(self, char: str) -> bool:
+        if not self._romanize_ruby or len(char) != 1:
+            return False
+        return get_char_type(char) in (
+            CharType.HIRAGANA, CharType.KATAKANA, CharType.SOKUON, CharType.LONG_VOWEL)
+
+    def _detect_romaji_particles(self, sentence: Sentence) -> set[int]:
+        if not self._romanize_ruby:
+            return set()
+        particle_indices: set[int] = set()
+        part_idx = 0
+        for char_idx, ch in enumerate(sentence.characters):
+            if not ch.ruby:
+                continue
+            for part in ch.ruby.parts:
+                text = part.text
+                if len(text) != 1 or text != ch.char:
+                    part_idx += 1
+                    continue
+                if text == "\u3092":
+                    particle_indices.add(part_idx)
+                    part_idx += 1
+                    continue
+                if text not in ("\u306f", "\u3078"):
+                    part_idx += 1
+                    continue
+                if char_idx == 0:
+                    part_idx += 1
+                    continue
+                prev = sentence.characters[char_idx - 1]
+                prev_ct = get_char_type(prev.char) if len(prev.char) == 1 else CharType.OTHER
+                if prev_ct not in (CharType.KANJI, CharType.HIRAGANA, CharType.KATAKANA,
+                                   CharType.SOKUON, CharType.LONG_VOWEL):
+                    part_idx += 1
+                    continue
+                if char_idx + 1 >= len(sentence.characters):
+                    particle_indices.add(part_idx)
+                    part_idx += 1
+                    continue
+                next_ch = sentence.characters[char_idx + 1]
+                next_ct = get_char_type(next_ch.char) if len(next_ch.char) == 1 else CharType.OTHER
+                if next_ct == CharType.KANJI:
+                    particle_indices.add(part_idx)
+                elif next_ct not in (CharType.HIRAGANA, CharType.KATAKANA,
+                                     CharType.SOKUON, CharType.LONG_VOWEL):
+                    particle_indices.add(part_idx)
+                part_idx += 1
+        return particle_indices
+
+    def _romanize_sentence_ruby(self, sentence: Sentence) -> None:
+        if not self._romanize_ruby:
+            return
+        refs: List[RubyPart] = []
+        texts: List[str] = []
+        for ch in sentence.characters:
+            if not ch.ruby:
+                continue
+            for part in ch.ruby.parts:
+                refs.append(part)
+                texts.append(part.text)
+        if not refs:
+            return
+        particle_indices = self._detect_romaji_particles(sentence)
+        converted = romanize_ruby_parts(texts, particle_indices=particle_indices)
+        for part, text in zip(refs, converted):
+            part.text = text
 
     def _apply_english_dictionary(
         self, text: str, ruby_results: List[RubyResult], dict_covered: set
@@ -1378,6 +1449,7 @@ class AutoCheckService:
         only_noruby: bool = False,
         apply_user_dict: bool = True,
         restrict_indices: Optional[set] = None,
+        skip_romanize: bool = False,
     ) -> None:
         """分析并应用自动检查结果到句子
 
@@ -1479,8 +1551,9 @@ class AutoCheckService:
             # Stage 0: result.ruby 为 List[str]（来自 _group_reading_for_character），
             # 映射为 Ruby(parts=[RubyPart(text=s), ...])。
             ruby_groups = result.ruby  # List[str] | None
-            if ruby_groups and not (
-                len(ruby_groups) == 1 and ruby_groups[0] == result.char
+            if ruby_groups and (
+                self._romanize_ruby
+                or not (len(ruby_groups) == 1 and ruby_groups[0] == result.char)
             ):
                 # 处理 rubyPart 数量 > checkCount 的情况
                 from strange_uta_game.backend.infrastructure.parsers.inline_format import (
@@ -1582,6 +1655,22 @@ class AutoCheckService:
         if apply_user_dict and self._dict:
             self._apply_user_dictionary_to_sentence(sentence)
 
+        if not skip_romanize:
+            self._romanize_sentence_ruby(sentence)
+
+    def romanize_project_rubies(self, project: Project) -> int:
+        """对项目所有句子执行罗马音转换（供外部在 delete 之后调用）。"""
+        if not self._romanize_ruby:
+            return 0
+        changed = 0
+        for sentence in project.sentences:
+            before = sum(len(part.text) for ch in sentence.characters if ch.ruby for part in ch.ruby.parts)
+            self._romanize_sentence_ruby(sentence)
+            after = sum(len(part.text) for ch in sentence.characters if ch.ruby for part in ch.ruby.parts)
+            if before != after:
+                changed += 1
+        return changed
+
     def _apply_user_dictionary_to_sentence(self, sentence: Sentence) -> None:
         """Phase 5：把用户词典以子串严格匹配方式覆盖到 sentence.characters 上。
 
@@ -1675,12 +1764,13 @@ class AutoCheckService:
                         ch.check_count = len(parts)
                     else:
                         ch.ruby = None
-                        # 无 parts 时：汉字或被 linked（连词块内）→ cp=0；
-                        # 其他情况保留主流程默认值（如假名默认 cp=1）。
                         ct = get_char_type(ch.char) if len(ch.char) == 1 else CharType.OTHER
                         is_linked = k > 0 and chars[idx + k - 1].linked_to_next
                         if ct == CharType.KANJI or is_linked:
                             ch.check_count = 0
+                        elif self._should_make_romaji_self_ruby(ch.char):
+                            ch.ruby = Ruby(parts=[RubyPart(text=ch.char)])
+                            ch.check_count = max(ch.check_count, 1)
                     # linked_to_next：同 block 内相邻字符 → True；否则 False。
                     # 词末字符（k == wlen-1）的 linked_to_next 不在 word 内部决定，
                     # 保守置 False（不连到 word 之外的下一字符）。
@@ -1726,41 +1816,28 @@ class AutoCheckService:
         only_noruby: bool = False,
         apply_user_dict: bool = True,
         progress_callback=None,
+        skip_romanize: bool = False,
     ) -> None:
-        """分析并应用到整个项目
-
-        Args:
-            project: 项目
-            split_config: 拆分配置
-            keep_existing_timetags: 是否保留现有时间标签
-            only_noruby: 仅对未注音字符应用
-            apply_user_dict: 是否执行 Phase 5 用户词典覆盖（默认 True）。
-                传 False 时推迟词典覆盖，由调用方在删除注音后手动调用
-                :meth:`apply_user_dict_to_project`。
-            progress_callback: 可选回调 (current: int, total: int)，每处理完一行后调用。
-        """
+        """分析并应用到整个项目"""
         sentences = project.sentences
         total = len(sentences)
         for i, sentence in enumerate(sentences):
             self.apply_to_sentence(
                 sentence, split_config, keep_existing_timetags, only_noruby,
-                apply_user_dict=apply_user_dict,
+                apply_user_dict=apply_user_dict, skip_romanize=skip_romanize,
             )
             if progress_callback is not None:
                 progress_callback(i + 1, total)
-
-        # check_count 变更后，自动顺延越界的选中 cp
         project.shift_selected_checkpoint_if_lost()
 
-    def apply_user_dict_to_project(self, project: Project) -> None:
-        """对整个项目执行 Phase 5 用户词典覆盖。
-
-        供调用方在按类型删除注音之后单独调用，确保用户词典覆盖在删除之后生效。
-        """
+    def apply_user_dict_to_project(self, project: Project, skip_romanize: bool = False) -> None:
+        """对整个项目执行 Phase 5 用户词典覆盖。"""
         if not self._dict:
             return
         for sentence in project.sentences:
             self._apply_user_dictionary_to_sentence(sentence)
+            if not skip_romanize:
+                self._romanize_sentence_ruby(sentence)
 
     def update_checkpoints_from_rubies(
         self,
@@ -1829,7 +1906,7 @@ class AutoCheckService:
             ruby_groups = [p.text for p in char.ruby.parts]
             if len(ruby_groups) == 1 and char.char == ruby_groups[0]:
                 continue  # 自注音汉字（罕见），保留默认
-            if preserve_ruby_segments:
+            if preserve_ruby_segments or self._romanize_ruby:
                 # 保留原 ruby 分段：cc = parts 段数，这样后续 set_check_count
                 # 走 new_count == old_count 路径，不会触发 _resplit_ruby
                 # 重切 parts、丢失 offset_ms。
