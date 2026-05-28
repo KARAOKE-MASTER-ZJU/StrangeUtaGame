@@ -43,6 +43,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     StateToolTip,
+    setCustomStyleSheet,
 )
 
 from strange_uta_game.backend.application import (
@@ -60,7 +61,7 @@ from strange_uta_game.backend.infrastructure.parsers.text_splitter import (
     CharType,
     get_char_type,
 )
-from strange_uta_game.frontend.theme import theme
+from strange_uta_game.frontend.theme import theme, ThemeColors
 
 from .line_interface import LineDetailDialog
 from .timing import (
@@ -4427,35 +4428,38 @@ class EditorInterface(QWidget):
             self.preview.resume_auto_scroll()
 
     def _update_scroll_mode_btn_style(self):
-        """根据当前滚动模式和主题刷新按钮背景色。"""
-        # 三种模式各自映射到 theme 里语义最接近的颜色
-        _mode_bg = {
-            "auto":   theme.accent_secondary,  # 蓝：智能/条件行为
-            "always": theme.status_complete,   # 绿：始终激活
-            "never":  theme.status_none,       # 灰：已停用
+        """根据当前滚动模式刷新按钮颜色。
+
+        使用 qfluentwidgets setCustomStyleSheet 将颜色 QSS 追加到按钮原有样式之后，
+        不覆盖 border / padding 等布局属性，避免图标错位。
+        浅色和深色两套 QSS 分别传入，qfluentwidgets 主题切换时自动选用对应版本。
+        """
+        tc_l = ThemeColors(is_dark=False)
+        tc_d = ThemeColors(is_dark=True)
+        _bgs = {
+            "auto":   (tc_l.accent_secondary, tc_d.accent_secondary),  # 蓝
+            "always": (tc_l.status_complete,  tc_d.status_complete),   # 绿
+            "never":  (tc_l.status_none,      tc_d.status_none),       # 灰
         }
-        bg = _mode_bg.get(self._scroll_mode, theme.accent_secondary)
-        bg_hex     = bg.name()
-        bg_hover   = bg.lighter(115).name()
-        bg_pressed = bg.darker(110).name()
-        # 按背景亮度自动选择文字颜色以保证对比度
-        lum = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
-        text_hex = "#1a1a1a" if lum > 150 else "#ffffff"
-        self.btn_scroll_mode.setStyleSheet(f"""
-            #btnScrollMode {{
-                background-color: {bg_hex};
-                color: {text_hex};
-                border: none;
-                border-radius: 5px;
-                padding: 5px 12px;
-            }}
-            #btnScrollMode:hover {{
-                background-color: {bg_hover};
-            }}
-            #btnScrollMode:pressed {{
-                background-color: {bg_pressed};
-            }}
-        """)
+        bg_l, bg_d = _bgs.get(self._scroll_mode, _bgs["auto"])
+
+        def make_qss(bg) -> str:
+            lum = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+            text = "#1a1a1a" if lum > 150 else "#ffffff"
+            return (
+                f"#btnScrollMode {{"
+                f" background-color: {bg.name()};"
+                f" color: {text};"
+                f"}}"
+                f" #btnScrollMode:hover {{"
+                f" background-color: {bg.lighter(115).name()};"
+                f"}}"
+                f" #btnScrollMode:pressed {{"
+                f" background-color: {bg.darker(110).name()};"
+                f"}}"
+            )
+
+        setCustomStyleSheet(self.btn_scroll_mode, make_qss(bg_l), make_qss(bg_d))
 
     def _suspend_auto_scroll(self):
         """挂起自动滚动：重置冷却状态，通知 preview 暂停。"""
