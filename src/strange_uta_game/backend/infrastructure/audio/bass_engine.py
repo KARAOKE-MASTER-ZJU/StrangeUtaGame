@@ -182,7 +182,7 @@ def _load_bass_plugin(name: str) -> int:
         handle = _bass.BASS_PluginLoad(ctypes.c_wchar_p(str(path)), BASS_UNICODE)
         if handle:
             _BASS_PLUGIN_HANDLES[name] = handle
-            print(f"[BassEngine] BASS plugin loaded: {path}")
+            # print(f"[BassEngine] BASS plugin loaded: {path}")
             return handle
         print(f"[BassEngine] BASS plugin load failed: {path} (error {_bass.BASS_ErrorGetCode()})")
 
