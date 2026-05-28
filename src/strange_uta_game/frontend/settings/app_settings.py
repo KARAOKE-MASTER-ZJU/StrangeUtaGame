@@ -68,7 +68,6 @@ class AppSettings:
             "check_english_word_end": True,
             "chinese_lyrics_detection": True,
             "romanize_ruby": False,
-            "delete_ruby_types_before_romanize": [],
             "delete_ruby_types": [],
         },
         "ui": {

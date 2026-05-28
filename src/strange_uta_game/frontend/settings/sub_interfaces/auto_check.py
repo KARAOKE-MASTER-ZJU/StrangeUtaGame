@@ -158,8 +158,7 @@ class AutoCheckSubInterface(SubSettingInterface):
                 s.set("auto_check.delete_ruby_types", saved_delete_types)
                 s.save()
             if romanize_ruby:
-                self._delete_types_before_romanize = list(
-                    s.get("auto_check.delete_ruby_types_before_romanize", saved_delete_types))
+                self._delete_types_before_romanize = list(saved_delete_types)
                 filtered = self._delete_types_without_romaji_exclusive(saved_delete_types)
                 if filtered != saved_delete_types:
                     saved_delete_types = filtered
@@ -189,5 +188,4 @@ class AutoCheckSubInterface(SubSettingInterface):
         else:
             self._delete_types_before_romanize = list(delete_types)
         s.set("auto_check.romanize_ruby", romanize_ruby)
-        s.set("auto_check.delete_ruby_types_before_romanize", self._delete_types_before_romanize)
         s.set("auto_check.delete_ruby_types", delete_types)

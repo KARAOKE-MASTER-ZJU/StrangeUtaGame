@@ -70,15 +70,6 @@ _TYPE_FLAG_MAP: Dict[CharType, str] = {
 # 小型假名集合（不含促音 っ/ッ，促音由独立的 check_sokuon 标志控制）
 _SMALL_KANA_SET = frozenset("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮゕゖ")
 
-# 罗马音模式下禁止自动删除的注音类型（删除后无法转换）
-_ROMAJI_PROTECTED_DELETE_TYPES = frozenset({
-    "hiragana",
-    "katakana",
-    "katakana_hiragana_ruby",
-    "katakana_english_ruby",
-    "kanji",
-})
-
 
 def _has_latin(s: str) -> bool:
     """是否含有 ASCII 英文字母（用于词边界判定）。"""
@@ -312,11 +303,6 @@ class AutoCheckService:
         converted = romanize_ruby_parts(texts, particle_indices=particle_indices)
         for part, text in zip(refs, converted):
             part.text = text
-
-    def filter_delete_ruby_types(self, type_names: List[str]) -> List[str]:
-        if not self._romanize_ruby:
-            return list(type_names)
-        return [n for n in type_names if n not in _ROMAJI_PROTECTED_DELETE_TYPES]
 
     def _apply_english_dictionary(
         self, text: str, ruby_results: List[RubyResult], dict_covered: set
@@ -1463,6 +1449,7 @@ class AutoCheckService:
         only_noruby: bool = False,
         apply_user_dict: bool = True,
         restrict_indices: Optional[set] = None,
+        skip_romanize: bool = False,
     ) -> None:
         """分析并应用自动检查结果到句子
 
@@ -1668,7 +1655,21 @@ class AutoCheckService:
         if apply_user_dict and self._dict:
             self._apply_user_dictionary_to_sentence(sentence)
 
-        self._romanize_sentence_ruby(sentence)
+        if not skip_romanize:
+            self._romanize_sentence_ruby(sentence)
+
+    def romanize_project_rubies(self, project: Project) -> int:
+        """对项目所有句子执行罗马音转换（供外部在 delete 之后调用）。"""
+        if not self._romanize_ruby:
+            return 0
+        changed = 0
+        for sentence in project.sentences:
+            before = sum(len(part.text) for ch in sentence.characters if ch.ruby for part in ch.ruby.parts)
+            self._romanize_sentence_ruby(sentence)
+            after = sum(len(part.text) for ch in sentence.characters if ch.ruby for part in ch.ruby.parts)
+            if before != after:
+                changed += 1
+        return changed
 
     def _apply_user_dictionary_to_sentence(self, sentence: Sentence) -> None:
         """Phase 5：把用户词典以子串严格匹配方式覆盖到 sentence.characters 上。
@@ -1815,42 +1816,28 @@ class AutoCheckService:
         only_noruby: bool = False,
         apply_user_dict: bool = True,
         progress_callback=None,
+        skip_romanize: bool = False,
     ) -> None:
-        """分析并应用到整个项目
-
-        Args:
-            project: 项目
-            split_config: 拆分配置
-            keep_existing_timetags: 是否保留现有时间标签
-            only_noruby: 仅对未注音字符应用
-            apply_user_dict: 是否执行 Phase 5 用户词典覆盖（默认 True）。
-                传 False 时推迟词典覆盖，由调用方在删除注音后手动调用
-                :meth:`apply_user_dict_to_project`。
-            progress_callback: 可选回调 (current: int, total: int)，每处理完一行后调用。
-        """
+        """分析并应用到整个项目"""
         sentences = project.sentences
         total = len(sentences)
         for i, sentence in enumerate(sentences):
             self.apply_to_sentence(
                 sentence, split_config, keep_existing_timetags, only_noruby,
-                apply_user_dict=apply_user_dict,
+                apply_user_dict=apply_user_dict, skip_romanize=skip_romanize,
             )
             if progress_callback is not None:
                 progress_callback(i + 1, total)
-
-        # check_count 变更后，自动顺延越界的选中 cp
         project.shift_selected_checkpoint_if_lost()
 
-    def apply_user_dict_to_project(self, project: Project) -> None:
-        """对整个项目执行 Phase 5 用户词典覆盖。
-
-        供调用方在按类型删除注音之后单独调用，确保用户词典覆盖在删除之后生效。
-        """
+    def apply_user_dict_to_project(self, project: Project, skip_romanize: bool = False) -> None:
+        """对整个项目执行 Phase 5 用户词典覆盖。"""
         if not self._dict:
             return
         for sentence in project.sentences:
             self._apply_user_dictionary_to_sentence(sentence)
-            self._romanize_sentence_ruby(sentence)
+            if not skip_romanize:
+                self._romanize_sentence_ruby(sentence)
 
     def update_checkpoints_from_rubies(
         self,
@@ -2154,15 +2141,6 @@ def get_kanji_linked_indices(characters: list) -> set:
 def _ruby_is_all_hiragana(ruby_text: str) -> bool:
     """注音文本是否全为平假名（范围 U+3040-U+309F）。"""
     return bool(ruby_text) and all("぀" <= c <= "ゟ" for c in ruby_text)
-
-
-def filter_delete_ruby_types_for_romaji(
-    type_names: List[str], romanize_ruby: bool
-) -> List[str]:
-    """过滤删除注音类型列表（模块级辅助，供 worker/home 等无 service 实例处调用）。"""
-    if not romanize_ruby:
-        return list(type_names)
-    return [n for n in type_names if n not in _ROMAJI_PROTECTED_DELETE_TYPES]
 
 
 def delete_rubies_by_type_names(
