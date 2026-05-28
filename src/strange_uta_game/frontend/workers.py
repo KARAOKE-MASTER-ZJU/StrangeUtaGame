@@ -198,21 +198,23 @@ class RubyAnalyzeWorker(QObject):
             def _progress_cb(current: int, total: int) -> None:
                 self.progress.emit(current, total)
 
+            delete_types = self._auto_check.filter_delete_ruby_types(self._delete_types)
+
             self._auto_check.apply_to_project(
                 self._project,
                 only_noruby=self._only_noruby,
-                apply_user_dict=not bool(self._delete_types),
+                apply_user_dict=not bool(delete_types),
                 progress_callback=_progress_cb,
             )
             self._auto_check.update_checkpoints_for_project(self._project)
 
             deleted_count = 0
-            if self._delete_types:
+            if delete_types:
                 from strange_uta_game.backend.application.auto_check_service import (
                     delete_rubies_by_type_names,
                 )
                 deleted_count = delete_rubies_by_type_names(
-                    self._project, self._delete_types
+                    self._project, delete_types
                 )
                 self._auto_check.apply_user_dict_to_project(self._project)
 

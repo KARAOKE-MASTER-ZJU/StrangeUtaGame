@@ -500,11 +500,15 @@ class HomeInterface(QWidget):
                             auto_check.apply_to_project(project, only_noruby=True)
 
                     # 自动删除指定类型的注音
-                    delete_types = auto_check_flags.get("delete_ruby_types", [])
+                    from strange_uta_game.backend.application.auto_check_service import (
+                        delete_rubies_by_type_names,
+                        filter_delete_ruby_types_for_romaji,
+                    )
+                    delete_types = filter_delete_ruby_types_for_romaji(
+                        auto_check_flags.get("delete_ruby_types", []),
+                        auto_check_flags.get("romanize_ruby", False),
+                    )
                     if delete_types:
-                        from strange_uta_game.backend.application.auto_check_service import (
-                            delete_rubies_by_type_names,
-                        )
 
                         delete_rubies_by_type_names(project, delete_types)
             except Exception:
