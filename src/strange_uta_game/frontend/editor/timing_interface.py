@@ -3715,6 +3715,11 @@ class EditorInterface(QWidget):
 
         def _mutate():
             sentence = project.sentences[line_idx]
+            if not sentence.characters:
+                # 空行：直接在行首插入
+                new_char = Character(char=" ", check_count=0, singer_id=sentence.singer_id)
+                sentence.insert_character(0, new_char)
+                return line_idx, 0, 0, "lyrics"
             if char_idx < 0 or char_idx >= len(sentence.characters):
                 return None
             ref_char = sentence.characters[char_idx]
@@ -3735,6 +3740,11 @@ class EditorInterface(QWidget):
 
         def _mutate():
             sentence = project.sentences[line_idx]
+            if not sentence.characters:
+                # 空行：直接在行首插入
+                new_char = Character(char=" ", check_count=0, singer_id=sentence.singer_id)
+                sentence.insert_character(0, new_char)
+                return line_idx, 0, 0, "lyrics"
             if char_idx < 0 or char_idx >= len(sentence.characters):
                 return None
             ref_char = sentence.characters[char_idx]
@@ -3759,6 +3769,10 @@ class EditorInterface(QWidget):
 
         def _mutate():
             sentence = project.sentences[line_idx]
+            if not sentence.characters:
+                new_char = Character(char=" ", check_count=0, singer_id=sentence.singer_id)
+                sentence.insert_character(0, new_char)
+                return line_idx, 0, 0, "lyrics"
             if char_idx < 0 or char_idx >= len(sentence.characters):
                 return None
             ref_char = sentence.characters[char_idx]

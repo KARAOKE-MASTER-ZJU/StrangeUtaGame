@@ -749,8 +749,8 @@ class KaraokePreview(QWidget):
             self.update()
             return
 
-        # 回退到行级别点击：根据 y 坐标反算行索引
-        # 清除选中状态
+        # 回退到行级别点击（纯空行或行间空隙）：根据 y 坐标反算行索引
+        # 先清除旧快照（避免上次单击 300ms 计时器延迟触发 set_current_position）
         self._focus_line_idx = -1
         self._focus_char_idx = -1
         self._focus_char_range_end = -1
@@ -759,12 +759,22 @@ class KaraokePreview(QWidget):
         h = self.height()
         line_height = h / self._visible_lines
         center_y = h / 2.0
-        # 点击位置对应的行索引（浮点）
         clicked_line = self._scroll_center_line + (click_y - center_y) / line_height
         target_idx = int(round(clicked_line))
         total = len(self._project.sentences)
         if 0 <= target_idx < total:
-            self.line_clicked.emit(target_idx)
+            # 设置 focus 到目标行首位，走正常 pending_click 流程：
+            # mouseReleaseEvent 会发出 char_selected(target_idx, 0)，
+            # _on_char_selected 负责居中并通过 timing_service 向前找最近节奏点。
+            self._focus_line_idx = target_idx
+            self._focus_char_idx = 0
+            self._focus_char_range_end = 0
+            self._focus_dragging = True
+            self._pending_click = {
+                "type": "char",
+                "line_idx": target_idx,
+                "char_idx": 0,
+            }
         self.update()
 
     def mouseMoveEvent(self, a0: Optional[QMouseEvent]):
@@ -876,6 +886,27 @@ class KaraokePreview(QWidget):
                 self._current_line_idx = line_idx
                 self._current_char_idx = char_idx
                 break
+        else:
+            # 未命中字符 hitbox：先试最近 hitbox（行内空白区域），
+            # 再按 y 坐标反算行（纯空行 / 行间空隙）
+            nearest = self._find_nearest_hitbox(click_x, click_y)
+            if nearest:
+                _, target_line_idx, target_char_idx, _ = nearest
+            else:
+                h = self.height()
+                line_height = h / self._visible_lines
+                center_y = h / 2.0
+                clicked_line = self._scroll_center_line + (click_y - center_y) / line_height
+                calc_idx = int(round(clicked_line))
+                total = len(self._project.sentences)
+                if 0 <= calc_idx < total:
+                    target_line_idx = calc_idx
+                    target_char_idx = 0
+            # 右键非字符区域同步 focus 域（与左键回退路径一致，
+            # 保证菜单关闭后 F4/F5 等操作指向正确位置）
+            self._focus_line_idx = target_line_idx
+            self._focus_char_idx = target_char_idx
+            self._focus_char_range_end = target_char_idx
 
         if target_line_idx < 0 or target_line_idx >= len(self._project.sentences):
             return
