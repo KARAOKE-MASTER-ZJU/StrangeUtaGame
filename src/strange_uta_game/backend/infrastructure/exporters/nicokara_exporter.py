@@ -124,6 +124,9 @@ class NicokaraExporter(BaseExporter):
                 default_singer_id,
                 known_singer_ids,
             )
+            # 空行（只有空格、无时间戳）统一输出为真正的空行
+            if is_blank_line:
+                line_text = ""
             # 过滤后无字符的行需要区分：原本就是空行（保留）vs 被过滤掉内容的行（跳过）
             stripped = line_text.strip()
             content_only = _NICOKARA_TS_RE.sub('', stripped)
@@ -378,6 +381,9 @@ class NicokaraWithRubyExporter(NicokaraExporter):
                 prev_singer_id,
                 default_singer_id,
             )
+            # 空行（只有空格、无时间戳）统一输出为真正的空行
+            if is_blank_line:
+                line_text = ""
             # 过滤后无字符的行需要区分：原本就是空行（保留）vs 被过滤掉内容的行（跳过）
             stripped = line_text.strip()
             content_only = _NICOKARA_TS_RE.sub('', stripped)
