@@ -431,6 +431,90 @@ class WinRTAnalyzer(KanaDistributingAnalyzer):
 
 
 # ──────────────────────────────────────────────
+# Sudachi 分析器（noWinIME / mac 变体主引擎）
+# ──────────────────────────────────────────────
+
+
+class SudachiAnalyzer(KanaDistributingAnalyzer):
+    """基于 sudachipy 的注音分析器，供不含 WinRT 的变体使用。
+
+    字典优先级：sudachidict_small（打包体积小）→ sudachidict_core → 默认。
+    用户可通过安装 sudachidict_small 切换到小字典；未安装时自动回退到 core。
+    分词粒度采用 Mode A（最短形态素，与 WinRT 默认粒度相近）。
+
+    reading_form() 返回表层形读音（非字典形），可直接用于假名注音。
+    """
+
+    def __init__(self):
+        try:
+            import sudachipy  # type: ignore[import-untyped]
+        except ImportError:
+            raise ImportError(
+                "sudachipy is required. Install with: pip install sudachipy sudachidict_core"
+            )
+        # 字典优先级：small（体积小）→ core → 默认（首个已安装字典）
+        _dict_obj = None
+        for _dict_name in ("small", "core", None):
+            try:
+                _dict_obj = (
+                    sudachipy.Dictionary(dict=_dict_name).create()
+                    if _dict_name
+                    else sudachipy.Dictionary().create()
+                )
+                break
+            except Exception:
+                continue
+        if _dict_obj is None:
+            raise ImportError(
+                "sudachi dictionary unavailable. "
+                "Install with: pip install sudachidict_core"
+            )
+        self._tokenizer = _dict_obj
+        self._split_mode = sudachipy.SplitMode.A
+
+        self._pykakasi_conv = None
+        try:
+            import pykakasi  # type: ignore[import-untyped]
+
+            kks = pykakasi.kakasi()
+            kks.setMode("J", "H")
+            self._pykakasi_conv = kks.getConverter()
+        except ImportError:
+            pass
+
+    def _get_pairs(self, text: str) -> List[Tuple[str, str]]:
+        morphemes = self._tokenizer.tokenize(text, self._split_mode)
+        pairs: List[Tuple[str, str]] = []
+        for m in morphemes:
+            surface = m.surface()
+            # reading_form() 返回表层读音（片假名），转平假名后使用
+            # 对于 ASCII / OOV 词，reading_form() 可能返回小写原文，此时读音 = 原文
+            reading = self._kata_to_hira(m.reading_form() or surface)
+            pairs.append((surface, reading))
+        return pairs
+
+    def get_reading(self, text: str) -> str:
+        if not text:
+            return ""
+        try:
+            return "".join(r for _, r in self._get_pairs(text))
+        except Exception:
+            return text
+
+    def analyze(self, text: str) -> List[RubyResult]:
+        if not text:
+            return []
+        try:
+            pairs = self._get_pairs(text)
+        except Exception:
+            return [
+                RubyResult(text=c, reading=c, start_idx=i, end_idx=i + 1)
+                for i, c in enumerate(text)
+            ]
+        return self._results_from_pairs(pairs)
+
+
+# ──────────────────────────────────────────────
 # pykakasi 分析器（回退用）
 # ──────────────────────────────────────────────
 
@@ -651,18 +735,23 @@ def install_winrt_japanese(timeout: int = 600) -> Tuple[bool, str]:
 def create_analyzer(use_pykakasi: bool = True) -> RubyAnalyzer:
     """创建注音分析器。
 
-    主分析器为 WinRT IME（移除 Sudachi 依赖的目标方向）。WinRT 不可用时
-    **不回退 Sudachi**，仅降级到 pykakasi（单字分析），最后 DummyAnalyzer。
-    引擎缺失（缺日语 IME）应由 UI 层探测并引导安装，见 :func:`winrt_japanese_status`
-    / :func:`install_winrt_japanese` / :func:`winrt_install_guidance`。
+    回退链：WinRTAnalyzer → SudachiAnalyzer → PykakasiAnalyzer → DummyAnalyzer。
+
+    - main 变体：WinRT 可用则直接使用；缺日语 IME 由 UI 引导安装后再用。
+    - noWinIME / mac 变体：winrt 包不存在，直接跳至 Sudachi。
     """
     try:
         return WinRTAnalyzer()
     except WinRTJapaneseUnavailable:
-        # 缺日语 IME 引擎：交由 UI 引导安装；此处先降级，不使用 Sudachi
+        # 缺日语 IME 引擎：UI 层引导安装；此处先降级
         pass
     except ImportError:
-        # 缺 winrt 包：同样降级
+        # 缺 winrt 包（noWinIME / mac 变体）：直接降级
+        pass
+
+    try:
+        return SudachiAnalyzer()
+    except ImportError:
         pass
 
     if use_pykakasi:
@@ -671,7 +760,7 @@ def create_analyzer(use_pykakasi: bool = True) -> RubyAnalyzer:
         except ImportError:
             pass
 
-    print("Warning: WinRT/pykakasi unavailable, using DummyAnalyzer")
+    print("Warning: all analyzers unavailable, using DummyAnalyzer")
     return DummyAnalyzer()
 
 

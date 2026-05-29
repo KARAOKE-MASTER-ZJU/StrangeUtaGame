@@ -423,7 +423,10 @@ def try_fetch_manifest(
 ) -> Optional[Dict[str, Any]]:
     """按 ``args.urls`` 顺序尝试拉取 ``manifest-vX.Y.Z.json``。
 
-    URL 推导规则：把 zip URL 末尾的文件名换成 ``manifest-v{version}.json``。
+    URL 推导规则：把 asset_name 中的 ``StrangeUtaGame`` 前缀换成 ``manifest``，
+    ``.zip`` 换成 ``.json``，从而支持多变体（noWinIME / mac 等）。
+    例：``StrangeUtaGame-noWinIME-v1.0.3.zip`` → ``manifest-noWinIME-v1.0.3.json``。
+
     GitHub Release 把同 tag 下所有 assets 放同目录，镜像源透传同样的路径，所以
     这个规则对三个源都成立。
 
@@ -434,9 +437,11 @@ def try_fetch_manifest(
         return None
     proxies = {"http": args.proxy_url, "https": args.proxy_url} if args.proxy_url else None
 
+    manifest_filename = args.asset_name.replace("StrangeUtaGame", "manifest", 1).replace(".zip", ".json")
+
     for source_id, zip_url in args.urls:
         prefix = zip_url.rsplit("/", 1)[0]
-        manifest_url = f"{prefix}/manifest-v{args.target_version}.json"
+        manifest_url = f"{prefix}/{manifest_filename}"
         log.info("[%s] 尝试拉取 manifest: %s", source_id, manifest_url)
         try:
             resp = requests.get(

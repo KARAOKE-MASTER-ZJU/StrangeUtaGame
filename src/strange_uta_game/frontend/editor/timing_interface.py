@@ -4903,9 +4903,9 @@ class EditorInterface(QWidget):
             if any(c.total_timing_points > 0 for c in s.characters)
         ]
         total = len(meaningful_lines)
-        completed = sum(1 for s in meaningful_lines if s.is_fully_timed())
-        pct = int(completed / total * 100) if total > 0 else 0
-        self.lbl_progress.setText(f"行: {total} | 已完成: {completed}/{total} ({pct}%)")
+        timed = sum(1 for s in meaningful_lines if s.has_timetags)
+        pct = int(timed / total * 100) if total > 0 else 0
+        self.lbl_progress.setText(f"行: {total} | 已打轴: {timed}/{total} ({pct}%)")
 
     def refresh_lyric_display(self):
         self.preview._update_display()

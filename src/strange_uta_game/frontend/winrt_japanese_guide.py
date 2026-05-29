@@ -84,7 +84,15 @@ def _run_install_blocking(parent: Optional[QWidget]) -> bool:
 
 
 def ensure_winrt_japanese(parent: Optional[QWidget] = None) -> bool:
-    """确保 WinRT 日语注音引擎可用；必要时弹引导。返回最终是否可用。"""
+    """确保注音引擎可用；必要时弹引导。返回最终是否可用。
+
+    noWinIME / mac 变体使用 sudachi-mini 作为主引擎，无需 WinRT，直接返回 True。
+    """
+    from strange_uta_game.__version__ import VARIANT
+    if VARIANT:
+        # 非 main 变体：sudachi-mini 已打包，无需 WinRT，直接放行
+        return True
+
     available, reason = winrt_japanese_status()
     if available:
         return True

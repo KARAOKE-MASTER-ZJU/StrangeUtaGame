@@ -53,10 +53,16 @@ class TestParseReleaseJson:
         assert primary is not None
         assert primary.name == "StrangeUtaGame-v0.3.3.zip"
 
-    def test_pick_primary_falls_back_to_zip(self):
-        # 让 preferred name 不匹配 — 应回退到第一个 .zip
+    def test_pick_primary_preferred_not_found_returns_none(self):
+        # preferred_name 明确指定但不存在 → 返回 None（防止变体混装，不回退）
         rel = _parse_release_json(_fake_payload())
-        primary = rel.pick_primary_asset("NoSuch.zip")
+        primary = rel.pick_primary_asset("StrangeUtaGame-noWinIME-v0.3.3.zip")
+        assert primary is None
+
+    def test_pick_primary_no_preferred_falls_back_to_zip(self):
+        # 不指定 preferred_name → 正常回退到第一个 .zip
+        rel = _parse_release_json(_fake_payload())
+        primary = rel.pick_primary_asset()
         assert primary is not None
         assert primary.name.endswith(".zip")
 

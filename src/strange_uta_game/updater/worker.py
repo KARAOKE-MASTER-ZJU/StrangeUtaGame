@@ -99,12 +99,19 @@ class _CheckRunnable(QObject):
         except Exception:
             log.exception("写入 last_check_at 失败")
 
-        # 3) 比较版本
-        has_update = is_newer_version(release.version, __version__)
+        # 3) 比较版本，并确认本变体的资产已上传
+        version_newer = is_newer_version(release.version, __version__)
 
         # 4) 构造下载候选 URL（让用户在弹窗里看到 OK，下载阶段还可以接力）
         from .sources import build_release_urls
-        asset_name = self._pick_preferred_asset_name(release)
+        from ..__version__ import ASSET_NAME_TEMPLATE
+        preferred_asset_name = ASSET_NAME_TEMPLATE.format(version=release.version)
+        found_asset = release.pick_primary_asset(preferred_name=preferred_asset_name)
+        # 只有版本更新 AND 本变体的 zip 已上传到这个 release，才报有更新。
+        # 防止 noWinIME 等变体在主版本 zip 上传、但自己的 zip 尚未上传时误报有更新。
+        has_update = version_newer and (found_asset is not None)
+        asset_name = found_asset.name if found_asset else preferred_asset_name
+
         candidates: List[Tuple[SourceId, str]] = build_release_urls(
             self._settings.source_order, release.tag, asset_name
         )
@@ -139,15 +146,6 @@ class _CheckRunnable(QObject):
             all_releases=all_releases,
         )
 
-    @staticmethod
-    def _pick_preferred_asset_name(release: LatestRelease) -> str:
-        """挑选主资产名称：优先 ``StrangeUtaGame-v{ver}.zip``，否则用 release 里的第一个 zip。"""
-        from ..__version__ import ASSET_NAME_TEMPLATE
-        preferred = ASSET_NAME_TEMPLATE.format(version=release.version)
-        asset = release.pick_primary_asset(preferred_name=preferred)
-        if asset is None:
-            return preferred
-        return asset.name
 
 
 class UpdateChecker(QObject):
