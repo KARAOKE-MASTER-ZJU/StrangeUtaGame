@@ -152,6 +152,7 @@ class EditorInterface(QWidget):
 
         # 滚动模式：auto / always / never（由按钮循环切换，持久化到 config）
         self._scroll_mode: str = "auto"
+        self._update_scroll_mode_btn_style()
 
         # 自动滚动状态机：用户交互挂起 → 播放到达新行 + 3s 无交互后恢复
         self._auto_scroll_suspended: bool = False
@@ -300,7 +301,6 @@ class EditorInterface(QWidget):
         )
         self.btn_scroll_mode.clicked.connect(self._on_cycle_scroll_mode)
         theme.changed.connect(self._update_scroll_mode_btn_style)
-        self._update_scroll_mode_btn_style()
         bottom.addWidget(self.btn_scroll_mode)
 
         bottom.addStretch()
