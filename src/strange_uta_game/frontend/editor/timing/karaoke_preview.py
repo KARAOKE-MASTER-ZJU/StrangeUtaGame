@@ -577,7 +577,9 @@ class KaraokePreview(QWidget):
 
         # 行高以当前行（放大后）字体大小为准，需容纳 ruby + ruby_spacing + cp
         total_height = self._fm_current.height() + self._fm_ruby.height() + ruby_spacing + self._fm_checkpoint.height()
-        line_h = total_height * line_height_factor
+        # factor<=0 时视为极紧凑（显示最多行），避免除以零
+        safe_factor = max(0.05, line_height_factor)
+        line_h = total_height * safe_factor
         h = self.height() if self.height() > 0 else 600
         self._visible_lines = max(3, min(15, int(h / line_h)))
 
@@ -622,7 +624,8 @@ class KaraokePreview(QWidget):
         if hasattr(self, '_fm_current') and hasattr(self, '_fm_ruby'):
             total_height = (self._fm_current.height() + self._fm_ruby.height()
                            + self._ruby_spacing + self._fm_checkpoint.height())
-            line_h = total_height * getattr(self, '_line_height_factor', 1.20)
+            safe_factor = max(0.05, getattr(self, '_line_height_factor', 1.20))
+            line_h = total_height * safe_factor
             h = self.height() if self.height() > 0 else 600
             self._visible_lines = max(3, min(15, int(h / line_h)))
             self._update_scrollbar_range()
