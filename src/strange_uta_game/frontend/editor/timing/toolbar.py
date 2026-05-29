@@ -43,6 +43,7 @@ class EditorToolBar(QFrame):
     apply_singer_clicked = pyqtSignal()
     singer_manager_clicked = pyqtSignal()
     complete_timestamp_clicked = pyqtSignal()  # 补全时间戳
+    adjust_raw_timestamp_clicked = pyqtSignal()  # 调整原始时间戳
     offset_changed = pyqtSignal(int)  # 偏移量变化（毫秒）
 
     def __init__(self, parent=None):
@@ -126,6 +127,12 @@ class EditorToolBar(QFrame):
         self.btn_complete_timestamp.setFixedHeight(32)
         self.btn_complete_timestamp.clicked.connect(self.complete_timestamp_clicked.emit)
         layout.addWidget(self.btn_complete_timestamp)
+
+        self.btn_adjust_raw_timestamp = PushButton("调整原始时间戳", self)
+        self.btn_adjust_raw_timestamp.setIcon(FIF.EDIT)
+        self.btn_adjust_raw_timestamp.setFixedHeight(32)
+        self.btn_adjust_raw_timestamp.clicked.connect(self.adjust_raw_timestamp_clicked.emit)
+        layout.addWidget(self.btn_adjust_raw_timestamp)
 
         layout.addSpacing(10)
 

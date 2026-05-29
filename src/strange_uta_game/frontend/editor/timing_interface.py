@@ -203,6 +203,7 @@ class EditorInterface(QWidget):
         self.toolbar.apply_singer_clicked.connect(self._on_apply_singer)
         self.toolbar.singer_manager_clicked.connect(self._on_singer_manager_clicked)
         self.toolbar.complete_timestamp_clicked.connect(self._on_complete_timestamp)
+        self.toolbar.adjust_raw_timestamp_clicked.connect(self._on_adjust_raw_timestamp)
         self.toolbar.offset_changed.connect(self._on_offset_changed)
         layout.addWidget(self.toolbar)
 
@@ -1981,6 +1982,79 @@ class EditorInterface(QWidget):
                 parent=self,
             )
 
+    def _on_adjust_raw_timestamp(self):
+        """调整原始时间戳功能入口 — 弹出输入框，将所有原始时间戳整体偏移指定毫秒数"""
+        if not self._project:
+            InfoBar.warning(
+                title="无项目",
+                content="请先创建或打开项目",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+            return
+
+        from PyQt6.QtWidgets import QInputDialog
+
+        delta_ms, ok = QInputDialog.getInt(
+            self,
+            "调整原始时间戳",
+            "请输入偏移量（毫秒，范围 -9999 ~ +9999）：\n"
+            "正数：所有原始时间戳向后移；负数：向前移。",
+            value=0,
+            min=-9999,
+            max=9999,
+            step=1,
+        )
+        if not ok:
+            return
+        if delta_ms == 0:
+            InfoBar.info(
+                title="无需调整",
+                content="偏移量为 0，未做任何修改",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=2000,
+                parent=self,
+            )
+            return
+
+        project = self._project
+
+        def _mutate():
+            modified = 0
+            for sentence in project.sentences:
+                for ch in sentence.characters:
+                    if ch.check_count > 0 and ch.timestamps:
+                        ch.timestamps = [max(0, ts + delta_ms) for ts in ch.timestamps]
+                        modified += 1
+                    if ch.sentence_end_ts is not None:
+                        ch.sentence_end_ts = max(0, ch.sentence_end_ts + delta_ms)
+                    ch._update_offset_timestamps()
+                    ch.push_to_ruby()
+            if modified == 0 and all(
+                ch.sentence_end_ts is None
+                for sentence in project.sentences
+                for ch in sentence.characters
+            ):
+                return None
+            return (self._current_line_idx, self.preview._current_char_idx, None, "timetags")
+
+        ok2 = self._execute_structural_edit("调整原始时间戳", _mutate)
+        if ok2:
+            InfoBar.success(
+                title="调整完成",
+                content=f"所有原始时间戳已整体偏移 {delta_ms:+d} ms",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+
     def _execute_complete_timestamp(self, scope_types: set[str], exclude_rules: list[str], head_offset_ms: int = 150, tail_offset_ms: int = 150) -> int:
         """执行补全时间戳的核心逻辑
 
@@ -3160,12 +3234,11 @@ class EditorInterface(QWidget):
         """
         if not self._project:
             return
-        line_idx = self._current_line_idx
-        if line_idx >= len(self._project.sentences):
+        line_idx, char_idx = self._resolve_target_char()
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
             return
         sentence = self._project.sentences[line_idx]
-        char_idx = self.preview._current_char_idx
-        if char_idx >= len(sentence.characters):
+        if char_idx < 0 or char_idx >= len(sentence.characters):
             return
 
         self._execute_structural_edit(
@@ -3180,12 +3253,11 @@ class EditorInterface(QWidget):
         """F3 连词/取消连词 — toggle 当前字符的 linked_to_next 标记"""
         if not self._project:
             return
-        line_idx = self._current_line_idx
-        if line_idx >= len(self._project.sentences):
+        line_idx, char_idx = self._resolve_target_char()
+        if line_idx < 0 or line_idx >= len(self._project.sentences):
             return
         sentence = self._project.sentences[line_idx]
-        char_idx = self.preview._current_char_idx
-        if char_idx >= len(sentence.characters):
+        if char_idx < 0 or char_idx >= len(sentence.characters):
             return
 
         # 不能在最后一个字符上连词
