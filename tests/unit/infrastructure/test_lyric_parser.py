@@ -157,6 +157,66 @@ class TestApplyRubyEntries:
                 sentence.characters[i].add_timestamp(ts)
         return sentence
 
+    def test_multi_char_ruby_is_one_connective_word(self):
+        """多字 @Ruby 块=单一连词：块内全部相邻字 linked_to_next=True，
+        即使块内后字在 body 有独立 ts（如 アドベンチャー 的 ア/ド/ベ/チ 各有 ts）。
+
+        这是 round-trip 关键：导出器按 linked_to_next 切段，若按「后字有 ts
+        就断链」会把一个连词拆成 ア/ド/ベン/チャー 四条 @RubyN。
+        同时块内**无独立 body ts 的 follower（ン/ャ/ー）必须 cc=0、ruby=None**，
+        读音并入前一个 timed unit（ベ='ven'、チ='ture'）。
+        """
+        from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (
+            _apply_ruby_entries,
+            NicokaraRubyEntry,
+        )
+
+        # ア ド ベ ン チ ャ ー —— ア/ド/ベ/チ 有 body ts，ン/ャ/ー 无
+        s = self._make_sentence(
+            "アドベンチャー", [10000, 10200, 10490, None, 10770, None, None]
+        )
+        _apply_ruby_entries(
+            s,
+            [NicokaraRubyEntry(
+                kanji="アドベンチャー",
+                reading="a[00:00:20]d[00:00:49]ven[00:00:77]ture",
+            )],
+        )
+        chars = s.characters
+        # 块内 0..5 全部 link，块尾 ー(6) 不 link
+        assert [c.linked_to_next for c in chars] == [
+            True, True, True, True, True, True, False
+        ]
+        # timed unit 承载读音
+        assert "".join(p.text for p in chars[0].ruby.parts) == "a"
+        assert "".join(p.text for p in chars[1].ruby.parts) == "d"
+        assert "".join(p.text for p in chars[2].ruby.parts) == "ven"
+        assert "".join(p.text for p in chars[4].ruby.parts) == "ture"
+        # follower：cc=0、无 ruby
+        for fi in (3, 5, 6):
+            assert chars[fi].check_count == 0, f"follower {fi} 应 cc=0"
+            assert chars[fi].ruby is None, f"follower {fi} 应无 ruby"
+
+    def test_multi_kanji_ruby_links_even_with_per_char_ts(self):
+        """两汉字各有独立 body ts 时仍是连词（世界=せ/か/い）。
+
+        旧规则会因「界 有独立 ts」断链，导致导出成两条 @Ruby（世 + 界）。
+        """
+        from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (
+            _apply_ruby_entries,
+            NicokaraRubyEntry,
+        )
+
+        s = self._make_sentence("世界", [10000, 10410])
+        _apply_ruby_entries(
+            s, [NicokaraRubyEntry(kanji="世界", reading="せ[00:00:21]か[00:00:41]い")]
+        )
+        assert s.characters[0].linked_to_next is True
+        assert s.characters[1].linked_to_next is False
+        # 两字都是 timed unit，各自承载读音
+        assert s.characters[0].ruby is not None
+        assert s.characters[1].ruby is not None
+
     def test_same_kanji_different_readings_across_sentences(self):
         """同一词组在不同句子有不同读音时，应按位置范围正确匹配"""
         from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (

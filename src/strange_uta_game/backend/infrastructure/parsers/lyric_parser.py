@@ -1042,16 +1042,20 @@ def _apply_ruby_entries(sentence: Sentence, ruby_entries: List[NicokaraRubyEntry
                     sentence.characters[ci].linked_to_next = False
             else:
                 block_len = end_pos - pos
-                _distribute_reading_to_chars(sentence, pos, block_len, reading_parts)
-                # linked_to_next 判定（双条件，缺一不可）：
-                #   (1) 两字处于同一 @Ruby tag 内
-                #       —— 由本循环 range(pos, actual_end - 1) 限定边界天然保证
-                #   (2) 后字 body 没有独立 timestamp（沿用前字 ts，正文未被切开）
-                # 仅满足 (1) 不足以判 linked：同一 ruby tag 内若后字有独立 ts，
-                # 说明用户在正文里把两字切开了，两字不构成连词。
+                _distribute_reading_to_chars(
+                    sentence, pos, block_len, reading_parts, followers_cc_zero=True
+                )
+                # linked_to_next 判定（与导出语义对齐，2026-05-30 用户修订）：
+                #   一个多字 @RubyN tag **本身**就是「连词」声明，块内全部字符
+                #   构成同一个连词，无论块内后字在 body 是否有独立 timestamp。
+                #   导出器 `_collect_ruby_entries` 严格按 linked_to_next 切段，
+                #   因此要让 `@Ruby=アドベンチャー,...`/`世界,...`/`大冒険,...`
+                #   这类多字条目 round-trip 回单一条目，必须把块内相邻字全部 link，
+                #   而不能因「后字有独立 body ts」就断链（那会把一个连词拆成多条
+                #   @RubyN，如 アドベンチャー→ア/ド/ベン/チャー）。
+                #   块尾字保持 linked_to_next=False（由 range 上界 actual_end-1 保证）。
                 for ci in range(pos, actual_end - 1):
-                    next_char = sentence.characters[ci + 1]
-                    sentence.characters[ci].linked_to_next = not bool(next_char.timestamps)
+                    sentence.characters[ci].linked_to_next = True
             # 不 break：n3 spec 中一个 @Ruby entry 的区间 [pos1, pos2] 可覆盖
             # 区间内 kanji 的全部出现（同 reading）。继续向后扫描。
             start = end_pos
@@ -1062,6 +1066,8 @@ def _distribute_reading_to_chars(
     start_pos: int,
     block_len: int,
     reading_parts: List[Tuple[str, int]],
+    *,
+    followers_cc_zero: bool = False,
 ) -> None:
     """将带时间戳的 reading parts 按 body ts 边界分配到每个汉字字符。
 
@@ -1076,6 +1082,15 @@ def _distribute_reading_to_chars(
         block_len: 该 @Ruby 块覆盖的字符数（kanji 字数）
         reading_parts: [(text, offset_ms), ...]，其中 offset_ms 是该 part
                        起始相对基准 ts 的偏移（首 part offset=0）。
+        followers_cc_zero: Nicokara 专用语义（2026-05-30）。
+            True 时只把 reading 分配给「有独立 body ts 的字（timed unit）」，
+            块内**无独立 body ts 的后字（follower）一律 cc=0、ruby=None**，
+            与导出器 `_collect_ruby_entries`/`_export_sentence_with_singer`
+            的语义一致：follower 在 body 不写 ts、读音并入前一个 timed unit。
+            例：アドベンチャー body 仅 ア/ド/ベ/チ 有 ts →
+                ベ='ven'(cc1)、ン=cc0、チ='ture'(cc1)、ャ/ー=cc0，
+            而非旧均分把读音散成 ベ='v'/ン='en'/… 的伪走字。
+            False（默认，ASS/inline 多字 span 路径）保留旧的「逐字均分」行为。
     """
     if block_len <= 0 or not reading_parts:
         return
@@ -1087,6 +1102,10 @@ def _distribute_reading_to_chars(
 
     first_char = sentence.characters[start_pos]
     base_ts = first_char.timestamps[0] if first_char.timestamps else 0
+
+    if followers_cc_zero:
+        _distribute_reading_timed_units(sentence, start_pos, k, reading_parts, base_ts)
+        return
 
     # ── Step 1: 按 body ts 区间分配 parts ──
     # 计算每字的 ts 区间起点（无 body ts 的字沿用前字）
@@ -1157,6 +1176,90 @@ def _distribute_reading_to_chars(
                 new_ts.append(abs_ts)
         ch.timestamps = new_ts
         ch.set_ruby(Ruby(parts=ruby_parts))
+
+
+def _distribute_reading_timed_units(
+    sentence: Sentence,
+    start_pos: int,
+    k: int,
+    reading_parts: List[Tuple[str, int]],
+    base_ts: int,
+) -> None:
+    """Nicokara 专用：只把 reading 分给「有独立 body ts 的 timed unit」，
+    follower（块内无独立 body ts 的字）一律 cc=0、ruby=None。
+
+    与导出器对齐：follower 的读音并入前一个 timed unit（不产生伪走字分段），
+    body 端 follower 不写 ts。timed unit 可承载多个 mora（如单字 きょ+う）。
+    """
+    # timed unit 局部索引：块首字（锚点，即使无 ts）+ 所有自带 body ts 的字
+    timed: List[int] = []
+    for i in range(k):
+        ch = sentence.characters[start_pos + i]
+        if i == 0 or ch.timestamps:
+            timed.append(i)
+    timed_starts: List[int] = [
+        sentence.characters[start_pos + i].timestamps[0]
+        if sentence.characters[start_pos + i].timestamps
+        else base_ts
+        for i in timed
+    ]
+
+    # 每个 part 分给「起点 <= abs_ts 的最后一个 timed unit」
+    per_timed: List[List[Tuple[str, int]]] = [[] for _ in timed]
+    for text, offset_ms in reading_parts:
+        abs_ts = base_ts + offset_ms
+        ti = 0
+        for idx in range(len(timed)):
+            if timed_starts[idx] <= abs_ts:
+                ti = idx
+            else:
+                break
+        per_timed[ti].append((text, abs_ts))
+
+    # 某 timed unit 落空（reading 段数 < timed unit 数）→ 仅在 timed unit 间均分
+    if any(len(p) == 0 for p in per_timed):
+        full_text = "".join(t for t, _ in reading_parts)
+        m = len(timed)
+        n_text = len(full_text)
+        total_duration = reading_parts[-1][1] if len(reading_parts) > 1 else 0
+        per_timed = [[] for _ in timed]
+        for idx in range(m):
+            seg_start = (idx * n_text) // m
+            seg_end = ((idx + 1) * n_text) // m if idx < m - 1 else n_text
+            seg_text = full_text[seg_start:seg_end]
+            seg_abs_ts = base_ts + (idx * total_duration) // m
+            per_timed[idx].append((seg_text, seg_abs_ts))
+
+    timed_set = set(timed)
+
+    # 写入 timed unit
+    for li, i in enumerate(timed):
+        ch = sentence.characters[start_pos + i]
+        parts = per_timed[li]
+        local_base = ch.timestamps[0] if ch.timestamps else parts[0][1]
+        ruby_parts = [
+            RubyPart(text=text, offset_ms=abs_ts - local_base)
+            for text, abs_ts in parts
+        ]
+        ch.check_count = len(ruby_parts)
+        preserved = list(ch.timestamps)
+        new_ts: List[int] = []
+        for j, (_, abs_ts) in enumerate(parts):
+            if j == 0:
+                if preserved:
+                    new_ts.append(preserved[0])
+            else:
+                new_ts.append(abs_ts)
+        ch.timestamps = new_ts
+        ch.set_ruby(Ruby(parts=ruby_parts))
+
+    # follower：cc=0、无 ruby（读音已并入前一 timed unit）
+    for i in range(k):
+        if i in timed_set:
+            continue
+        ch = sentence.characters[start_pos + i]
+        ch.check_count = 0
+        ch.set_ruby(None)
 
 
 def _parse_nicokara_ts_str(ts_str: str) -> Optional[int]:

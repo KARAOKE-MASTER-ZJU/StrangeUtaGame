@@ -667,31 +667,23 @@ class FileLoader:
         elif clicked is btn_only_noruby:
             self._editor._auto_analyze_rubies(only_noruby=True)
         elif clicked is btn_keep:
-            self._recalc_checkpoints_from_rubies()
+            self._keep_nicokara_as_imported()
 
-    def _recalc_checkpoints_from_rubies(self):
-        """根据已有注音重算节奏点（不重新分析注音）"""
+    def _keep_nicokara_as_imported(self):
+        """完全按文件导入（纯文件信任路径）。
+
+        Nicokara 的 body + @Ruby 已无歧义地编码了每个字符的节奏点数量
+        (check_count)、句尾/演唱停顿释放 (is_sentence_end/sentence_end_ts)、
+        行尾 (is_line_end) 与连词 (linked_to_next)，解析器
+        `nicokara_result_to_sentences` 已将其全部还原为终态。
+
+        因此这里**不**调用 AutoCheckService 的 flag 驱动节奏点重算，
+        也不跑注音分析——避免用户的 auto_check 开关（check_n / 标点 /
+        空格 / 行尾等）覆盖文件里的事实，凭空增删节奏点与句尾。
+        解析即终态，这里仅确保 UI 与模型同步。
+        """
         if not self._project:
             return
-        try:
-            from strange_uta_game.backend.application import AutoCheckService
-
-            app_settings = AppSettings()
-            auto_check_flags = app_settings.get_all().get("auto_check", {})
-            user_dict = app_settings.load_effective_dictionary()
-            annotate_katakana_with_english = app_settings.get(
-                "ruby_dictionary.annotate_katakana_with_english", False
-            )
-            auto_check = AutoCheckService(
-                auto_check_flags=auto_check_flags,
-                user_dictionary=user_dict,
-                annotate_katakana_with_english=annotate_katakana_with_english,
-            )
-            auto_check.update_checkpoints_for_project(
-                self._project, preserve_ruby_segments=True
-            )
-            self._editor.refresh_lyric_display()
-            if hasattr(self._editor, "_store") and self._editor._store:
-                self._editor._store.notify("checkpoints")
-        except Exception:
-            pass
+        self._editor.refresh_lyric_display()
+        if hasattr(self._editor, "_store") and self._editor._store:
+            self._editor._store.notify("checkpoints")
