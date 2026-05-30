@@ -4438,7 +4438,9 @@ class EditorInterface(QWidget):
             Qt.Key.Key_PageDown: "PAGEDOWN",
             Qt.Key.Key_Insert: "INSERT",
             # 标点键（#11 修复：支持字面量键名，与 _KeyCaptureButton 保持一致）
-            Qt.Key.Key_Comma: ",",
+            # 逗号用占位名 COMMA，必须与 _KeyCaptureButton._build_key_name 一致，
+            # 否则配置里存的 "COMMA" 与按键事件解析结果匹配不上。
+            Qt.Key.Key_Comma: "COMMA",
             Qt.Key.Key_Period: ".",
             Qt.Key.Key_Slash: "/",
             Qt.Key.Key_Semicolon: ";",

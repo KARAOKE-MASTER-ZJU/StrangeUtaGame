@@ -347,7 +347,10 @@ class _KeyCaptureButton(PushButton):
     def _update_display(self):
         if self._captured_key:
             suffix = " (长)" if self._trigger_type == "long" else ""
-            self.setText(f"{self._captured_key}{suffix}")
+            # COMMA 是逗号键的内部占位名，显示时还原成字面 ","（组合键如
+            # "CTRL+COMMA" 也会正确显示为 "CTRL+,"）。
+            display_key = self._captured_key.replace("COMMA", ",")
+            self.setText(f"{display_key}{suffix}")
         else:
             self.setText("未设置")
 
@@ -424,7 +427,10 @@ class _KeyCaptureButton(PushButton):
             Qt.Key.Key_PageDown: "PAGEDOWN",
             Qt.Key.Key_Insert: "INSERT",
             # 标点键（#11 修复：支持字面量键名）
-            Qt.Key.Key_Comma: ",",
+            # 逗号用占位名 COMMA，避免与"主/副键"存储分隔符 "," 冲突；
+            # 显示端 _update_display 会把 COMMA 还原成 ","。运行时匹配端
+            # timing_interface._qt_key_to_name 必须使用相同的占位名。
+            Qt.Key.Key_Comma: "COMMA",
             Qt.Key.Key_Period: ".",
             Qt.Key.Key_Slash: "/",
             Qt.Key.Key_Semicolon: ";",
