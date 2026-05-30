@@ -400,7 +400,7 @@ class Sentence:
             return False
         total_pts = sum(c.total_timing_points for c in self.characters)
         if total_pts == 0:
-            return False
+            return True  # 无打轴任务的行默认已完成
         return all(c.is_fully_timed for c in self.characters)
 
     def get_timing_progress(self) -> tuple[int, int]:

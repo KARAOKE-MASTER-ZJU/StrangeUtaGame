@@ -790,7 +790,7 @@ class EditInterface(QWidget):
         sentences = self.project.sentences
         meaningful_lines = [
             s for s in sentences
-            if any(c.check_count > 0 for c in s.characters)
+            if any(c.total_timing_points > 0 for c in s.characters)
         ]
         total_lines = len(meaningful_lines)
         completed_lines = sum(1 for s in meaningful_lines if s.is_fully_timed())
@@ -801,7 +801,7 @@ class EditInterface(QWidget):
         )
 
         self.table.setRowCount(total_lines)
-        for i, sentence in enumerate(sentences):
+        for i, sentence in enumerate(meaningful_lines):
             # 1. 行号
             item_idx = QTableWidgetItem(str(i + 1))
             item_idx.setFlags(item_idx.flags() & ~Qt.ItemFlag.ItemIsEditable)

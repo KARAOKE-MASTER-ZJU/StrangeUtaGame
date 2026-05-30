@@ -515,7 +515,7 @@ class Project:
         """
         meaningful_lines = [
             s for s in self.sentences
-            if any(c.check_count > 0 for c in s.characters)
+            if any(c.total_timing_points > 0 for c in s.characters)
         ]
 
         total_chars = sum(len(s.characters) for s in meaningful_lines)
