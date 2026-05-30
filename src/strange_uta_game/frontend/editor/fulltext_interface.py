@@ -132,6 +132,9 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._show_ch_width = True
+        # 字宽（ch）统计专用度量：跟随卡拉OK主文字字体，与编辑器显示字体解耦。
+        # None 表示尚未设置，回退到编辑器自身 fontMetrics。
+        self._ch_width_fm = None
         self._line_number_area = _LineNumberArea(self)
         self._line_info_area = _LineInfoArea(self)
         self.blockCountChanged.connect(lambda _=0: self._update_width())
@@ -159,6 +162,22 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
         self._show_ch_width = show
         self._line_info_area.setVisible(show)
         self._update_width()
+
+    def set_ch_width_font(self, family: str) -> str:
+        """设置字宽统计的测量字体（跟随卡拉OK主文字字体）。
+
+        缺少全角参考字 `一` 时回退微软雅黑测量（见 font_utils）。
+        返回实际用于测量的字体族名，供界面提示显示。
+        """
+        from strange_uta_game.frontend.font_utils import make_ch_width_metrics
+
+        self._ch_width_fm, effective = make_ch_width_metrics(family)
+        self._line_info_area.update()
+        return effective
+
+    def _ch_width_metrics(self):
+        """返回字宽统计使用的度量；未设置时回退编辑器自身度量。"""
+        return self._ch_width_fm if self._ch_width_fm is not None else self.fontMetrics()
 
     def _on_update_request(self, rect, dy):
         if dy:
@@ -227,7 +246,8 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
         line_h = self.fontMetrics().height()
         area_w = self._line_info_area.width()
 
-        fm = self.fontMetrics()
+        # 字宽以卡拉OK主文字字体度量；标签文本仍用编辑器自身字体绘制。
+        fm = self._ch_width_metrics()
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 stripped = _strip_line_tags(block.text())
@@ -479,6 +499,7 @@ class RubyInterface(QWidget):
         _settings = AppSettings()
         _saved_font_size = _settings.get("fulltext_editor.font_size", 12)
         _saved_show_ch = _settings.get("fulltext_editor.show_ch_width", True)
+        self._ch_width_font = _settings.get("ui.main_font", "Microsoft YaHei")
 
         batch_layout.addWidget(CaptionLabel("字号"))
         self.spin_font = SpinBox(self)
@@ -495,6 +516,10 @@ class RubyInterface(QWidget):
         self.switch_ch_width.setMinimumWidth(50)
         self.switch_ch_width.checkedChanged.connect(self._on_ch_width_toggled)
         batch_layout.addWidget(self.switch_ch_width)
+
+        # 提示当前用于计算字宽的字体（跟随卡拉OK主文字字体）
+        self.lbl_ch_font = CaptionLabel("")
+        batch_layout.addWidget(self.lbl_ch_font)
 
         batch_layout.addStretch()
 
@@ -519,6 +544,9 @@ class RubyInterface(QWidget):
         layout.addWidget(self.text_edit, stretch=1)
 
         self.text_edit.set_show_ch_width(_saved_show_ch)
+        # 字宽统计跟随卡拉OK主文字字体（缺字回退微软雅黑测量），并提示实际字体
+        _effective_ch_font = self.text_edit.set_ch_width_font(self._ch_width_font)
+        self._update_ch_font_label(_effective_ch_font)
 
         # 底部栏：左下角信息，右下角 应用更改 / 还原 / 关闭
         action_layout = QHBoxLayout()
@@ -566,6 +594,16 @@ class RubyInterface(QWidget):
             self._refresh_display()
         elif change_type in ("rubies", "lyrics"):
             self._refresh_display()
+        elif change_type == "settings":
+            self._refresh_ch_width_font()
+
+    def _refresh_ch_width_font(self):
+        """设置变更时，重新读取卡拉OK主文字字体并应用到字宽统计。"""
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+
+        self._ch_width_font = AppSettings().get("ui.main_font", "Microsoft YaHei")
+        effective = self.text_edit.set_ch_width_font(self._ch_width_font)
+        self._update_ch_font_label(effective)
 
     def is_dirty(self) -> bool:
         """检查文本编辑器内容是否与项目数据不同"""
@@ -697,6 +735,18 @@ class RubyInterface(QWidget):
     def _on_zoom_requested(self, delta: int):
         """Alt+滚轮：调整字号 SpinBox（其 valueChanged 再驱动实际字号）。"""
         self.spin_font.setValue(self.spin_font.value() + delta)
+
+    def _update_ch_font_label(self, effective_family: str):
+        """更新字宽统计字体提示。effective_family 为实际测量所用字体族。"""
+        if effective_family and effective_family != self._ch_width_font:
+            # 所选字体缺少全角参考字形，已回退测量
+            self.lbl_ch_font.setText(f"字宽字体：{self._ch_width_font} → {effective_family}")
+            self.lbl_ch_font.setToolTip(
+                f"所选字体「{self._ch_width_font}」缺少全角参考字形，字宽改用「{effective_family}」测量"
+            )
+        else:
+            self.lbl_ch_font.setText(f"字宽字体：{effective_family}")
+            self.lbl_ch_font.setToolTip("字宽统计跟随卡拉OK主文字字体（设置 › 界面设定 › 主文字字体）")
 
     def _on_ch_width_toggled(self, checked: bool):
         self.text_edit.set_show_ch_width(checked)
