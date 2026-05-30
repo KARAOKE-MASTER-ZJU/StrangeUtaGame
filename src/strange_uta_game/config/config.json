@@ -67,6 +67,8 @@
   "ui": {
     "theme": "auto",
     "language": "zh_CN",
+    "main_font": "Microsoft YaHei",
+    "ruby_font": "Microsoft YaHei",
     "font_size": 30,
     "current_line_font_size": 30,
     "ruby_size": 15,

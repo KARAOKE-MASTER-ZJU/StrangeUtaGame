@@ -77,6 +77,8 @@ class AppSettings:
             "theme": "auto",
             "language": "zh_CN",
             "font_size": 24,
+            "main_font": "Microsoft YaHei",
+            "ruby_font": "Microsoft YaHei",
             "lyrics_alignment": "left",
             "alignment_margin": 168,
             "checkpoint_markers": {

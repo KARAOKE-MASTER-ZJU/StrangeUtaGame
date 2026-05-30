@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from qfluentwidgets import FluentIcon as FIF, PushButton, SettingCard, SettingCardGroup
 
-from ..cards import ComboSettingCard, DoubleSpinSettingCard, SpinSettingCard
+from ..cards import ComboSettingCard, DoubleSpinSettingCard, FontSettingCard, SpinSettingCard
 from ..checkpoint_marker_dialog import CheckpointMarkerDialog
 from .base import SubSettingInterface
 
@@ -25,6 +25,10 @@ class UISubInterface(SubSettingInterface):
         g = SettingCardGroup("界面设定", self.scrollWidget)
         self.card_theme = ComboSettingCard(FIF.BRUSH, "主题",
             "选择界面主题，或设为自动跟随系统切换", items=["自动", "浅色", "深色"], parent=g)
+        self.card_main_font = FontSettingCard(FIF.FONT, "主文字字体",
+            "卡拉OK预览主文字（当前行/上下文行）字体，取自系统已安装字体；同时用于全文本编辑的字宽统计", parent=g)
+        self.card_ruby_font = FontSettingCard(FIF.FONT, "注音字体",
+            "卡拉OK预览 Ruby 注音字体（节奏点标记字体固定为微软雅黑，不可更改）", parent=g)
         self.card_font_size = SpinSettingCard(FIF.FONT_SIZE, "基础字体大小",
             "非当前行的歌词字体像素大小", min_val=1, max_val=99, step=2, suffix=" px", parent=g)
         self.card_current_line_font_size = SpinSettingCard(FIF.FONT_SIZE, "当前行字体大小",
@@ -51,7 +55,8 @@ class UISubInterface(SubSettingInterface):
             self.btn_cp_markers, 0, Qt.AlignmentFlag.AlignRight)
         self.card_checkpoint_markers.hBoxLayout.addSpacing(16)
 
-        for c in [self.card_theme, self.card_font_size, self.card_current_line_font_size,
+        for c in [self.card_theme, self.card_main_font, self.card_ruby_font,
+                  self.card_font_size, self.card_current_line_font_size,
                   self.card_ruby_size, self.card_ruby_spacing, self.card_cp_size,
                   self.card_line_height_factor, self.card_alignment_margin,
                   self.card_lyrics_alignment, self.card_checkpoint_markers]:
@@ -72,6 +77,8 @@ class UISubInterface(SubSettingInterface):
 
     def connect_signals(self):
         self.card_theme.index_changed.connect(self._notify_changed)
+        self.card_main_font.value_changed.connect(self._notify_changed)
+        self.card_ruby_font.value_changed.connect(self._notify_changed)
         self.card_font_size.value_changed.connect(self._notify_changed)
         self.card_current_line_font_size.value_changed.connect(self._notify_changed)
         self.card_ruby_size.value_changed.connect(self._notify_changed)
@@ -85,6 +92,8 @@ class UISubInterface(SubSettingInterface):
         self._settings_ref = s
         theme_idx = {"auto": 0, "light": 1, "dark": 2}.get(s.get("ui.theme", "auto"), 0)
         self.card_theme.setCurrentIndex(theme_idx)
+        self.card_main_font.setValue(s.get("ui.main_font", "Microsoft YaHei"))
+        self.card_ruby_font.setValue(s.get("ui.ruby_font", "Microsoft YaHei"))
         self.card_font_size.setValue(s.get("ui.font_size", 18))
         self.card_current_line_font_size.setValue(s.get("ui.current_line_font_size", 22))
         self.card_ruby_size.setValue(s.get("ui.ruby_size", 10))
@@ -97,6 +106,8 @@ class UISubInterface(SubSettingInterface):
 
     def collect_settings(self, s):
         s.set("ui.theme", {0: "auto", 1: "light", 2: "dark"}.get(self.card_theme.currentIndex(), "auto"))
+        s.set("ui.main_font", self.card_main_font.value())
+        s.set("ui.ruby_font", self.card_ruby_font.value())
         s.set("ui.font_size", self.card_font_size.value())
         s.set("ui.current_line_font_size", self.card_current_line_font_size.value())
         s.set("ui.ruby_size", self.card_ruby_size.value())

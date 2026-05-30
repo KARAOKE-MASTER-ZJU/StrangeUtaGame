@@ -182,6 +182,54 @@ class ComboSettingCard(SettingCard):
         return self.combo.currentIndex()
 
 
+class FontSettingCard(SettingCard):
+    """字体选择设定卡片 — 点击按钮弹出带过滤器的字体选择窗口。
+
+    系统字体可能很多，下拉不便查找；按钮显示当前字体名，点击打开
+    :class:`FontPickerDialog`（Fluent 风格遮罩弹窗，支持搜索过滤与双击选用）。
+    存储 / 返回字体族名称字符串。
+    """
+
+    value_changed = pyqtSignal(str)
+
+    def __init__(self, icon, title: str, content: str, parent=None):
+        super().__init__(icon, title, content, parent)
+        self._title_text = title
+        self._family = ""
+        self.btn = PushButton("选择字体", self)
+        self.btn.setMinimumWidth(200)
+        self.btn.clicked.connect(self._on_click)
+        self.hBoxLayout.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(16)
+
+    def _on_click(self):
+        from strange_uta_game.frontend.settings.font_picker_dialog import FontPickerDialog
+
+        dlg = FontPickerDialog(self._family, title=self._title_text, parent=self.window())
+        if dlg.exec():
+            family = dlg.selected_family()
+            if family and family != self._family:
+                self._family = family
+                self.btn.setText(self._label_for(family))
+                self.value_changed.emit(family)
+
+    @staticmethod
+    def _label_for(family: str) -> str:
+        try:
+            from strange_uta_game.frontend.settings.font_picker_dialog import font_display_label
+
+            return font_display_label(family) or family
+        except Exception:
+            return family
+
+    def setValue(self, family: str):
+        self._family = family or ""
+        self.btn.setText(self._label_for(self._family) if self._family else "选择字体")
+
+    def value(self) -> str:
+        return self._family
+
+
 class BrowseSettingCard(SettingCard):
     """目录浏览设定卡片"""
 

@@ -576,8 +576,8 @@ class KaraokePreview(QWidget):
             self._alignment_margin = margin
             self.update()
 
-    def set_font_sizes(self, base_size: int, current_line_size: int = 0, ruby_size: int = 10, cp_size: int = 8, line_height_factor: float = 1.20, ruby_spacing: int = 4):
-        """设置字体大小并自动适配预览行数。
+    def set_font_sizes(self, base_size: int, current_line_size: int = 0, ruby_size: int = 10, cp_size: int = 8, line_height_factor: float = 1.20, ruby_spacing: int = 4, main_font: str = "Microsoft YaHei", ruby_font: str = "Microsoft YaHei"):
+        """设置字体大小/字体族并自动适配预览行数。
 
         Args:
             base_size: 基础字体大小（非当前行）
@@ -586,17 +586,24 @@ class KaraokePreview(QWidget):
             cp_size: 节奏点标记字体大小
             line_height_factor: 行高系数（默认1.20）
             ruby_spacing: Ruby与主文字的垂直间距（默认4px）
+            main_font: 主文字（当前行/上下文行）字体族，缺失时回退微软雅黑
+            ruby_font: Ruby 注音字体族，缺失时回退微软雅黑。
+                节奏点标记字体固定为微软雅黑，不随设置变化。
         """
+        from strange_uta_game.frontend.font_utils import resolve_font_family
+
         context_size = max(1, min(99, base_size))
         current_size = max(1, min(99, current_line_size if current_line_size > 0 else base_size + 4))
         ruby_size = max(1, min(99, ruby_size))
         cp_size = max(1, min(99, cp_size))
         line_height_factor = max(-1.0, min(5.0, line_height_factor))
         ruby_spacing = max(0, min(99, ruby_spacing))
+        main_family = resolve_font_family(main_font)
+        ruby_family = resolve_font_family(ruby_font)
 
-        self._font_current = QFont("Microsoft YaHei", current_size, QFont.Weight.Bold)
-        self._font_context = QFont("Microsoft YaHei", context_size)
-        self._font_ruby = QFont("Microsoft YaHei", ruby_size)
+        self._font_current = QFont(main_family, current_size, QFont.Weight.Bold)
+        self._font_context = QFont(main_family, context_size)
+        self._font_ruby = QFont(ruby_family, ruby_size)
         self._font_checkpoint = QFont("Microsoft YaHei", cp_size)
         self._fm_current = QFontMetrics(self._font_current)
         self._fm_context = QFontMetrics(self._font_context)
