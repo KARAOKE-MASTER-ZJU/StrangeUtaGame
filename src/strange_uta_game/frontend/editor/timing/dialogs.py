@@ -770,6 +770,10 @@ class CharEditDialog(QDialog):
         # 文本变更 → 重建行，保留已输入值
         self.edit_new_chars.textChanged.connect(self._rebuild_rows_on_text_change)
 
+        # 注册词典
+        self.chk_register = QCheckBox("将此词注册到读音词典")
+        layout.addWidget(self.chk_register)
+
         # 注音分段方式选择
         self._radio_direct, self._radio_by_char, self._radio_by_mora, ruby_split_group = _create_ruby_split_group(self)
         layout.addWidget(ruby_split_group)
@@ -790,10 +794,6 @@ class CharEditDialog(QDialog):
 
         # 初始预览
         self._update_preview()
-
-        # 注册词典
-        self.chk_register = QCheckBox("将此词注册到读音词典")
-        layout.addWidget(self.chk_register)
 
         # 按钮
         btn_layout = QHBoxLayout()
