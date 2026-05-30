@@ -605,6 +605,14 @@ class NicokaraParser:
             # body 用原始行（保留 trailing 空格），但开头空行已剥
             body_lines.append(raw_line if stripped else "")
 
+        # 去除 body 尾部的纯空行：正文与尾部 @ 标签（@Emoji/@Ruby/@Title…）之间、
+        # 或文件末尾的空行只是分隔/排版残留，不应被解析成正文空行（空 Sentence）。
+        # 注意：只 trim **尾部**——verse 之间的空行（后面还有真正正文行）仍保留。
+        # 这里 "" 仅来自纯空/纯空白行；含 ts 的停顿行（如 `[ts1] [ts2]`）stripped 非空，
+        # 存的是 raw_line（truthy），不会被误删。
+        while body_lines and not body_lines[-1]:
+            body_lines.pop()
+
         # 解析正文行
         parsed_lines = []
         for line_text in body_lines:
@@ -765,25 +773,12 @@ class NicokaraParser:
                 line_singer_key=line_singer_key,
                 char_singer_map={},
             )
-        # 保留尾随空格，仅前导空白稍后单独处理
+        # 前导/尾随空格都原样保留为文本字符（用户排版意图 + Nicokara round-trip）。
+        # 注意：timetags / char_singer_map / release_ts_map 的下标是按**含空格的**
+        # lyric_chars 计数的，text 既然保留了前导空格，下标天然与字符一一对齐，
+        # **不能**再减去前导空格数——否则会把整行的「时间戳→字符」绑定左移一格
+        # （历史 bug：曾经 text 会 strip 前导空格，故此处减偏移；改为保留后该减法成了错位源）。
         text = raw.rstrip("\r\n")
-
-        # 重新计算索引（去除前导空白）
-        leading_spaces = len("".join(lyric_chars)) - len("".join(lyric_chars).lstrip())
-        if leading_spaces > 0:
-            timetags = [
-                (ci - leading_spaces, ts) for ci, ts in timetags if ci >= leading_spaces
-            ]
-            new_singer_map: Dict[int, str] = {}
-            for ci, sk in char_singer_map.items():
-                if ci >= leading_spaces:
-                    new_singer_map[ci - leading_spaces] = sk
-            char_singer_map = new_singer_map
-            release_ts_map = {
-                ci - leading_spaces: ts
-                for ci, ts in release_ts_map.items()
-                if ci >= leading_spaces
-            }
 
         return NicokaraParsedLine(
             text=text,
@@ -896,6 +891,15 @@ def nicokara_result_to_sentences(
             singer_id=line_singer_id,
         )
 
+        # is_sentence_end（演唱停顿/释放）必须严格反映文件事实：
+        # from_text 默认把末字标为 is_sentence_end=True，但 Nicokara 行可能没有
+        # 行末释放 ts（如以「ちゃ」「many？」结尾且其后无 [ts]）。此处先全部清零，
+        # 再由下面三条 body 事实重新置位：双 ts / release_ts_map / line_end_ts。
+        # is_line_end（行结构事实）保持 from_text 的「末字为行尾」不动。
+        for _ch in sentence.characters:
+            _ch.is_sentence_end = False
+            _ch.sentence_end_ts = None
+
         # 先为所有字符按 char_singer_map 设置 singer_id（含无 ts 的字符：空格、英文词中间字符等）
         # 这样导出时能正确识别 singer 切换边界
         for char_idx, char_singer_key in parsed.char_singer_map.items():
@@ -960,6 +964,17 @@ def nicokara_result_to_sentences(
 
         # 应用 @Ruby 注音（基于文本匹配）
         _apply_ruby_entries(sentence, result.ruby_entries)
+
+        # 连读 follower 收敛 cc=0（与导出器 body「无 ts → 連読」语义一致）：
+        # 凡是「自身没有起始 ts 且没有 ruby」的字符，都是连读到前一字的 follower，
+        # 不该占自己的节奏点。覆盖 from_text 默认的 cc=1，以及 release_ts_map /
+        # line_end_ts 分支为「无起始 ts 的释放字」临时设的 cc=1。
+        # 例：ちゃ 的 ゃ、how 的 o/w、many 的 a/n/y、さん 的 ん、行首空格。
+        # 句尾释放（is_sentence_end + sentence_end_ts）与此独立：follower 仍可携带
+        # 释放 ts（total_timing_points = 0 + 1），导出时只写释放 ts、不写起始 ts。
+        for _ch in sentence.characters:
+            if not _ch.timestamps and _ch.ruby is None and _ch.check_count != 0:
+                _ch.check_count = 0
 
         # 触发 global_timestamps / global_sentence_end_ts 派生：
         # exporter 读取的是 global_* 字段，未调用 set_offset 时它们为空，

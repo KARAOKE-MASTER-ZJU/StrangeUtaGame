@@ -382,6 +382,91 @@ class TestApplyRubyEntries:
         assert s.characters[0].linked_to_next is False
 
 
+class TestNicokaraBodyModel:
+    """Nicokara body 逐字事实的解析（cc / 句尾 / 行尾 / 前导空格），不依赖 @Ruby。"""
+
+    def _sents(self, content: str):
+        from strange_uta_game.backend.infrastructure.parsers.lyric_parser import (
+            NicokaraParser,
+            nicokara_result_to_sentences,
+        )
+
+        result = NicokaraParser().parse(content)
+        return nicokara_result_to_sentences(result, {}, "singer_1")
+
+    def test_pure_kana_follower_cc_zero_line_end_not_sentence_end(self):
+        """连读 follower（无独立 ts 的纯假名，如 ちゃ 的 ゃ）：cc=0；
+        行末无释放 ts 时，末字是行尾(is_line_end) 但不是句尾(is_sentence_end)。"""
+        content = "[00:00:21]く[00:00:40]ちゃ\n"
+        s = self._sents(content)[0]
+        assert s.text == "くちゃ"
+        ch_chi = s.characters[1]  # ち：有起始 ts
+        ch_ya = s.characters[2]   # ゃ：follower
+        assert ch_chi.check_count == 1 and ch_chi.timestamps == [400]
+        assert ch_ya.check_count == 0
+        assert ch_ya.timestamps == []
+        assert ch_ya.is_line_end is True      # 行尾（结构事实）
+        assert ch_ya.is_sentence_end is False  # 非句尾（文件无释放 ts）
+        assert ch_ya.sentence_end_ts is None
+
+    def test_english_word_followers_cc_zero(self):
+        """英文词中间/结尾字母（how 的 o/w、many 的 a/n/y）：follower cc=0。"""
+        content = "[00:00:75]how [00:00:98]many?\n"
+        s = self._sents(content)[0]
+        ccs = [c.check_count for c in s.characters]
+        # h o w ' ' m a n y ?
+        assert ccs == [1, 0, 0, 0, 1, 0, 0, 0, 0]
+        assert s.characters[-1].is_line_end is True
+        assert s.characters[-1].is_sentence_end is False
+
+    def test_leading_space_keeps_timestamp_alignment(self):
+        """行首空格：保留为 cc=0 的字符，且其后字符的时间戳不被整行左移一格。"""
+        content = " [00:00:50]い[00:00:73]つ\n"
+        s = self._sents(content)[0]
+        assert s.text == " いつ"
+        assert s.characters[0].char == " "
+        assert s.characters[0].timestamps == []      # 空格不抢时间戳
+        assert s.characters[0].check_count == 0
+        assert s.characters[1].char == "い"
+        assert s.characters[1].timestamps == [500]  # い 拿到自己的 ts，未左移
+        assert s.characters[2].char == "つ"
+        assert s.characters[2].timestamps == [730]
+
+    def test_trailing_blank_lines_before_tags_not_body(self):
+        """正文与尾部 @ 标签之间、以及文件末尾的空行不应被解析为正文空行。"""
+        content = (
+            "[00:00:21]あ[00:00:40]\n"
+            "\n"
+            "\n"
+            "@Emoji=【sv1】,x.png\n"
+            "@Ruby1=愛,あい\n"
+        )
+        sents = self._sents(content)
+        assert len(sents) == 1
+        assert sents[0].text == "あ"
+
+    def test_inter_verse_blank_line_preserved(self):
+        """verse 之间的空行（后面还有正文）仍保留为空 Sentence。"""
+        content = (
+            "[00:00:21]あ[00:00:40]\n"
+            "\n"
+            "[00:01:21]い[00:01:40]\n"
+            "\n"
+            "@Ruby1=愛,あい\n"
+        )
+        sents = self._sents(content)
+        assert [s.text for s in sents] == ["あ", "", "い"]
+
+    def test_line_end_release_sets_sentence_end(self):
+        """行末有释放 ts 时，末字应为句尾并携带释放时间戳。"""
+        content = "[00:00:21]あ[00:00:40]い[00:00:60]\n"
+        s = self._sents(content)[0]
+        last = s.characters[-1]
+        assert last.is_line_end is True
+        assert last.is_sentence_end is True
+        assert last.sentence_end_ts == 600
+
+
 class TestNicokaraParserSpecCompliance:
     """SHINTA 2025 规格诊断 warning 测试（差异表 A / H）。"""
 
