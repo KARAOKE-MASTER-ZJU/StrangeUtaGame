@@ -34,7 +34,7 @@ class ShortcutSubInterface(SubSettingInterface):
         ("timestamp_down", FIF.DOWN, "时间戳-步长", "减少选中节奏点时间戳", "ALT+DOWN:short", "ALT+DOWN:short", "both", None, None, False),
         ("cycle_checkpoint", FIF.SYNC, "切换字内节奏点", "在当前字符的多个节奏点之间循环切换（Alt+→）", "ALT+RIGHT:short", "ALT+RIGHT:short", "both", None, None, False),
         ("edit_ruby", FIF.EDIT, "注音编辑", "编辑当前字符注音", "F2:short", "F2:short", "both", None, None, False),
-        ("toggle_word_join", FIF.LINK, "连词", "连词/取消连词", "F3:short", "F3:short", "both", None, None, False),
+        ("toggle_word_join", FIF.LINK, "连词", "连词/取消连词；划选多个字符时：全未连词则整段连为一个词，否则整段取消连词", "F3:short", "F3:short", "both", None, None, False),
         ("tag_now", FIF.PLAY, "打轴键", "打轴操作的按键【仅打轴模式】", "Space:short", "", "timing_only", None, None, False),
         ("tag_now_extra", FIF.PLAY, "打轴键 Extra", "打轴操作的备用按键【仅打轴模式】", "", "", "timing_only", None, None, False),
         ("tag_now_editor", FIF.PLAY, "打轴键（编辑模式）", "编辑模式下打轴：记录当前进度条时间戳至当前节奏点【仅编辑模式】", "", "", "edit_only", None, None, False),

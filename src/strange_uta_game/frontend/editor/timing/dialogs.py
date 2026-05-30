@@ -54,9 +54,15 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     CaptionLabel,
+    BodyLabel,
+    StrongBodyLabel,
+    LineEdit,
+    CheckBox,
+    ScrollArea,
+    setCustomStyleSheet,
 )
 
-from strange_uta_game.frontend.theme import theme
+from strange_uta_game.frontend.theme import theme, ThemeColors
 
 from strange_uta_game.backend.domain import (
     Character,
@@ -128,6 +134,54 @@ def _save_ruby_split_mode(radio_direct: QRadioButton, radio_by_char: QRadioButto
         _set_ruby_split_mode("char")
     else:
         _set_ruby_split_mode("mora")
+
+
+# ── 字符编辑类对话框（修改所选字符 / 编辑字符(F2) / 批量变更）统一外观 ──
+# 三窗口共用同一默认尺寸与字体层级，保证视觉一致、信息区分度高。
+CHAR_DIALOG_SIZE = (600, 700)
+_FONT_FAMILY = "Microsoft YaHei"
+
+# 字体层级（pt）：显示值 > 字符字形 > 主输入 > 字段标签/行内输入 > 说明
+FONT_DIALOG_BASE = 10      # 对话框基础字体
+FONT_VALUE_DISPLAY = 16    # 顶部只读"当前字符"显示值（最醒目，加粗）
+FONT_CHAR_GLYPH = 14       # 每字符行的字形标签（加粗）
+FONT_MAIN_INPUT = 12       # 顶部"新字符/替换为"主输入框
+FONT_FIELD_LABEL = 11      # 表单字段标签（当前字符: / 新字符: / 搜索词:）
+FONT_ROW_INPUT = 11        # 每字符行的注音/节奏点输入框
+
+
+def char_dialog_font(size: int, bold: bool = False) -> QFont:
+    """构造字符编辑类对话框统一字体。"""
+    f = QFont(_FONT_FAMILY, size)
+    f.setBold(bold)
+    return f
+
+
+def style_quick_link_button(btn: PushButton) -> None:
+    """为"快速连词/取消连词"按钮应用主题感知配色。
+
+    沿用 timing_interface 的 setCustomStyleSheet 方案：同时传入浅色 / 深色两套
+    QSS，qfluentwidgets 在主题切换时自动选用对应版本，无需手动监听 theme.changed。
+    用 accent_secondary（蓝）作为底色，使其与普通"执行/关闭"按钮区分开。
+    """
+    name = btn.objectName() or "btnQuickLink"
+    btn.setObjectName(name)
+
+    def make_qss(tc: ThemeColors) -> str:
+        bg = tc.accent_secondary
+        lum = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+        fg = "#1a1a1a" if lum > 150 else "#ffffff"
+        return (
+            f"#{name} {{ background-color: {bg.name()}; color: {fg}; border: none; }}"
+            f" #{name}:hover {{ background-color: {bg.lighter(115).name()}; color: {fg}; }}"
+            f" #{name}:pressed {{ background-color: {bg.darker(110).name()}; color: {fg}; }}"
+            f" #{name}:disabled {{ background-color: {tc.bg_hover.name()};"
+            f" color: {tc.text_disabled.name()}; }}"
+        )
+
+    setCustomStyleSheet(
+        btn, make_qss(ThemeColors(is_dark=False)), make_qss(ThemeColors(is_dark=True))
+    )
 
 
 def parse_ruby_text(raw: str, check_count: int = 1) -> Optional[Ruby]:
@@ -206,8 +260,8 @@ class ModifyCharacterDialog(QDialog):
         self._char_rows: list[tuple[QLabel, QLineEdit, QLineEdit, QCheckBox]] = []
 
         self.setWindowTitle("修改所选字符")
-        self.resize(520, 440)
-        self.setFont(QFont("Microsoft YaHei", 10))
+        self.resize(*CHAR_DIALOG_SIZE)
+        self.setFont(char_dialog_font(FONT_DIALOG_BASE))
 
         layout = QVBoxLayout(self)
 
@@ -216,12 +270,18 @@ class ModifyCharacterDialog(QDialog):
         current_text = "".join(c.char for c in chars)
 
         top_form = QFormLayout()
-        lbl_current = QLabel(current_text)
-        lbl_current.setStyleSheet("font-size: 16px; font-weight: bold;")
-        top_form.addRow("当前选中字符:", lbl_current)
-        self.edit_new_chars = QLineEdit(current_text)
+        lbl_current = StrongBodyLabel(current_text)
+        lbl_current.setFont(char_dialog_font(FONT_VALUE_DISPLAY, bold=True))
+        lbl_cur_label = BodyLabel("当前选中字符:")
+        lbl_cur_label.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        top_form.addRow(lbl_cur_label, lbl_current)
+        self.edit_new_chars = LineEdit(self)
+        self.edit_new_chars.setText(current_text)
         self.edit_new_chars.setPlaceholderText("输入新字符")
-        top_form.addRow("新字符:", self.edit_new_chars)
+        self.edit_new_chars.setFont(char_dialog_font(FONT_MAIN_INPUT))
+        lbl_new_label = BodyLabel("新字符:")
+        lbl_new_label.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        top_form.addRow(lbl_new_label, self.edit_new_chars)
         layout.addLayout(top_form)
 
         # 字符级编辑区标题
@@ -229,8 +289,9 @@ class ModifyCharacterDialog(QDialog):
         layout.addWidget(hint)
 
         # Scroll area with per-char rows
-        scroll = QScrollArea(self)
+        scroll = ScrollArea(self)
         scroll.setWidgetResizable(True)
+        scroll.enableTransparentBackground()
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(4, 4, 4, 4)
@@ -248,9 +309,19 @@ class ModifyCharacterDialog(QDialog):
         # 文本变更 → 重建行，保留已输入值
         self.edit_new_chars.textChanged.connect(self._rebuild_rows_on_text_change)
 
-        # 注册词典
-        self.chk_register = QCheckBox("将此词注册到读音词典")
-        layout.addWidget(self.chk_register)
+        # 注册词典 + 快速连词
+        register_row = QHBoxLayout()
+        self.chk_register = CheckBox("将此词注册到读音词典")
+        register_row.addWidget(self.chk_register)
+        register_row.addStretch()
+        self.btn_toggle_linked = PushButton("快速连词/取消连词", self)
+        self.btn_toggle_linked.setToolTip(
+            "若全部未连词，则将除最后一个字符外的向后连词全部勾选；否则全部取消连词"
+        )
+        self.btn_toggle_linked.clicked.connect(self._on_toggle_all_linked)
+        style_quick_link_button(self.btn_toggle_linked)
+        register_row.addWidget(self.btn_toggle_linked)
+        layout.addLayout(register_row)
 
         # 注音分段方式选择
         self._radio_direct, self._radio_by_char, self._radio_by_mora, ruby_split_group = _create_ruby_split_group(self)
@@ -269,6 +340,7 @@ class ModifyCharacterDialog(QDialog):
 
         # 初始预览
         self._update_preview()
+        self._update_toggle_linked_enabled()
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -309,15 +381,19 @@ class ModifyCharacterDialog(QDialog):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(6)
-        lbl = QLabel(char_str)
+        lbl = StrongBodyLabel(char_str)
         lbl.setFixedWidth(32)
-        lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
-        edit_ruby = QLineEdit(ruby_str)
+        lbl.setFont(char_dialog_font(FONT_CHAR_GLYPH, bold=True))
+        edit_ruby = LineEdit(row_widget)
+        edit_ruby.setText(ruby_str)
         edit_ruby.setPlaceholderText("注音（逗号分隔多 RubyPart）")
-        edit_check = QLineEdit(check_str)
+        edit_ruby.setFont(char_dialog_font(FONT_ROW_INPUT))
+        edit_check = LineEdit(row_widget)
+        edit_check.setText(check_str)
         edit_check.setPlaceholderText("节奏点")
         edit_check.setFixedWidth(64)
-        chk_linked = QCheckBox("向后连词")
+        edit_check.setFont(char_dialog_font(FONT_ROW_INPUT))
+        chk_linked = CheckBox("向后连词")
         chk_linked.setChecked(bool(linked))
         chk_linked.setToolTip(
             "连接到下一字符（末字/行尾不可连词，提交时将跳过并提示；句尾=停顿点，允许连词）"
@@ -353,9 +429,24 @@ class ModifyCharacterDialog(QDialog):
             self._append_char_row(ch, r_val, c_val, l_val)
         # 更新预览
         self._update_preview()
+        self._update_toggle_linked_enabled()
 
     def _on_row_user_edited(self, _text: str):
         """用户手动编辑行时更新预览"""
+        self._update_preview()
+
+    def _update_toggle_linked_enabled(self):
+        """字符数 <= 1 时禁用快速连词按钮。"""
+        self.btn_toggle_linked.setEnabled(len(self._char_rows) > 1)
+
+    def _on_toggle_all_linked(self):
+        """快速连词/取消连词：全部未连词→除末字外全部连词；否则→全部取消连词。"""
+        rows = self._char_rows
+        if len(rows) <= 1:
+            return
+        all_unlinked = all(not row[3].isChecked() for row in rows)
+        for i, row in enumerate(rows):
+            row[3].setChecked(all_unlinked and i < len(rows) - 1)
         self._update_preview()
 
     def _update_preview(self):
@@ -715,8 +806,8 @@ class CharEditDialog(QDialog):
         self._char_rows: list[tuple[QLabel, QLineEdit, QLineEdit, QCheckBox]] = []
 
         self.setWindowTitle("编辑字符")
-        self.resize(520, 550)
-        self.setFont(QFont("Microsoft YaHei", 10))
+        self.resize(*CHAR_DIALOG_SIZE)
+        self.setFont(char_dialog_font(FONT_DIALOG_BASE))
 
         layout = QVBoxLayout(self)
 
@@ -734,15 +825,21 @@ class CharEditDialog(QDialog):
             display = ch.char
 
         top_form = QFormLayout()
-        lbl_current = QLabel(display)
-        lbl_current.setStyleSheet("font-size: 16px; font-weight: bold;")
-        top_form.addRow("当前字符:", lbl_current)
+        lbl_current = StrongBodyLabel(display)
+        lbl_current.setFont(char_dialog_font(FONT_VALUE_DISPLAY, bold=True))
+        lbl_cur_label = BodyLabel("当前字符:")
+        lbl_cur_label.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        top_form.addRow(lbl_cur_label, lbl_current)
         # 新字符输入框只包含字符本身，不包含 " + "
-        self.edit_new_chars = QLineEdit("".join(
+        self.edit_new_chars = LineEdit(self)
+        self.edit_new_chars.setText("".join(
             sentence.characters[i].char for i in range(word_start, word_end)
         ))
         self.edit_new_chars.setPlaceholderText("输入新字符")
-        top_form.addRow("新字符:", self.edit_new_chars)
+        self.edit_new_chars.setFont(char_dialog_font(FONT_MAIN_INPUT))
+        lbl_new_label = BodyLabel("新字符:")
+        lbl_new_label.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        top_form.addRow(lbl_new_label, self.edit_new_chars)
         layout.addLayout(top_form)
 
         # 字符级编辑区标题
@@ -750,8 +847,9 @@ class CharEditDialog(QDialog):
         layout.addWidget(hint)
 
         # Scroll area with per-char rows
-        scroll = QScrollArea(self)
+        scroll = ScrollArea(self)
         scroll.setWidgetResizable(True)
+        scroll.enableTransparentBackground()
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(4, 4, 4, 4)
@@ -770,9 +868,19 @@ class CharEditDialog(QDialog):
         # 文本变更 → 重建行，保留已输入值
         self.edit_new_chars.textChanged.connect(self._rebuild_rows_on_text_change)
 
-        # 注册词典
-        self.chk_register = QCheckBox("将此词注册到读音词典")
-        layout.addWidget(self.chk_register)
+        # 注册词典 + 快速连词
+        register_row = QHBoxLayout()
+        self.chk_register = CheckBox("将此词注册到读音词典")
+        register_row.addWidget(self.chk_register)
+        register_row.addStretch()
+        self.btn_toggle_linked = PushButton("快速连词/取消连词", self)
+        self.btn_toggle_linked.setToolTip(
+            "若全部未连词，则将除最后一个字符外的向后连词全部勾选；否则全部取消连词"
+        )
+        self.btn_toggle_linked.clicked.connect(self._on_toggle_all_linked)
+        style_quick_link_button(self.btn_toggle_linked)
+        register_row.addWidget(self.btn_toggle_linked)
+        layout.addLayout(register_row)
 
         # 注音分段方式选择
         self._radio_direct, self._radio_by_char, self._radio_by_mora, ruby_split_group = _create_ruby_split_group(self)
@@ -794,6 +902,7 @@ class CharEditDialog(QDialog):
 
         # 初始预览
         self._update_preview()
+        self._update_toggle_linked_enabled()
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -834,15 +943,19 @@ class CharEditDialog(QDialog):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(6)
-        lbl = QLabel(char_str)
+        lbl = StrongBodyLabel(char_str)
         lbl.setFixedWidth(32)
-        lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
-        edit_ruby = QLineEdit(ruby_str)
+        lbl.setFont(char_dialog_font(FONT_CHAR_GLYPH, bold=True))
+        edit_ruby = LineEdit(row_widget)
+        edit_ruby.setText(ruby_str)
         edit_ruby.setPlaceholderText("注音（逗号分隔多 RubyPart）")
-        edit_check = QLineEdit(check_str)
+        edit_ruby.setFont(char_dialog_font(FONT_ROW_INPUT))
+        edit_check = LineEdit(row_widget)
+        edit_check.setText(check_str)
         edit_check.setPlaceholderText("节奏点")
         edit_check.setFixedWidth(64)
-        chk_linked = QCheckBox("向后连词")
+        edit_check.setFont(char_dialog_font(FONT_ROW_INPUT))
+        chk_linked = CheckBox("向后连词")
         chk_linked.setChecked(bool(linked))
         chk_linked.setToolTip(
             "连接到下一字符（末字/行尾不可连词，提交时将跳过并提示；句尾=停顿点，允许连词）"
@@ -878,9 +991,24 @@ class CharEditDialog(QDialog):
             self._append_char_row(ch, r_val, c_val, l_val)
         # 更新预览
         self._update_preview()
+        self._update_toggle_linked_enabled()
 
     def _on_row_user_edited(self, _text: str):
         """用户手动编辑行时更新预览"""
+        self._update_preview()
+
+    def _update_toggle_linked_enabled(self):
+        """字符数 <= 1 时禁用快速连词按钮。"""
+        self.btn_toggle_linked.setEnabled(len(self._char_rows) > 1)
+
+    def _on_toggle_all_linked(self):
+        """快速连词/取消连词：全部未连词→除末字外全部连词；否则→全部取消连词。"""
+        rows = self._char_rows
+        if len(rows) <= 1:
+            return
+        all_unlinked = all(not row[3].isChecked() for row in rows)
+        for i, row in enumerate(rows):
+            row[3].setChecked(all_unlinked and i < len(rows) - 1)
         self._update_preview()
 
     def _update_preview(self):

@@ -27,6 +27,11 @@ from qfluentwidgets import (
     PushButton,
     PrimaryPushButton,
     CaptionLabel,
+    BodyLabel,
+    StrongBodyLabel,
+    LineEdit,
+    CheckBox,
+    ScrollArea,
 )
 from typing import Optional, List, Tuple
 from copy import deepcopy
@@ -67,27 +72,43 @@ class BulkChangeDialog(QDialog):
         # 执行后的失败项汇总：(sentence_index, abs_char_idx, char, reason)
         self._linked_failures: List[Tuple[int, int, str, str]] = []
 
+        from strange_uta_game.frontend.editor.timing.dialogs import (
+            CHAR_DIALOG_SIZE,
+            char_dialog_font,
+            FONT_DIALOG_BASE,
+            FONT_MAIN_INPUT,
+            FONT_FIELD_LABEL,
+        )
+
         self.setWindowTitle("批量变更")
-        self.resize(520, 480)
-        self.setFont(QFont("Microsoft YaHei", 10))
+        self.resize(*CHAR_DIALOG_SIZE)
+        self.setFont(char_dialog_font(FONT_DIALOG_BASE))
 
         layout = QVBoxLayout(self)
 
         # 搜索词行
         search_row = QHBoxLayout()
-        self.edit_word = QLineEdit(initial_word)
+        self.edit_word = LineEdit(self)
+        self.edit_word.setText(initial_word)
         self.edit_word.setPlaceholderText("输入要搜索的词")
+        self.edit_word.setFont(char_dialog_font(FONT_MAIN_INPUT))
         self.lbl_match = CaptionLabel("")
-        search_row.addWidget(QLabel("搜索词:"))
+        lbl_search = BodyLabel("搜索词:")
+        lbl_search.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        search_row.addWidget(lbl_search)
         search_row.addWidget(self.edit_word, stretch=1)
         search_row.addWidget(self.lbl_match)
         layout.addLayout(search_row)
 
         # 新字符行
         top_form = QFormLayout()
-        self.edit_new_chars = QLineEdit(initial_word)
+        self.edit_new_chars = LineEdit(self)
+        self.edit_new_chars.setText(initial_word)
         self.edit_new_chars.setPlaceholderText("输入替换后的字符（默认=搜索词）")
-        top_form.addRow("替换为:", self.edit_new_chars)
+        self.edit_new_chars.setFont(char_dialog_font(FONT_MAIN_INPUT))
+        lbl_replace = BodyLabel("替换为:")
+        lbl_replace.setFont(char_dialog_font(FONT_FIELD_LABEL))
+        top_form.addRow(lbl_replace, self.edit_new_chars)
         layout.addLayout(top_form)
 
         hint = CaptionLabel(
@@ -98,8 +119,9 @@ class BulkChangeDialog(QDialog):
         layout.addWidget(hint)
 
         # Scroll area with per-char rows
-        scroll = QScrollArea(self)
+        scroll = ScrollArea(self)
         scroll.setWidgetResizable(True)
+        scroll.enableTransparentBackground()
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(4, 4, 4, 4)
@@ -107,9 +129,20 @@ class BulkChangeDialog(QDialog):
         scroll.setWidget(self._rows_container)
         layout.addWidget(scroll, stretch=1)
 
-        # 注册到词典
-        self.chk_register = QCheckBox("将此词注册到读音词典")
-        layout.addWidget(self.chk_register)
+        # 注册到词典 + 快速连词
+        register_row = QHBoxLayout()
+        self.chk_register = CheckBox("将此词注册到读音词典")
+        register_row.addWidget(self.chk_register)
+        register_row.addStretch()
+        self.btn_toggle_linked = PushButton("快速连词/取消连词", self)
+        self.btn_toggle_linked.setToolTip(
+            "若全部未连词，则将除最后一个字符外的向后连词全部勾选；否则全部取消连词"
+        )
+        self.btn_toggle_linked.clicked.connect(self._on_toggle_all_linked)
+        from strange_uta_game.frontend.editor.timing.dialogs import style_quick_link_button
+        style_quick_link_button(self.btn_toggle_linked)
+        register_row.addWidget(self.btn_toggle_linked)
+        layout.addLayout(register_row)
 
         # 注音分段方式选择
         from strange_uta_game.frontend.editor.timing.dialogs import _create_ruby_split_group, _save_ruby_split_mode, parse_ruby_text
@@ -180,15 +213,24 @@ class BulkChangeDialog(QDialog):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(6)
-        lbl = QLabel(char_str)
+        from strange_uta_game.frontend.editor.timing.dialogs import (
+            char_dialog_font,
+            FONT_CHAR_GLYPH,
+            FONT_ROW_INPUT,
+        )
+        lbl = StrongBodyLabel(char_str)
         lbl.setFixedWidth(32)
-        lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
-        edit_ruby = QLineEdit(ruby_str)
+        lbl.setFont(char_dialog_font(FONT_CHAR_GLYPH, bold=True))
+        edit_ruby = LineEdit(row_widget)
+        edit_ruby.setText(ruby_str)
         edit_ruby.setPlaceholderText("注音（逗号分隔多 RubyPart）")
-        edit_check = QLineEdit(check_str)
+        edit_ruby.setFont(char_dialog_font(FONT_ROW_INPUT))
+        edit_check = LineEdit(row_widget)
+        edit_check.setText(check_str)
         edit_check.setPlaceholderText("节奏点")
         edit_check.setFixedWidth(64)
-        chk_linked = QCheckBox("向后连词")
+        edit_check.setFont(char_dialog_font(FONT_ROW_INPUT))
+        chk_linked = CheckBox("向后连词")
         chk_linked.setChecked(bool(linked))
         chk_linked.setToolTip(
             "连接到下一字符（末字/行尾不可连词，提交时将跳过并提示；句尾=停顿点，允许连词）"
@@ -241,6 +283,21 @@ class BulkChangeDialog(QDialog):
         finally:
             self._suppress_row_signals = False
         # 更新预览
+        self._update_preview()
+        self._update_toggle_linked_enabled()
+
+    def _update_toggle_linked_enabled(self):
+        """字符数 <= 1 时禁用快速连词按钮。"""
+        self.btn_toggle_linked.setEnabled(len(self._char_rows) > 1)
+
+    def _on_toggle_all_linked(self):
+        """快速连词/取消连词：全部未连词→除末字外全部连词；否则→全部取消连词。"""
+        rows = self._char_rows
+        if len(rows) <= 1:
+            return
+        all_unlinked = all(not row[3].isChecked() for row in rows)
+        for i, row in enumerate(rows):
+            row[3].setChecked(all_unlinked and i < len(rows) - 1)
         self._update_preview()
 
     def _update_preview(self):

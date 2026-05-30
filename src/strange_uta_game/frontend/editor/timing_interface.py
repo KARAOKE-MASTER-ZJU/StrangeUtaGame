@@ -3312,12 +3312,42 @@ class EditorInterface(QWidget):
         )
 
     def _toggle_word_join(self):
-        """F3 连词/取消连词 — toggle 当前字符的 linked_to_next 标记"""
+        """F3 连词/取消连词。
+
+        单选：toggle 当前字符的 linked_to_next（保持旧行为）。
+        多选（划选多个字符）：沿用"快速连词/取消连词"逻辑 ——
+        若选区内所有字符的 linked_to_next 均为 False，则把除最后一个被选中字符外
+        的 linked_to_next 都置为 True（将选区连成一个词）；否则把选区内所有字符的
+        linked_to_next 都置为 False。
+        """
         if not self._project:
             return
-        line_idx, char_idx = self._resolve_target_char()
-        if line_idx < 0 or line_idx >= len(self._project.sentences):
+
+        # 解析选择范围（与 _on_modify_char 一致：优先划选区域，回退单字符）
+        sel_line = self.preview._focus_line_idx
+        sel_start = self.preview._focus_char_idx
+        sel_end = self.preview._focus_char_range_end
+        if sel_line >= 0 and sel_start >= 0:
+            use_line = sel_line
+            start_idx = min(sel_start, sel_end)
+            end_idx = max(sel_start, sel_end)
+        else:
+            use_line, char_idx = self._resolve_target_char()
+            start_idx = end_idx = char_idx
+
+        if use_line < 0 or use_line >= len(self._project.sentences):
             return
+        sentence = self._project.sentences[use_line]
+        if start_idx < 0 or end_idx >= len(sentence.characters):
+            return
+
+        if start_idx == end_idx:
+            self._toggle_word_join_single(use_line, start_idx)
+        else:
+            self._toggle_word_join_range(use_line, start_idx, end_idx)
+
+    def _toggle_word_join_single(self, line_idx: int, char_idx: int):
+        """单字符连词：toggle 该字符的 linked_to_next。"""
         sentence = self._project.sentences[line_idx]
         if char_idx < 0 or char_idx >= len(sentence.characters):
             return
@@ -3351,6 +3381,44 @@ class EditorInterface(QWidget):
         InfoBar.success(
             title="连词" if new_linked else "取消连词",
             content=f"已{'连接' if new_linked else '断开'}「{sentence.chars[char_idx]}」与「{sentence.chars[char_idx + 1]}」",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+            parent=self,
+        )
+
+    def _toggle_word_join_range(self, line_idx: int, start_idx: int, end_idx: int):
+        """多字符连词：选区全未连词 → 除末字外全部连词；否则全部取消连词。"""
+        sentence = self._project.sentences[line_idx]
+        chars = sentence.characters
+        selected = chars[start_idx : end_idx + 1]
+        # 选区内全部 linked_to_next 为 False → 连词；否则 → 全部取消
+        link = all(not c.linked_to_next for c in selected)
+
+        def _mutate():
+            if link:
+                # 除最后一个被选中字符外，全部置为连词（末字保持 False，避免连到选区外）
+                for i in range(start_idx, end_idx):
+                    chars[i].linked_to_next = True
+            else:
+                for i in range(start_idx, end_idx + 1):
+                    chars[i].linked_to_next = False
+            return (line_idx, start_idx, 0, "checkpoints")
+
+        self._execute_structural_edit(
+            "连词" if link else "取消连词",
+            _mutate,
+            move_cp=False,
+        )
+
+        InfoBar.success(
+            title="连词" if link else "取消连词",
+            content=(
+                f"已将第 {line_idx + 1} 句 第 {start_idx + 1}-{end_idx + 1} 字连为一个词"
+                if link
+                else f"已断开第 {line_idx + 1} 句 第 {start_idx + 1}-{end_idx + 1} 字的连词"
+            ),
             orient=Qt.Orientation.Horizontal,
             isClosable=True,
             position=InfoBarPosition.TOP,
