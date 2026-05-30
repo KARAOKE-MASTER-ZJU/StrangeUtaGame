@@ -28,26 +28,199 @@ from strange_uta_game.backend.domain import (
     Ruby,
 )
 from strange_uta_game.backend.domain.models import RubyPart
-from strange_uta_game.backend.infrastructure.parsers.inline_format import (
-    align_ruby_parts_to_checkpoints,
-    split_ruby_for_checkpoints,
+from strange_uta_game.backend.infrastructure.parsers.annotated_text import (
+    parse_timed_line,
 )
 from strange_uta_game.frontend.theme import theme
 import re
 
 
-def _build_ruby_from_text(
-    raw: str, check_count: int, is_sentence_end: bool
-) -> Optional[Ruby]:
-    """将用户输入整串 ruby 文本构造为 Ruby 对象。
+# ─────────────────────────────────────────────────────────────────────────
+# 行(连词组) ↔ 6 列单元格 的「扁平」互转
+#
+# 模型：一行 = 一段扁平 checkpoint 序列。
+#   - Checkpoint 列：每字符一个计数，逗号分隔（如 "2,2,1"）；累加 = 全行 cp 总数 K
+#   - 注音 列：每个 RubyPart(mora) 一段，逗号分隔，全行展平（共 K 段）；空段=无注音
+#   - 时间标签 列：每个 checkpoint 一段时间戳，逗号分隔，按序对齐到 K 个 cp；
+#     允许空段（缺省/未打轴）；句尾释放点附在第 K 段之后
+#   - 演唱者 列：每字符一个名字，逗号分隔
+# 写回：把各列重新拼成项目「带时间戳行内格式」(annotated_text)，交由
+#   parse_timed_line 解析为 Character —— 绝不在前端重切 mora。
+# ─────────────────────────────────────────────────────────────────────────
 
-    入参: raw 用户输入字符串; check_count 目标分段数; is_sentence_end 是否句尾。
-    出参: 构造好的 Ruby，若 raw 为空或 align 后全空返回 None。
+# 会破坏行内块串结构的元字符；字符/注音含这些时退回直接构造，避免解析串损坏。
+_DANGER_CHARS = set("{}|,[]>")
 
-    使用 parse_ruby_text 函数统一处理注音分段。
+
+def _row_cells_from_chars(
+    chars: List[Character], singer_map: dict
+) -> tuple[str, str, str, str, str, str]:
+    """一行的 Character 列表 → 6 列单元格文本（与 _build_row_chars 互逆）。"""
+    char_str = "".join(c.char for c in chars)
+    cp_str = ",".join(str(c.check_count) for c in chars)
+
+    # 注音：每 cp 一段，全行展平；整行无注音则留空
+    has_ruby = any(c.ruby for c in chars)
+    ruby_segs: List[str] = []
+    for c in chars:
+        parts = c.ruby.parts if c.ruby else []
+        for j in range(c.check_count):
+            ruby_segs.append(parts[j].text if j < len(parts) else "")
+    ruby_str = ",".join(ruby_segs) if has_ruby else ""
+
+    # 时间标签：每 cp 一段全局时间戳 + 句尾释放点；整行无时间戳则留空
+    time_segs: List[str] = []
+    any_ts = False
+    for c in chars:
+        for j in range(c.check_count):
+            if j < len(c.global_timestamps):
+                time_segs.append(_fmt_time(c.global_timestamps[j]))
+                any_ts = True
+            else:
+                time_segs.append("")
+    last = chars[-1]
+    if last.is_sentence_end:
+        if last.global_sentence_end_ts is not None:
+            time_segs.append(_fmt_time(last.global_sentence_end_ts))
+            any_ts = True
+        else:
+            time_segs.append("")
+    time_str = ",".join(time_segs) if any_ts else ""
+
+    end_str = "是" if last.is_sentence_end else ""
+    singer_str = ",".join(
+        (singer_map.get(c.singer_id, "") if c.singer_id else "") for c in chars
+    )
+    return char_str, ruby_str, cp_str, end_str, time_str, singer_str
+
+
+def _row_to_block_str(
+    glyphs: List[str],
+    mora_flat: List[str],
+    ts_flat_global: List[Optional[int]],
+    check_counts: List[int],
+    is_sentence_end: bool,
+) -> str:
+    """把一行扁平列数据拼成 annotated_text 的 ``{原文||...}`` 带时间戳块串。
+
+    每字符按其 check_count 取走对应的 mora / 时间戳段，组成
+    ``[ts]mora|[ts]mora`` 段；缺省时间戳用占位 ``[T]``；句尾释放点贴在末字段尾。
     """
-    from strange_uta_game.frontend.editor.timing.dialogs import parse_ruby_text
-    return parse_ruby_text(raw, check_count)
+    total = sum(check_counts)
+    segs: List[str] = []
+    offset = 0
+    for i, _g in enumerate(glyphs):
+        k = check_counts[i]
+        slots: List[str] = []
+        for j in range(k):
+            idx = offset + j
+            ts = ts_flat_global[idx] if idx < len(ts_flat_global) else None
+            mora = mora_flat[idx] if idx < len(mora_flat) else ""
+            tok = f"[{_fmt_time(ts)}]" if ts is not None else "[T]"
+            slots.append(tok + mora)
+        seg = "|".join(slots)
+        if is_sentence_end and i == len(glyphs) - 1:
+            rel = ts_flat_global[total] if total < len(ts_flat_global) else None
+            seg += f"[>{_fmt_time(rel)}]" if rel is not None else "[>T]"
+        segs.append(seg)
+        offset += k
+    return "{" + "".join(glyphs) + "||" + ",".join(segs) + "}"
+
+
+def _build_row_chars_direct(
+    glyphs: List[str],
+    check_counts: List[int],
+    mora_flat: List[str],
+    ts_flat_global: List[Optional[int]],
+    is_sentence_end: bool,
+    global_offset: int,
+    singer_ids: List[str],
+) -> List[Character]:
+    """直接构造一行 Character（与 parse_timed_line 等价，用于含元字符的安全回退）。
+
+    时间戳与解析器行为一致：遇到首个缺省(None)即停止（其后 cp 视为未打轴）。
+    """
+    total = sum(check_counts)
+    chars: List[Character] = []
+    offset = 0
+    for i, g in enumerate(glyphs):
+        k = check_counts[i]
+        mora_i = mora_flat[offset : offset + k]
+        ts_i = ts_flat_global[offset : offset + k]
+        timestamps: List[int] = []
+        for t in ts_i:
+            if t is None:
+                break
+            timestamps.append(max(0, t - global_offset))
+        is_end = is_sentence_end and i == len(glyphs) - 1
+        end_ts = None
+        if is_end:
+            rel = ts_flat_global[total] if total < len(ts_flat_global) else None
+            end_ts = max(0, rel - global_offset) if rel is not None else None
+        ch = Character(
+            char=g,
+            check_count=k,
+            timestamps=timestamps,
+            singer_id=singer_ids[i],
+            is_sentence_end=is_end,
+            sentence_end_ts=end_ts,
+        )
+        parts = [RubyPart(text=m) for m in mora_i]
+        if any(m for m in mora_i):
+            ch.set_ruby(Ruby(parts=parts))
+        ch.push_to_ruby()
+        chars.append(ch)
+        offset += k
+    for k in range(len(chars) - 1):
+        chars[k].linked_to_next = True
+    return chars
+
+
+def _build_row_chars(
+    data: dict, global_offset: int, default_singer_id: str
+) -> List[Character]:
+    """把一行解析后的扁平数据构造成 Character 列表。
+
+    常规行：拼成带时间戳块串 → parse_timed_line（复用经测试的解析引擎）；
+    字符/注音含行内格式元字符时回退到直接构造，避免串损坏。
+    时间戳遇到中间空洞即截断（其后时间戳丢弃）——domain 紧凑存储不支持中间空洞。
+    """
+    glyphs = data["glyphs"]
+    mora_flat = data["mora_flat"]
+    ts_flat = data["ts_flat"]
+    ccs = data["check_counts"]
+    is_se = data["is_sentence_end"]
+    singer_ids = data["singer_ids"]
+
+    if _row_needs_direct(glyphs, mora_flat):
+        chars = _build_row_chars_direct(
+            glyphs, ccs, mora_flat, ts_flat, is_se, global_offset, singer_ids
+        )
+    else:
+        block = _row_to_block_str(glyphs, mora_flat, ts_flat, ccs, is_se)
+        chars, _ = parse_timed_line(
+            block, default_singer_id=default_singer_id, offset_ms=global_offset
+        )
+        if len(chars) != len(glyphs):
+            # 解析结果与预期字符数不符（异常字符），安全回退
+            chars = _build_row_chars_direct(
+                glyphs, ccs, mora_flat, ts_flat, is_se, global_offset, singer_ids
+            )
+        else:
+            for i, ch in enumerate(chars):
+                ch.singer_id = singer_ids[i]
+
+    for ch in chars:
+        ch.is_line_end = False  # 真正行尾由 _fix_sentence_character_invariants 设定
+        ch.push_to_ruby()
+    return chars
+
+
+def _row_needs_direct(glyphs: List[str], mora_flat: List[str]) -> bool:
+    """字符或注音含行内格式元字符时，需走直接构造而非串解析。"""
+    if any(g in _DANGER_CHARS for g in glyphs):
+        return True
+    return any(any(ch in _DANGER_CHARS for ch in m) for m in mora_flat)
 
 
 def _fmt_time(ms: int) -> str:
@@ -122,11 +295,7 @@ def _fix_sentence_character_invariants(sentence: Sentence):
     # 末尾字符始终是行尾
     if not last_character.is_line_end:
         last_character.is_line_end = True
-    # 默认末尾也是句尾（如果之前不是句尾，添加句尾并+1 checkpoint）
-    if not last_character.is_sentence_end:
-        last_character.is_sentence_end = True
-    if last_character.check_count < 1:
-        last_character.set_check_count(1)
+    # 末尾字符不能向后连词
     last_character.linked_to_next = False
     last_character.push_to_ruby()
 
@@ -153,11 +322,13 @@ class LineDetailDialog(QDialog):
 
         # 提示
         hint = QLabel(
-            "连词合并为一行，注音/Checkpoint/演唱者用逗号分隔对应各字符\n"
+            "连词合并为一行；除「字符」外各列均用逗号「,」分隔\n"
             "双击可编辑「字符」「注音」「Checkpoint数」「句尾」「时间标签」「演唱者」列\n"
-            "句尾列填写「是」标记为句尾（独立记录释放时间），留空取消\n"
-            "注音列：单字符注音整串填写；自动按 mora / 字符拆分到 Checkpoint，"
-            "分段数不匹配时会自动合并/补空格，不会报错"
+            "Checkpoint数：每字符一项（如 2,2,1），累加为本行节奏点总数 K\n"
+            "注音：每个 mora 一段、全行展平，段数须等于 K；留空表示整行无注音，不再自动重切\n"
+            "时间标签：每个节奏点一段、按序对齐到 K 个节奏点，允许空段(,,)留空；"
+            "句尾释放点写在最后；总数不得超过 K(+句尾1)\n"
+            "句尾列填写「是」标记为句尾（独立记录释放时间），留空取消；演唱者每字符一项"
         )
         self.vbox.addWidget(hint)
 
@@ -234,58 +405,10 @@ class LineDetailDialog(QDialog):
 
         self.table.setRowCount(len(groups))
         for row, group in enumerate(groups):
-            # 字符 (editable)
-            group_text = "".join(characters[ci].char for ci in group)
-            item_char = QTableWidgetItem(group_text)
-            self.table.setItem(row, 0, item_char)
-
-            # 注音 (editable) — 连词用逗号分隔
-            rubies_text: list[str] = []
-            for ci in group:
-                r = characters[ci].ruby
-                rubies_text.append(r.text if r else "")
-            if len(group) > 1:
-                ruby_display = ",".join(rubies_text)
-            else:
-                ruby_display = rubies_text[0]
-            item_ruby = QTableWidgetItem(ruby_display)
-            self.table.setItem(row, 1, item_ruby)
-
-            # Checkpoint数 (editable) — 连词用逗号分隔
-            cp_vals: list[str] = []
-            for ci in group:
-                cp_vals.append(str(characters[ci].check_count))
-            cp_display = ",".join(cp_vals) if len(group) > 1 else cp_vals[0]
-            item_cp = QTableWidgetItem(cp_display)
-            self.table.setItem(row, 2, item_cp)
-
-            # 句尾 (editable) — 组内最后字符
-            last_ci = group[-1]
-            is_end = "是" if characters[last_ci].is_sentence_end else ""
-            item_end = QTableWidgetItem(is_end)
-            self.table.setItem(row, 3, item_end)
-
-            # 时间标签 (editable) — 使用全局偏移后的时间戳（所见即所得）
-            tag_parts: list[str] = []
-            for ci in group:
-                timetags = self.sentence.get_global_timetags_for_char(ci)
-                tag_texts = [_fmt_time(t) for t in timetags]
-                tag_parts.append(", ".join(tag_texts) if tag_texts else "")
-            time_display = " | ".join(tag_parts) if len(group) > 1 else tag_parts[0]
-            item_time = QTableWidgetItem(time_display)
-            self.table.setItem(row, 4, item_time)
-
-            # 演唱者 (editable) — per-char singer，连词逗号分隔
-            singer_parts: list[str] = []
-            for ci in group:
-                sid = characters[ci].singer_id
-                singer_parts.append(singer_map.get(sid, "") if sid else "")
-            if len(group) > 1:
-                singer_display = ",".join(singer_parts)
-            else:
-                singer_display = singer_parts[0]
-            item_singer = QTableWidgetItem(singer_display)
-            self.table.setItem(row, 5, item_singer)
+            chars = [characters[ci] for ci in group]
+            cells = _row_cells_from_chars(chars, singer_map)
+            for col, text in enumerate(cells):
+                self.table.setItem(row, col, QTableWidgetItem(text))
 
         self.table.blockSignals(False)
 
@@ -336,7 +459,7 @@ class LineDetailDialog(QDialog):
 
         new_character = Character(
             char="　",
-            check_count=1,
+            check_count=0,
             singer_id=self.sentence.singer_id,
         )
         self.sentence.characters.insert(insert_index, new_character)
@@ -422,8 +545,12 @@ class LineDetailDialog(QDialog):
         super().keyPressEvent(a0)
 
     def _on_save(self):
-        """Save edited data back to the Sentence (supports grouped linked chars)."""
-        errors: List[str] = []
+        """Save edited data back to the Sentence.
+
+        两阶段：先把每行 6 列解析+校验为扁平数据，全部合法才整体重建该行的
+        Character；任一行校验失败则整次保存中止、不写入任何数据，保证数据合法。
+        写回经 annotated_text 带时间戳行内格式 + parse_timed_line 解析，不重切 mora。
+        """
         characters = self.sentence.characters
 
         # 获取全局偏移量（用于将用户输入的全局时间戳转换回原始时间戳）
@@ -439,224 +566,38 @@ class LineDetailDialog(QDialog):
             for s in self._project.singers:
                 name_to_id[s.name] = s.id
 
-        for row_idx, group in enumerate(self._row_groups):
-            g_len = len(group)
-
-            # --- 字符编辑 (col 0) ---
-            item_char = self.table.item(row_idx, 0)
-            if item_char:
-                new_chars = list(item_char.text().strip())
-                if len(new_chars) == g_len:
-                    for k, ci in enumerate(group):
-                        if new_chars[k] != characters[ci].char:
-                            characters[ci].char = new_chars[k]
-
-            # --- 注音编辑 (col 1) ---
-            item_ruby = self.table.item(row_idx, 1)
-            if item_ruby:
-                raw = item_ruby.text().strip()
-                if g_len > 1 and "," in raw:
-                    # 连词组：逗号分隔 per-char ruby
-                    parts = raw.split(",")
-                    for k, ci in enumerate(group):
-                        new_r_text = parts[k].strip() if k < len(parts) else ""
-                        if new_r_text:
-                            try:
-                                tgt = characters[ci]
-                                ruby_obj = _build_ruby_from_text(
-                                    new_r_text,
-                                    tgt.check_count,
-                                    tgt.is_sentence_end,
-                                )
-                                tgt.set_ruby(ruby_obj)
-                            except Exception as e:
-                                errors.append(f"字符 {ci + 1}: 注音错误 {e}")
-                        else:
-                            characters[ci].set_ruby(None)
-                else:
-                    # 单字符或无逗号的整体 ruby
-                    if raw:
-                        if g_len == 1:
-                            try:
-                                tgt = characters[group[0]]
-                                ruby_obj = _build_ruby_from_text(
-                                    raw, tgt.check_count, tgt.is_sentence_end
-                                )
-                                tgt.set_ruby(ruby_obj)
-                            except Exception as e:
-                                errors.append(f"字符 {group[0] + 1}: 注音错误 {e}")
-                        else:
-                            # 多字符无逗号：整体 ruby 分配到第一个字符
-                            try:
-                                tgt = characters[group[0]]
-                                ruby_obj = _build_ruby_from_text(
-                                    raw, tgt.check_count, tgt.is_sentence_end
-                                )
-                                tgt.set_ruby(ruby_obj)
-                            except Exception as e:
-                                errors.append(f"字符 {group[0] + 1}: 注音错误 {e}")
-                            for ci in group[1:]:
-                                characters[ci].set_ruby(None)
-                    else:
-                        # 清除组内所有 ruby
-                        for ci in group:
-                            characters[ci].set_ruby(None)
-
-            # --- Checkpoint 编辑 (col 2) ---
-            item_cp = self.table.item(row_idx, 2)
-            if item_cp:
-                raw_cp = item_cp.text().strip()
-                if g_len > 1 and "," in raw_cp:
-                    parts = raw_cp.split(",")
-                    for k, ci in enumerate(group):
-                        try:
-                            new_count = int(parts[k].strip()) if k < len(parts) else 0
-                            if new_count < 0:
-                                new_count = 0
-                            # 自动退化为无 mora 格式（注音文本保留）
-                            characters[ci].set_check_count(new_count, force=True)
-                        except ValueError:
-                            errors.append(f"字符 {ci + 1}: Checkpoint数必须为整数")
-                else:
-                    try:
-                        new_count = int(raw_cp)
-                        if new_count < 0:
-                            new_count = 0
-                        ci0 = group[0]
-                        # 自动退化为无 mora 格式（注音文本保留）
-                        characters[ci0].set_check_count(new_count, force=True)
-                    except ValueError:
-                        errors.append(f"行 {row_idx + 1}: Checkpoint数必须为整数")
-
-            # --- 句尾编辑 (col 3) ---
-            item_end = self.table.item(row_idx, 3)
-            if item_end:
-                raw_end = item_end.text().strip()
-                last_ci = group[-1]
-                new_is_sentence_end = raw_end == "是"
-                old_is_sentence_end = characters[last_ci].is_sentence_end
-                if new_is_sentence_end != old_is_sentence_end:
-                    if new_is_sentence_end:
-                        if characters[last_ci].check_count <= 0:
-                            errors.append(
-                                f"字符 {last_ci + 1}: 句尾至少需要 1 个普通节奏点"
-                            )
-                            continue
-                        characters[last_ci].is_sentence_end = True
-                    else:
-                        characters[last_ci].clear_sentence_end_ts()
-                        characters[last_ci].is_sentence_end = False
-
-            # --- 时间标签编辑 (col 4) ---
-            item_time = self.table.item(row_idx, 4)
-            if item_time:
-                raw_time = item_time.text().strip()
-                if g_len > 1:
-                    # 连词组：用 | 分隔各字符的时间标签
-                    char_time_parts = raw_time.split("|") if raw_time else []
-                    for k, ci in enumerate(group):
-                        characters[ci].clear_timestamps()
-                        part = (
-                            char_time_parts[k].strip()
-                            if k < len(char_time_parts)
-                            else ""
-                        )
-                        if not part:
-                            continue
-                        segments = [p.strip() for p in part.split(",") if p.strip()]
-                        normal_segments = segments[: characters[ci].check_count]
-                        for cp_idx, seg in enumerate(normal_segments):
-                            global_ms = _parse_time(seg)
-                            if global_ms is None:
-                                errors.append(f"字符 {ci + 1}: 无法解析 '{seg}'")
-                                continue
-                            raw_ms = global_ms - global_offset
-                            if raw_ms < 0:
-                                errors.append(
-                                    f"字符 {ci + 1}: 时间戳 '{seg}' 减去偏移后为负值"
-                                )
-                                raw_ms = 0
-                            characters[ci].add_timestamp(raw_ms, checkpoint_idx=cp_idx)
-                        if (
-                            characters[ci].is_sentence_end
-                            and len(segments) > characters[ci].check_count
-                        ):
-                            global_ms = _parse_time(segments[characters[ci].check_count])
-                            if global_ms is None:
-                                errors.append(
-                                    f"字符 {ci + 1}: 无法解析 '{segments[characters[ci].check_count]}'"
-                                )
-                            else:
-                                raw_ms = global_ms - global_offset
-                                if raw_ms < 0:
-                                    errors.append(
-                                        f"字符 {ci + 1}: 句尾时间戳减去偏移后为负值"
-                                    )
-                                    raw_ms = 0
-                                characters[ci].set_sentence_end_ts(raw_ms)
-                else:
-                    ci = group[0]
-                    characters[ci].clear_timestamps()
-                    if raw_time:
-                        segments = [p.strip() for p in raw_time.split(",") if p.strip()]
-                        normal_segments = segments[: characters[ci].check_count]
-                        for cp_idx, seg in enumerate(normal_segments):
-                            global_ms = _parse_time(seg)
-                            if global_ms is None:
-                                errors.append(f"字符 {ci + 1}: 无法解析 '{seg}'")
-                                continue
-                            raw_ms = global_ms - global_offset
-                            if raw_ms < 0:
-                                errors.append(
-                                    f"字符 {ci + 1}: 时间戳 '{seg}' 减去偏移后为负值"
-                                )
-                                raw_ms = 0
-                            characters[ci].add_timestamp(raw_ms, checkpoint_idx=cp_idx)
-                        if (
-                            characters[ci].is_sentence_end
-                            and len(segments) > characters[ci].check_count
-                        ):
-                            global_ms = _parse_time(segments[characters[ci].check_count])
-                            if global_ms is None:
-                                errors.append(
-                                    f"字符 {ci + 1}: 无法解析 '{segments[characters[ci].check_count]}'"
-                                )
-                            else:
-                                raw_ms = global_ms - global_offset
-                                if raw_ms < 0:
-                                    errors.append(
-                                        f"字符 {ci + 1}: 句尾时间戳减去偏移后为负值"
-                                    )
-                                    raw_ms = 0
-                                characters[ci].set_sentence_end_ts(raw_ms)
-
-            # --- 演唱者编辑 (col 5) ---
-            item_singer = self.table.item(row_idx, 5)
-            if item_singer:
-                raw_singer = item_singer.text().strip()
-                if g_len > 1 and "," in raw_singer:
-                    parts = raw_singer.split(",")
-                    for k, ci in enumerate(group):
-                        sname = parts[k].strip() if k < len(parts) else ""
-                        sid = name_to_id.get(sname, "") if sname else ""
-                        characters[ci].singer_id = sid
-                else:
-                    sname = raw_singer
-                    sid = name_to_id.get(sname, "") if sname else ""
-                    for ci in group:
-                        characters[ci].singer_id = sid
+        # Phase 1: 逐行解析 + 校验
+        errors: List[str] = []
+        parsed_rows: List[Optional[dict]] = []
+        for row_idx in range(len(self._row_groups)):
+            data, row_errors = self._parse_row(row_idx, name_to_id)
+            parsed_rows.append(data)
+            errors.extend(row_errors)
 
         if errors:
             InfoBar.warning(
-                title="部分解析失败",
-                content="\n".join(errors[:5]),
+                title="数据校验失败，未保存",
+                content="\n".join(errors[:8]),
                 orient=Qt.Orientation.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
-                duration=5000,
+                duration=6000,
                 parent=self,
             )
+            return
 
+        # Phase 2: 整体重建 characters（逐行经解析引擎构造后顺序拼接）
+        new_characters: List[Character] = []
+        for data in parsed_rows:
+            if data is None:
+                continue
+            new_characters.extend(
+                _build_row_chars(data, global_offset, self.sentence.singer_id)
+            )
+
+        for ch in new_characters:
+            ch.set_offset(global_offset)
+        self.sentence.characters = new_characters
         _fix_sentence_character_invariants(self.sentence)
         self._modified = True
         # Refresh the table to show saved state
@@ -671,6 +612,107 @@ class LineDetailDialog(QDialog):
             duration=2000,
             parent=self,
         )
+
+    def _parse_row(
+        self, row_idx: int, name_to_id: dict
+    ) -> tuple[Optional[dict], List[str]]:
+        """把一行 6 列解析为扁平数据并校验。
+
+        返回 (data | None, errors)。data 字段：
+          glyphs / check_counts / mora_flat / ts_flat(全局,允许None) /
+          is_sentence_end / singer_ids。任一校验失败返回 (None, errors)。
+        """
+        errors: List[str] = []
+
+        def cell(col: int) -> str:
+            item = self.table.item(row_idx, col)
+            return item.text() if item else ""
+
+        # --- 字符 (col 0) ---
+        glyphs = list(cell(0))
+        if not glyphs:
+            errors.append(f"行 {row_idx + 1}: 字符不能为空")
+            return None, errors
+        n = len(glyphs)
+
+        # --- Checkpoint (col 2) —— 每字符一项，累加得全行 cp 总数 K ---
+        cp_text = cell(2).strip()
+        cp_tokens = cp_text.split(",") if cp_text != "" else []
+        if len(cp_tokens) != n:
+            errors.append(
+                f"行 {row_idx + 1}: 节奏点列需 {n} 项（与字符数一致），当前 "
+                f"{len(cp_tokens)} 项"
+            )
+            return None, errors
+        check_counts: List[int] = []
+        for token in cp_tokens:
+            token = token.strip()
+            try:
+                check_counts.append(max(0, int(token)))
+            except ValueError:
+                errors.append(f"行 {row_idx + 1}: 节奏点 '{token}' 不是整数")
+        if errors:
+            return None, errors
+        total_cp = sum(check_counts)
+
+        # --- 句尾 (col 3) —— 末字 ---
+        is_sentence_end = cell(3).strip() == "是"
+
+        # --- 注音 (col 1) —— 全行展平，每段一个 mora；段数须 == K ---
+        ruby_text = cell(1)
+        if ruby_text.strip() == "":
+            mora_flat = [""] * total_cp
+        else:
+            mora_flat = [m.strip() for m in ruby_text.split(",")]
+            if len(mora_flat) != total_cp:
+                errors.append(
+                    f"行 {row_idx + 1}: 注音段数 {len(mora_flat)} 与节奏点总数 "
+                    f"{total_cp} 不一致"
+                )
+                return None, errors
+
+        # --- 时间标签 (col 4) —— 全行展平，按序对齐 cp，允许空段(缺省) ---
+        time_text = cell(4).strip()
+        ts_flat: List[Optional[int]] = []
+        if time_text != "":
+            segs = time_text.split(",")
+            max_allowed = total_cp + (1 if is_sentence_end else 0)
+            if len(segs) > max_allowed:
+                errors.append(
+                    f"行 {row_idx + 1}: 时间戳个数 {len(segs)} 超过上限 "
+                    f"{max_allowed}（节奏点 {total_cp}"
+                    f"{'+句尾1' if is_sentence_end else ''}）"
+                )
+                return None, errors
+            for seg in segs:
+                seg = seg.strip()
+                if seg == "":
+                    ts_flat.append(None)
+                else:
+                    ms = _parse_time(seg)
+                    if ms is None:
+                        errors.append(f"行 {row_idx + 1}: 无法解析时间 '{seg}'")
+                    else:
+                        ts_flat.append(ms)
+            if errors:
+                return None, errors
+
+        # --- 演唱者 (col 5) —— 每字符一项 ---
+        singer_text = cell(5)
+        singer_tokens = singer_text.split(",") if singer_text.strip() != "" else []
+        singer_ids: List[str] = []
+        for i in range(n):
+            sname = singer_tokens[i].strip() if i < len(singer_tokens) else ""
+            singer_ids.append(name_to_id.get(sname, "") if sname else "")
+
+        return {
+            "glyphs": glyphs,
+            "check_counts": check_counts,
+            "mora_flat": mora_flat,
+            "ts_flat": ts_flat,
+            "is_sentence_end": is_sentence_end,
+            "singer_ids": singer_ids,
+        }, errors
 
     def was_modified(self) -> bool:
         return self._modified
