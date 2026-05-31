@@ -1457,47 +1457,66 @@ class KaraokePreview(QWidget):
                 group_ruby_ink[leader_ci] = _ink_bounds(fm_ruby, merged_text)
 
         # ---------- 连词组 ruby 的分段 wipe 时间轴 ----------
-        # 将组内每个成员的 ruby 分段（part 锚点或整段 wipe 窗口）按顺序拼接，
-        # 累计墨水 advance 占比 → segments = [(t0, t1, w0, w1), ...]。
-        # 渲染层用 _piecewise_wipe_ratio 求比例，使连词组 ruby 与原字符逻辑一致：
-        # 按时间比例分段、空 part 不推进、段间空隙保持，墨水边缘走字（非匀速）。
+        # 连词组的 ruby 横跨整个组（如「明日」中「日」无节奏点，与「明」合并重分配
+        # 区间）。ruby 的假名边界必须来自各成员**实际打轴的** global_timestamps，
+        # 而非成员主文字 wipe 窗口的末端——后者可能是重分配出来的临时分割点
+        # （明的主文字在组中段就走完，若用它当 ruby 末锚点，あした 会在「明」走完时
+        # 就全部走完，丢失「日」对应的时长）。
+        #
+        # 做法：把组内所有成员的 (mora 时间戳, mora 墨水 advance) 按序摊平，相邻时间戳
+        # 即段边界；**最后一段延伸到整组真正的结束时间**（组尾成员 wipe 终点）。
+        # 空 part（advance=0）消耗时间但不推进墨水；段间空隙保持不推进。
         group_ruby_wipe: dict[int, list[tuple[int, int, float, float]]] = {}
         for leader_ci, group in linked_leader_groups.items():
-            raw_segs: list[tuple[int, int, float]] = []  # (t0, t1, advance_w)
+            # 组真正的结束时间：组尾成员主文字 wipe 终点（无则回退到组内最大终点）
+            group_end: int | None = None
+            _gw_last = char_wipe_times.get(group[-1])
+            if _gw_last:
+                group_end = _gw_last[1]
+            else:
+                for gci in group:
+                    _wt = char_wipe_times.get(gci)
+                    if _wt and (group_end is None or _wt[1] > group_end):
+                        group_end = _wt[1]
+            # 摊平各成员的 mora：(时间戳, 墨水 advance)
+            flat: list[tuple[int, float]] = []
             for gci in group:
                 ruby = characters[gci].ruby
                 if not ruby or not ruby.text:
                     continue
-                anchors = char_part_anchors.get(gci)
-                if anchors and len(anchors) >= 2:
-                    n = len(anchors) - 1
-                    parts = ruby.parts if ruby.parts else []
-                    if len(parts) == n:
-                        seg_ws = [
-                            float(fm_ruby.horizontalAdvance(p.text)) for p in parts
-                        ]
-                    else:
-                        # part 数与段数不匹配：整串 advance 等分到 N 段
-                        _tot = float(fm_ruby.horizontalAdvance(ruby.text))
-                        seg_ws = [_tot / n] * n
-                    for k in range(n):
-                        raw_segs.append((anchors[k], anchors[k + 1], seg_ws[k]))
+                gts = list(characters[gci].global_timestamps)
+                parts = ruby.parts if ruby.parts else []
+                if gts and len(parts) == len(gts):
+                    for _ts, _p in zip(gts, parts):
+                        flat.append((int(_ts), float(fm_ruby.horizontalAdvance(_p.text))))
+                elif gts:
+                    # parts 数与时间戳数不一致：整串 advance 等分到各时间戳
+                    _per = float(fm_ruby.horizontalAdvance(ruby.text)) / len(gts)
+                    for _ts in gts:
+                        flat.append((int(_ts), _per))
                 else:
-                    wt = char_wipe_times.get(gci)
-                    if wt:
-                        raw_segs.append(
-                            (wt[0], wt[1], float(fm_ruby.horizontalAdvance(ruby.text)))
+                    # 成员无自身节奏点但带 ruby：以其主文字 wipe 起点为锚整段推进
+                    _wt = char_wipe_times.get(gci)
+                    if _wt:
+                        flat.append(
+                            (_wt[0], float(fm_ruby.horizontalAdvance(ruby.text)))
                         )
-            if not raw_segs:
+            if not flat or group_end is None:
                 continue
-            total_w = sum(w for _, _, w in raw_segs)
+            # 时间戳须单调（防脏数据）；末锚点延伸到 group_end
+            flat.sort(key=lambda it: it[0])
+            total_w = sum(w for _, w in flat)
             if total_w <= 0:
                 continue
             segs: list[tuple[int, int, float, float]] = []
             cum = 0.0
-            for t0, t1, w in raw_segs:
+            for i, (_ts, _w) in enumerate(flat):
+                t0 = _ts
+                t1 = flat[i + 1][0] if i + 1 < len(flat) else group_end
+                if t1 < t0:
+                    t1 = t0
                 w0 = cum / total_w
-                cum += w
+                cum += _w
                 segs.append((t0, t1, w0, cum / total_w))
             group_ruby_wipe[leader_ci] = segs
 
