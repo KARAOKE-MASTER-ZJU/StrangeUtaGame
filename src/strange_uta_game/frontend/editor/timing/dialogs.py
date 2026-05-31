@@ -643,6 +643,7 @@ class InsertGuideSymbolDialog(QDialog):
         saved_duration = settings.get("timing.guide_duration_ms", 1000)
 
         saved_reverse = settings.get("timing.guide_reverse", False)
+        saved_fill_gap = settings.get("timing.guide_fill_gap", False)
 
         self.setWindowTitle("插入导唱符")
         self.resize(400, 320)
@@ -673,10 +674,21 @@ class InsertGuideSymbolDialog(QDialog):
         self.edit_duration.setPlaceholderText("每个导唱符持续时间（毫秒）")
         form.addRow("持续时间 (ms):", self.edit_duration)
 
-        # Field 5: Reverse timestamp order
+        # Field 5: Fill gap — 补足间隔时间
+        # 勾选后忽略手动持续时间，自动在「前一个时间戳」与「本字符首个时间戳」
+        # 之间平均分配，前一个时间戳搜索不到时以 0ms（歌曲开始）为起点。
+        self.chk_fill_gap = QCheckBox("补足间隔时间")
+        self.chk_fill_gap.setChecked(bool(saved_fill_gap))
+        self.chk_fill_gap.toggled.connect(self._on_fill_gap_toggled)
+        form.addRow("", self.chk_fill_gap)
+
+        # Field 6: Reverse timestamp order
         self.chk_reverse = QCheckBox("时间戳反向")
         self.chk_reverse.setChecked(bool(saved_reverse))
         form.addRow("", self.chk_reverse)
+
+        # 初始化持续时间输入框可用状态
+        self._on_fill_gap_toggled(self.chk_fill_gap.isChecked())
 
         layout.addLayout(form)
         layout.addStretch()
@@ -692,6 +704,22 @@ class InsertGuideSymbolDialog(QDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
+    def _on_fill_gap_toggled(self, checked: bool):
+        """勾选「补足间隔时间」时禁用手动持续时间输入框"""
+        self.edit_duration.setEnabled(not checked)
+
+    def _find_prev_timestamp(self) -> int:
+        """向前搜索最近的一个时间戳（含句尾时间戳）作为时间起点。
+
+        从 char_idx-1 往前逐字符查找，取最近一个有时间戳字符的最大时间戳。
+        搜索不到时返回 0（歌曲开始处 00:00:00）。
+        """
+        for i in range(self._char_idx - 1, -1, -1):
+            ts_list = self._sentence.characters[i].all_timestamps
+            if ts_list:
+                return max(ts_list)
+        return 0
+
     def _on_execute(self):
         from strange_uta_game.backend.domain.models import Character
 
@@ -706,21 +734,8 @@ class InsertGuideSymbolDialog(QDialog):
         except ValueError:
             count = 1
 
-        try:
-            duration_ms = max(100, int(self.edit_duration.text().strip()))
-        except ValueError:
-            duration_ms = 1000
-
         reverse = self.chk_reverse.isChecked()
-
-        # 保存设置到 AppSettings
-        from strange_uta_game.frontend.settings.settings_interface import AppSettings
-        settings = AppSettings()
-        settings.set("timing.guide_symbol", symbol)
-        settings.set("timing.guide_count", count)
-        settings.set("timing.guide_duration_ms", duration_ms)
-        settings.set("timing.guide_reverse", reverse)
-        settings.save()
+        fill_gap = self.chk_fill_gap.isChecked()
 
         # Get reference char's timestamp and singer
         ref_char = self._sentence.characters[self._char_idx]
@@ -728,6 +743,50 @@ class InsertGuideSymbolDialog(QDialog):
 
         # Get reference timestamp (first timestamp of selected char)
         ref_ts = ref_char.timestamps[0] if ref_char.timestamps else None
+
+        if fill_gap:
+            # 补足间隔时间：起点 = 向前最近的时间戳（搜索不到则 0），
+            # 终点 = 本字符首个时间戳，按个数平均分配。
+            if ref_ts is None:
+                InfoBar.warning(
+                    title="无法补足间隔时间",
+                    content="当前字符没有时间戳，无法确定间隔终点。",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self,
+                )
+                return
+            start_ts = self._find_prev_timestamp()
+            if start_ts >= ref_ts:
+                InfoBar.warning(
+                    title="无法补足间隔时间",
+                    content=f"起点 {start_ts}ms 不早于终点 {ref_ts}ms，间隔无效。",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self,
+                )
+                return
+            duration_ms = (ref_ts - start_ts) // count
+        else:
+            try:
+                duration_ms = max(100, int(self.edit_duration.text().strip()))
+            except ValueError:
+                duration_ms = 1000
+
+        # 保存设置到 AppSettings
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        settings = AppSettings()
+        settings.set("timing.guide_symbol", symbol)
+        settings.set("timing.guide_count", count)
+        if not fill_gap:
+            settings.set("timing.guide_duration_ms", duration_ms)
+        settings.set("timing.guide_reverse", reverse)
+        settings.set("timing.guide_fill_gap", fill_gap)
+        settings.save()
 
         # Build guide characters
         # Each guide symbol has linked_to_next=True (they chain), except last
