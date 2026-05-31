@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import LineEdit, PrimaryPushButton, PushButton, SpinBox
 
 
@@ -16,7 +25,11 @@ class NicokaraTagsDialog(QDialog):
     def __init__(self, tag_data: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Nicokara 标签设置")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
+
+        screen = parent.screen() if parent else QApplication.primaryScreen()
+        if screen:
+            self.setMaximumHeight(int(screen.availableGeometry().height() * 0.85))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -25,6 +38,16 @@ class NicokaraTagsDialog(QDialog):
         title = QLabel("Nicokara 标签设置")
         title.setFont(QFont("Microsoft YaHei", 14))
         layout.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(14)
 
         form_layout = QVBoxLayout()
         form_layout.setSpacing(8)
@@ -60,17 +83,17 @@ class NicokaraTagsDialog(QDialog):
         silence_row.addWidget(self._spin_silence)
         form_layout.addLayout(silence_row)
 
-        layout.addLayout(form_layout)
+        scroll_layout.addLayout(form_layout)
 
         # @Custom 动态列表
         custom_lbl = QLabel("@Custom（自定义标签）")
         custom_lbl.setFont(QFont("Microsoft YaHei", 10))
-        layout.addWidget(custom_lbl)
+        scroll_layout.addWidget(custom_lbl)
 
         self._custom_list: list[LineEdit] = []
         self._custom_container = QVBoxLayout()
         self._custom_container.setSpacing(4)
-        layout.addLayout(self._custom_container)
+        scroll_layout.addLayout(self._custom_container)
 
         custom_btn_row = QHBoxLayout()
         btn_add_custom = PushButton("添加自定义行", self)
@@ -78,7 +101,11 @@ class NicokaraTagsDialog(QDialog):
         btn_add_custom.clicked.connect(self._on_add_custom)
         custom_btn_row.addWidget(btn_add_custom)
         custom_btn_row.addStretch()
-        layout.addLayout(custom_btn_row)
+        scroll_layout.addLayout(custom_btn_row)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, stretch=1)
 
         # 填充初始值
         self._edit_title.setText(tag_data.get("title", ""))
@@ -88,8 +115,6 @@ class NicokaraTagsDialog(QDialog):
         self._spin_silence.setValue(tag_data.get("silence_ms", 0))
         for custom_val in tag_data.get("custom", []):
             self._on_add_custom(custom_val)
-
-        layout.addStretch()
 
         # 确定/取消
         ok_row = QHBoxLayout()
