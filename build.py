@@ -59,7 +59,13 @@ try:
     print(f"  soundfile: {soundfile.__version__}")
     print(f"  pedalboard: {pedalboard.__version__}")
     print(f"  numpy: {numpy.__version__}")
-    print(f"  fugashi: {fugashi.__version__}")
+    _fugashi_ver = "unknown"
+    try:
+        from importlib.metadata import version as _ver
+        _fugashi_ver = _ver("fugashi")
+    except Exception:
+        pass
+    print(f"  fugashi: {_fugashi_ver}")
     print(f"  jaconv: {getattr(jaconv, '__version__', 'unknown')}")
 except ImportError as e:
     print(f"✗ 缺少依赖: {e}")
