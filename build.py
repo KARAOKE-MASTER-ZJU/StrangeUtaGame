@@ -1,12 +1,12 @@
-"""打包脚本 - 使用 PyInstaller 打包 StrangeUtaGame
+"""打包脚本 - 使用 PyInstaller 打包 StrangeUtaGame（fugashi-only 分支）
 
 注意事项：
 1. sounddevice 和 soundfile 依赖 PortAudio / libsndfile，需要确保 DLL 被打包
 2. PyQt6 有平台插件需要处理
-3. 日语注音用 WinRT IME（winrt.windows.globalization）；运行时依赖系统日语
-   功能 Language.Basic~~~ja-JP，应用内探测并引导安装（不再打包 Sudachi 词典）
+3. 日语注音用 fugashi (MeCab) + unidic-lite；跨平台，无需 WinRT IME
 4. numpy 是音频引擎核心依赖，不可排除
 5. 使用 --onedir 模式避免单文件解压问题
+6. fugashi 基于 Cython，打包时需要确保 _MeCab.dll / 词典文件被收集
 """
 
 import argparse
@@ -46,14 +46,11 @@ try:
     import sounddevice
     import soundfile
     import pedalboard
-    import pykakasi
     import qfluentwidgets
     import numpy
+    import fugashi
+    import unidic_lite
     import jaconv
-
-    # winrt 仅在 Windows 上为必选（跨平台移至 optional-dependencies）
-    if sys.platform == "win32":
-        import winrt.windows.globalization  # 日语注音主引擎（WinRT IME）
 
     print("✓ 所有依赖已安装")
     # 打印版本信息
@@ -62,13 +59,12 @@ try:
     print(f"  soundfile: {soundfile.__version__}")
     print(f"  pedalboard: {pedalboard.__version__}")
     print(f"  numpy: {numpy.__version__}")
-    print(f"  pykakasi: {getattr(pykakasi, '__version__', 'unknown')}")
+    print(f"  fugashi: {fugashi.__version__}")
     print(f"  jaconv: {getattr(jaconv, '__version__', 'unknown')}")
 except ImportError as e:
     print(f"✗ 缺少依赖: {e}")
     print("请先运行: pip install -r requirements.txt")
-    print("  Windows: pip install -e .[win,dev]")
-    print("  Linux:   pip install -e .[unix,dev]")
+    print("  pip install -e .[dev]")
     sys.exit(1)
 
 # 构建 PyInstaller 参数
@@ -100,11 +96,8 @@ args = [
     "--hidden-import=numpy.fft",
     "--hidden-import=numpy.lib",
     # 日语处理
-    "--hidden-import=pykakasi",
-    "--hidden-import=pykakasi.kakasi",
-    "--hidden-import=winrt.windows.globalization",
-    "--hidden-import=winrt.windows.foundation",
-    "--hidden-import=winrt.windows.foundation.collections",
+    "--hidden-import=fugashi",
+    "--hidden-import=unidic_lite",
     "--hidden-import=jaconv",
     # Qt / UI
     "--hidden-import=qfluentwidgets",
@@ -131,9 +124,9 @@ args = [
     "--collect-all=sounddevice",
     "--collect-all=soundfile",
     "--collect-all=pedalboard",
-    "--collect-all=pykakasi",
+    "--collect-all=fugashi",
+    "--collect-all=unidic_lite",
     "--collect-all=qfluentwidgets",
-    "--collect-all=winrt",
     "--collect-binaries=soundfile",
     # 图标
     "--icon=src/strange_uta_game/resource/icon.ico",
@@ -262,7 +255,7 @@ print("=" * 60)
 print("1. 测试音频功能是否正常（播放/暂停/变速）")
 print("2. 检查项目保存和打开功能")
 print("3. 验证导出功能（LRC/KRA/ASS 等）")
-print("4. 测试日语注音功能（WinRT IME；缺日语功能时应弹出安装引导）")
+print("4. 测试日语注音功能（fugashi + unidic-lite）")
 print("5. 如缺少 DLL，请安装 Visual C++ Redistributable")
 print("   https://aka.ms/vs/17/release/vc_redist.x64.exe")
 print("=" * 60)
@@ -284,10 +277,8 @@ print("=" * 60)
 #   --hidden-import=numpy \
 #   --hidden-import=numpy.core \
 #   --hidden-import=numpy.fft \
-#   --hidden-import=pykakasi \
-#   --hidden-import=pykakasi.kakasi \
-#   --hidden-import=sudachipy \
-#   --hidden-import=sudachidict_core \
+#   --hidden-import=fugashi \
+#   --hidden-import=unidic_lite \
 #   --hidden-import=jaconv \
 #   --hidden-import=qfluentwidgets \
 #   --hidden-import=PyQt6.sip \
@@ -306,9 +297,8 @@ print("=" * 60)
 #   --exclude-module=test \
 #   --collect-all=sounddevice \
 #   --collect-all=soundfile \
-#   --collect-all=pykakasi \
+#   --collect-all=fugashi \
+#   --collect-all=unidic_lite \
 #   --collect-all=qfluentwidgets \
-#   --collect-data=sudachipy \
-#   --collect-data=sudachidict_core \
 #   --collect-binaries=soundfile \
 #   main.py
