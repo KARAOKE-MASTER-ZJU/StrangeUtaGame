@@ -5116,23 +5116,10 @@ class EditorInterface(QWidget):
         if getattr(self, "_ruby_subset_analyzing", False):
             return
 
-        from strange_uta_game.backend.infrastructure.parsers.ruby_analyzer import (
-            winrt_japanese_status,
-        )
         from strange_uta_game.frontend.winrt_japanese_guide import ensure_winrt_japanese
 
-        if show_winrt_dialog:
-            if not ensure_winrt_japanese(self):
-                return
-        else:
-            available, _ = winrt_japanese_status()
-            if not available:
-                # WinRT 不可用时检查 fugashi 回退
-                try:
-                    import fugashi  # noqa: F401
-                    import unidic_lite  # noqa: F401
-                except ImportError:
-                    return
+        if not ensure_winrt_japanese(self):
+            return
 
         from strange_uta_game.backend.application import AutoCheckService
         from strange_uta_game.frontend.settings.settings_interface import AppSettings

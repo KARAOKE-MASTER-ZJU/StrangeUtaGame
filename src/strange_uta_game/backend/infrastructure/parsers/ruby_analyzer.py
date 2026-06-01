@@ -1,8 +1,7 @@
 """注音分析器 - 为日文文本提供假名注音。
 
-主引擎为 WinRT IME（Windows.Globalization.JapanesePhoneticAnalyzer，上下文
-感知复合词分析）；不可用时降级 fugashi（MeCab 分词，跨平台），其次 pykakasi
-（单字分析），最后 DummyAnalyzer。
+主分析器为 fugashi（MeCab 分词，跨平台），不再使用 WinRT IME。
+fugashi 不可用时降级 pykakasi（单字分析），最后 DummyAnalyzer。
 """
 
 from abc import ABC, abstractmethod
@@ -753,22 +752,11 @@ def install_winrt_japanese(timeout: int = 600) -> Tuple[bool, str]:
 
 
 def create_analyzer(use_pykakasi: bool = True) -> RubyAnalyzer:
-    """创建注音分析器。
+    """创建注音分析器（fugashi 优先）。
 
-    主分析器为 WinRT IME。WinRT 不可用时降级 fugashi（MeCab 分词，跨平台），
-    其次 pykakasi（单字分析），最后 DummyAnalyzer。
-    引擎缺失（缺日语 IME）应由 UI 层探测并引导安装，见 :func:`winrt_japanese_status`
-    / :func:`install_winrt_japanese` / :func:`winrt_install_guidance`。
+    主分析器为 fugashi（MeCab 分词，跨平台），不再使用 WinRT IME。
+    fugashi 不可用时降级 pykakasi（单字分析），最后 DummyAnalyzer。
     """
-    try:
-        return WinRTAnalyzer()
-    except WinRTJapaneseUnavailable:
-        # 缺日语 IME 引擎：交由 UI 引导安装；此处先降级
-        pass
-    except ImportError:
-        # 缺 winrt 包：同样降级
-        pass
-
     try:
         return FugashiAnalyzer()
     except ImportError:
@@ -780,7 +768,7 @@ def create_analyzer(use_pykakasi: bool = True) -> RubyAnalyzer:
         except ImportError:
             pass
 
-    print("Warning: WinRT/fugashi/pykakasi unavailable, using DummyAnalyzer")
+    print("Warning: fugashi/pykakasi unavailable, using DummyAnalyzer")
     return DummyAnalyzer()
 
 
