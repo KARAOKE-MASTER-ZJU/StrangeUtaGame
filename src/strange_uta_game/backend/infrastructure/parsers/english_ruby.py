@@ -1,7 +1,7 @@
 """英语单词 → 片假名注音查询。
 
 使用 e2k.txt（英语到片假名词典，CMU-based，BSD-3-Clause）做单词级查询。
-优先级：用户自定义词典 → 本模块 → 库函数（Sudachi/pykakasi）。
+优先级：用户自定义词典 → 本模块 → 库函数（fugashi）。
 """
 
 import re

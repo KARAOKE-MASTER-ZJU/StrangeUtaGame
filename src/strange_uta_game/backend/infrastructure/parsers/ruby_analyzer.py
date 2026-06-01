@@ -1,7 +1,7 @@
 """注音分析器 - 为日文文本提供假名注音。
 
-主分析器为 fugashi（MeCab 分词，跨平台），不再使用 WinRT IME。
-fugashi 不可用时降级 pykakasi（单字分析），最后 DummyAnalyzer。
+唯一分析器为 fugashi（MeCab 分词，跨平台），不再使用 WinRT IME / pykakasi / Sudachi。
+fugashi 不可用时降级 DummyAnalyzer。
 """
 
 from abc import ABC, abstractmethod
@@ -39,7 +39,7 @@ class RubyAnalyzer(ABC):
 
 
 # ──────────────────────────────────────────────
-# 假名分配基类（分词器无关，Sudachi / WinRT 共用）
+# 假名分配基类（分词器无关）
 # ──────────────────────────────────────────────
 
 
@@ -51,7 +51,7 @@ class KanaDistributingAnalyzer(RubyAnalyzer):
 
     对于含漢字的形態素：
     1. 先用假名字符作为锚点分配读音（如 迷い → 迷{まよ}い）
-    2. 对纯漢字块，尝试用 pykakasi 的单字读音作参考进行分配
+    2. 对纯漢字块，尝试对复合读音进行单字分配
        （如 世界{せかい} → 世{せ}界{かい}）
     3. 分配失败时保持复合词读音不拆分（如 今日{きょう}）
     """
@@ -191,31 +191,10 @@ class KanaDistributingAnalyzer(RubyAnalyzer):
     ) -> Optional[List[Tuple[str, str]]]:
         """尝试将复合读音分配到各个漢字。
 
-        使用 pykakasi 的单字读音作为参考：
-        - 如果单字读音恰好是复合读音的前缀，则认为分配有效
-        - 否则放弃参考约束进行无约束分配
-        - 最终失败时放弃分配，保持整块
+        不再使用 pykakasi 参考读音，直接进行无约束分配。
+        最终失败时保持整块。
         """
         n = len(kanji_text)
-        ref_readings: List[str] = []
-        if self._pykakasi_conv:
-            for k in kanji_text:
-                try:
-                    ref = self._pykakasi_conv.do(k)
-                except Exception:
-                    ref = ""
-                ref_readings.append(ref)
-        else:
-            ref_readings = [""] * n
-
-        # 第一轮：使用 pykakasi 参考约束
-        result = self._partition_with_refs(
-            kanji_text, compound_reading, ref_readings, 0, 0
-        )
-        if result is not None:
-            return result
-
-        # 第二轮：无约束分配（参考读音全部清空）
         empty_refs = [""] * n
         return self._partition_with_refs(kanji_text, compound_reading, empty_refs, 0, 0)
 
@@ -227,10 +206,10 @@ class KanaDistributingAnalyzer(RubyAnalyzer):
         ki: int,
         ri: int,
     ) -> Optional[List[Tuple[str, str]]]:
-        """递归分区：利用 pykakasi 参考读音约束搜索。
+        """递归分区：将复合读音分配到各個漢字。
 
         三级匹配策略：
-        1. 参考读音精确匹配
+        1. 参考读音精确匹配（如果有参考）
         2. 参考读音前缀匹配
         3. 无约束匹配（当参考读音不适用时，放宽限制）
         """
@@ -337,17 +316,7 @@ class WinRTJapaneseUnavailable(ImportError):
 
 
 class WinRTAnalyzer(KanaDistributingAnalyzer):
-    """基于 Windows.Globalization.JapanesePhoneticAnalyzer 的注音分析器。
-
-    复用 KanaDistributingAnalyzer 的读音分配逻辑（_results_from_pairs /
-    _distribute_morpheme_reading），仅把"分词 + 读音获取"换成 WinRT IME 接口。
-
-    要点（来自调研结论）：
-    - WinRT 默认粒度≈Sudachi Mode A，依赖上下文消歧 → 必须按整段输入。
-    - GetWords 单次上限 100 字符，超长返回空 → 此处按 ≤100 字切块。
-    - display_text 会半角→全角归一，但字符数 1:1 → surface 取原文切片、不用 display_text。
-    - yomi_text 已是平假名。
-    """
+    """基于 Windows.Globalization.JapanesePhoneticAnalyzer 的注音分析器。"""
 
     _MAX_LEN = 100
 
@@ -378,17 +347,6 @@ class WinRTAnalyzer(KanaDistributingAnalyzer):
             self._jpa.get_words("予熱")
         except Exception:
             pass
-        # pykakasi 用于单字读音参考查询
-        self._pykakasi_conv = None
-        try:
-            import pykakasi
-
-            kks = pykakasi.kakasi()
-            kks.setMode("J", "H")
-            self._pykakasi_conv = kks.getConverter()
-        except ImportError:
-            pass
-
     def _get_pairs(self, text: str) -> List[Tuple[str, str]]:
         """整段 → [(原文 surface, 平假名读音)]，按 ≤100 字切块。"""
         pairs: List[Tuple[str, str]] = []
@@ -431,119 +389,15 @@ class WinRTAnalyzer(KanaDistributingAnalyzer):
 
 
 # ──────────────────────────────────────────────
-# pykakasi 分析器（回退用）
-# ──────────────────────────────────────────────
-
-
-class PykakasiAnalyzer(RubyAnalyzer):
-    """基于 pykakasi 的注音分析器"""
-
-    def __init__(self):
-        """初始化 pykakasi 转换器"""
-        try:
-            import pykakasi
-
-            self.kakasi = pykakasi.kakasi()
-            self.kakasi.setMode("J", "H")  # 汉字 → 平假名
-            self.conv = self.kakasi.getConverter()
-        except ImportError:
-            raise ImportError(
-                "pykakasi is required. Install with: pip install pykakasi"
-            )
-
-    def get_reading(self, text: str) -> str:
-        """获取文本的平假名读音"""
-        if not text:
-            return ""
-        try:
-            return self.conv.do(text)
-        except Exception:
-            return text
-
-    def analyze(self, text: str) -> List[RubyResult]:
-        """分析文本并返回注音结果"""
-        if not text:
-            return []
-
-        results = []
-        i = 0
-        n = len(text)
-
-        while i < n:
-            char = text[i]
-
-            if self._is_kanji(char):
-                kanji_block = char
-                j = i + 1
-                while j < n and self._is_kanji(text[j]):
-                    kanji_block += text[j]
-                    j += 1
-
-                reading = self.conv.do(kanji_block)
-                results.append(
-                    RubyResult(
-                        text=kanji_block, reading=reading, start_idx=i, end_idx=j
-                    )
-                )
-                i = j
-            else:
-                if self._is_kana(char):
-                    # 片假名转平假名
-                    reading = self._kata_to_hira(char)
-                    results.append(
-                        RubyResult(
-                            text=char, reading=reading, start_idx=i, end_idx=i + 1
-                        )
-                    )
-                else:
-                    results.append(
-                        RubyResult(text=char, reading=char, start_idx=i, end_idx=i + 1)
-                    )
-                i += 1
-
-        return results
-
-    @staticmethod
-    def _is_kanji(char: str) -> bool:
-        code = ord(char)
-        return (
-            (0x4E00 <= code <= 0x9FFF)
-            or (0x3400 <= code <= 0x4DBF)
-            or (0xF900 <= code <= 0xFAFF)
-            or code == 0x3005  # 々 IDEOGRAPHIC ITERATION MARK
-        )
-
-    @staticmethod
-    def _is_kana(char: str) -> bool:
-        code = ord(char)
-        return (0x3040 <= code <= 0x309F) or (0x30A0 <= code <= 0x30FF)
-
-    @staticmethod
-    def _kata_to_hira(text: str) -> str:
-        """片假名 → 平假名"""
-        result = []
-        for ch in text:
-            code = ord(ch)
-            if 0x30A1 <= code <= 0x30F6:
-                result.append(chr(code - 0x60))
-            else:
-                result.append(ch)
-        return "".join(result)
-
-
-# ──────────────────────────────────────────────
-# fugashi (MeCab) 分析器（跨平台回退，优于 pykakasi）
+# fugashi (MeCab) 分析器
 # ──────────────────────────────────────────────
 
 
 class FugashiAnalyzer(KanaDistributingAnalyzer):
     """基于 fugashi (MeCab 封装) 的注音分析器。
 
-    用于非 Windows 系统（或缺少 WinRT 日语 IME 时）回退，提供形态素级别
-    的日语注音分析，精度高于 pykakasi 的单字级注音。
-
-    复用 KanaDistributingAnalyzer 的读音分配逻辑（_results_from_pairs），
-    仅把「分词 + 读音获取」换成 fugashi MeCab 接口。
+    提供形态素级别的日语注音分析，复用
+    KanaDistributingAnalyzer 的读音分配逻辑（_results_from_pairs）。
     """
 
     def __init__(self):
@@ -559,17 +413,6 @@ class FugashiAnalyzer(KanaDistributingAnalyzer):
             raise ImportError(
                 f"fugashi/MeCab initialization failed: {e}"
             ) from e
-
-        # pykakasi 用于单字读音参考查询（同 WinRTAnalyzer）
-        self._pykakasi_conv = None
-        try:
-            import pykakasi
-
-            kks = pykakasi.kakasi()
-            kks.setMode("J", "H")
-            self._pykakasi_conv = kks.getConverter()
-        except ImportError:
-            pass
 
     @staticmethod
     def _reading_from_token(token) -> str:
@@ -751,24 +594,17 @@ def install_winrt_japanese(timeout: int = 600) -> Tuple[bool, str]:
     return (False, f"install_failed:{proc.returncode}")
 
 
-def create_analyzer(use_pykakasi: bool = True) -> RubyAnalyzer:
-    """创建注音分析器（fugashi 优先）。
+def create_analyzer() -> RubyAnalyzer:
+    """创建注音分析器（fugashi 唯一引擎）。
 
-    主分析器为 fugashi（MeCab 分词，跨平台），不再使用 WinRT IME。
-    fugashi 不可用时降级 pykakasi（单字分析），最后 DummyAnalyzer。
+    使用 fugashi（MeCab 分词，跨平台）。fugashi 不可用时降级 DummyAnalyzer。
     """
     try:
         return FugashiAnalyzer()
     except ImportError:
         pass
 
-    if use_pykakasi:
-        try:
-            return PykakasiAnalyzer()
-        except ImportError:
-            pass
-
-    print("Warning: fugashi/pykakasi unavailable, using DummyAnalyzer")
+    print("Warning: fugashi unavailable, using DummyAnalyzer")
     return DummyAnalyzer()
 
 

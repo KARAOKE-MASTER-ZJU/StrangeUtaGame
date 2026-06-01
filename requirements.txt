@@ -1,10 +1,8 @@
-# StrangeUtaGame — 运行时依赖锁定（跨平台）
+# StrangeUtaGame — 运行时依赖锁定（跨平台，fugashi-only 分支）
 #
 # pip install -r requirements.txt
 #
-# 平台特定依赖通过 PEP 508 环境标记自动选择：
-#   Windows: 安装 winrt-* (WinRT IME 主引擎)
-#   Linux/macOS: 安装 fugashi + unidic-lite (MeCab 跨平台回退)
+# 注音引擎：fugashi (MeCab) + unidic-lite
 #
 # 如需开发/打包工具，额外安装：
 #   pip install -e ".[dev,build]"    # 从 pyproject.toml 安装
@@ -19,7 +17,8 @@ sounddevice==0.5.5
 soundfile==0.13.1
 pedalboard==0.9.22
 numpy==2.4.4
-pykakasi==2.3.0
+fugashi==1.5.2
+unidic-lite==1.0.8
 jaconv==0.5.0
 pyphen==0.17.2
 requests==2.32.5
@@ -28,14 +27,16 @@ charset-normalizer==3.4.4
 certifi==2025.11.12
 idna==3.11
 
-# ── Windows: WinRT IME（日语注音主引擎） ──
-# Windows.Globalization.JapanesePhoneticAnalyzer
-# 需要系统日语 IME 功能 Language.Basic~~~ja-JP
-winrt-Windows.Globalization==3.2.1 ; platform_system == "Windows"
-winrt-Windows.Foundation==3.2.1 ; platform_system == "Windows"
-winrt-Windows.Foundation.Collections==3.2.1 ; platform_system == "Windows"
+# ── 打包 ──
+pyinstaller==6.19.0
+pyinstaller-hooks-contrib==2026.4
 
-# ── Unix/Linux: fugashi (MeCab) 跨平台回退注音引擎 ──
-# 非 Windows 系统自动安装，提供形态素级别的日语注音（优于 pykakasi 单字级）
-fugashi>=1.3.0 ; platform_system != "Windows"
-unidic-lite>=1.0.0 ; platform_system != "Windows"
+# ── 测试 ──
+pytest==9.0.3
+pytest-cov==7.1.0
+pytest-qt==4.5.0
+
+# ── 代码质量 ──
+black==26.3.1
+ruff==0.15.10
+mypy==1.20.1

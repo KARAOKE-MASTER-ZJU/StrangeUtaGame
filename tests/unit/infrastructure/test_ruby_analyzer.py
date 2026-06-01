@@ -5,8 +5,6 @@ import pytest
 from strange_uta_game.backend.infrastructure.parsers.ruby_analyzer import (
     DummyAnalyzer,
     FugashiAnalyzer,
-    PykakasiAnalyzer,
-    WinRTAnalyzer,
     create_analyzer,
 )
 
@@ -40,7 +38,6 @@ class _MockUnidicToken:
 
     def __init__(self, surface: str, kana: str = "", lForm: str = ""):
         self.surface = surface
-        # Simulate UnidicFeatures26: feature has .kana and .lForm attributes
         self.feature = self  # feature IS the object
         self.kana = kana
         self.lForm = lForm
@@ -114,8 +111,7 @@ class TestFugashiAnalyzerInit:
     """Test FugashiAnalyzer instantiation behavior."""
 
     def test_import_error_when_meCab_fails(self, monkeypatch):
-        """FugashiAnalyzer() raises ImportError when MeCab init fails
-        (RuntimeError wrapped as ImportError for clean fallback)."""
+        """FugashiAnalyzer() raises ImportError when MeCab init fails."""
         import fugashi
 
         def failing_tagger(*args, **kwargs):
@@ -126,17 +122,14 @@ class TestFugashiAnalyzerInit:
             FugashiAnalyzer()
 
     def test_import_error_when_fugashi_missing(self, monkeypatch):
-        """FugashiAnalyzer() raises ImportError when fugashi package
-        itself is not installed (monkeypatched import)."""
+        """FugashiAnalyzer() raises ImportError when fugashi not installed."""
         import builtins
 
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "fugashi":
-                raise ImportError("No module named 'fugashi'")
-            if name == "unidic_lite":
-                raise ImportError("No module named 'unidic_lite'")
+            if name in ("fugashi", "unidic_lite"):
+                raise ImportError(f"No module named '{name}'")
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", mock_import)
@@ -148,56 +141,20 @@ class TestFugashiAnalyzerInit:
 
 
 class TestCreateAnalyzer:
-    """Test the fallback chain of create_analyzer."""
+    """Test create_analyzer returns the correct analyzer."""
 
-    def test_winrt_preferred_over_fugashi(self, monkeypatch):
-        """When WinRT is available, it should be preferred over fugashi."""
+    def test_returns_fugashi_when_available(self):
+        """create_analyzer should return FugashiAnalyzer when fugashi is installed."""
         analyzer = create_analyzer()
-        # On Windows with WinRT, this should be WinRTAnalyzer;
-        # otherwise it follows the fallback chain (FugashiAnalyzer if available).
-        # We just verify it's not DummyAnalyzer.
         assert not isinstance(analyzer, DummyAnalyzer)
 
-    def test_fugashi_used_when_winrt_fails(self, monkeypatch):
-        """When WinRT fails and fugashi is available, use FugashiAnalyzer."""
-        # Make WinRTAnalyzer throw ImportError
+    def test_all_fail_falls_to_dummy(self, monkeypatch):
+        """When fugashi fails, fall to DummyAnalyzer."""
         monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.WinRTAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No WinRT")),
+            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.FugashiAnalyzer",
+            lambda: (_ for _ in ()).throw(ImportError("No fugashi")),
         )
         analyzer = create_analyzer()
-        assert isinstance(analyzer, FugashiAnalyzer) or isinstance(
-            analyzer, PykakasiAnalyzer
-        )
-
-    def test_fugashi_import_error_falls_to_pykakasi(self, monkeypatch):
-        """When WinRT and fugashi both fail, fall to pykakasi."""
-        # Make WinRTAnalyzer fail
-        monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.WinRTAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No WinRT")),
-        )
-        # Make FugashiAnalyzer fail
-        monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.FugashiAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No fugashi")),
-        )
-        analyzer = create_analyzer(use_pykakasi=True)
-        assert isinstance(analyzer, PykakasiAnalyzer)
-
-    def test_all_fail_falls_to_dummy(self, monkeypatch):
-        """When all analyzers fail, fall to DummyAnalyzer."""
-        # Make WinRTAnalyzer fail
-        monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.WinRTAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No WinRT")),
-        )
-        # Make FugashiAnalyzer fail
-        monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.FugashiAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No fugashi")),
-        )
-        analyzer = create_analyzer(use_pykakasi=False)
         assert isinstance(analyzer, DummyAnalyzer)
 
 
@@ -216,7 +173,6 @@ class TestFugashiAnalyzerIntegration:
         analyzer = FugashiAnalyzer()
         results = analyzer.analyze("日本語")
         assert len(results) > 0
-        # readings should be hiragana (not surface kanji)
         readings = "".join(r.reading for r in results)
         assert any("ぁ" <= c <= "ん" for c in readings)
 
@@ -226,7 +182,6 @@ class TestFugashiAnalyzerIntegration:
         reading = analyzer.get_reading("東京")
         assert isinstance(reading, str)
         assert len(reading) > 0
-        # Should contain hiragana
         assert any("ぁ" <= c <= "ん" for c in reading)
 
     def test_empty_text(self):
@@ -251,12 +206,7 @@ class TestFugashiAnalyzerIntegration:
             for c in r.reading:
                 assert not ("ァ" <= c <= "ヴ"), f"Found katakana {c} in reading"
 
-    def test_create_analyzer_returns_fugashi_when_winrt_fails(self, monkeypatch):
-        """create_analyzer returns FugashiAnalyzer when WinRT unavailable."""
-        # Make WinRTAnalyzer fail
-        monkeypatch.setattr(
-            "strange_uta_game.backend.infrastructure.parsers.ruby_analyzer.WinRTAnalyzer",
-            lambda: (_ for _ in ()).throw(ImportError("No WinRT")),
-        )
+    def test_create_analyzer_returns_fugashi(self):
+        """create_analyzer returns FugashiAnalyzer."""
         analyzer = create_analyzer()
         assert isinstance(analyzer, FugashiAnalyzer)

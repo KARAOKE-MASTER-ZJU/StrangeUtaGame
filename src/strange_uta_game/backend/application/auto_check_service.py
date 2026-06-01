@@ -235,17 +235,6 @@ class AutoCheckService:
             for e in raw
             if e.get("enabled", True) and e.get("word") and e.get("reading")
         ]
-        # pykakasi 用于无约束分区的参考读音
-        self._pykakasi_conv = None
-        try:
-            import pykakasi
-
-            kks = pykakasi.kakasi()
-            kks.setMode("J", "H")
-            self._pykakasi_conv = kks.getConverter()
-        except Exception:
-            pass
-
         # 单字汉字音读字典（KANJIDIC2 派生）
         self._kanji_dict: Dict[str, Dict[str, List[str]]] = {}
         try:
@@ -348,7 +337,7 @@ class AutoCheckService:
 
         只覆盖未被用户词典（非英文部分）占用的英文整词范围。
         本函数对命中的英文词以整词为粒度替换 ruby_results，使下游序列化产生
-        形如 "{hello|ヘロー}" 的整词 ruby，而不是被 Sudachi 逐字符拆散。
+        形如 "{hello|ヘロー}" 的整词 ruby。
 
         Returns:
             (合并后的 ruby_results, 被英文注音覆盖的字符索引集合)
@@ -386,7 +375,7 @@ class AutoCheckService:
             e2k_covered |= span
         if not overrides:
             return ruby_results, e2k_covered
-        # 移除被英文注音覆盖位置上来自 Sudachi 的逐字符结果（防止 hello 被拆成 h/e/l/l/o）
+        # 移除被英文注音覆盖位置上的逐字符结果（防止 hello 被拆成 h/e/l/l/o）
         filtered = [
             r
             for r in ruby_results
@@ -440,7 +429,7 @@ class AutoCheckService:
             covered |= span
         if not overrides:
             return ruby_results, covered
-        # 移除 Sudachi 在这些位置的逐字符结果，防止残留
+        # 移除在这些位置的逐字符结果，防止残留
         filtered = [
             r
             for r in ruby_results
@@ -453,7 +442,7 @@ class AutoCheckService:
     def _try_split_to_chars(self, word: str, reading: str) -> Optional[List[str]]:
         """尝试将多字词的读音拆分到各字符（分析器分词边界 + 汉字音读字典组合匹配）。
 
-        1. 先用注音分析器（WinRT/Sudachi 等，引擎无关）对多字词分词，若各子块
+        1. 先用注音分析器（fugashi）对多字词分词，若各子块
            读音拼接与给定读音完全一致，则按子块边界继续分
         2. 对每个多字子块调用汉字音读字典组合匹配
 
@@ -534,13 +523,12 @@ class AutoCheckService:
         return final_result
 
     def _get_single_char_candidates(self, ch: str) -> List[str]:
-        """收集单个字符的候选读音（仅库：库分析器 + pykakasi）。
+        """收集单个字符的候选读音（由 fugashi 分析器提供）。
 
         用于连词回退时的「头尾假名剥离」策略。
         注意：不查用户字典、不查 e2k，用户字典/e2k 由上游独立路径处理。
         """
         options: List[str] = []
-        # 1. 库分析器
         try:
             results = self._analyzer.analyze(ch)
             for r in results:
@@ -548,14 +536,6 @@ class AutoCheckService:
                     options.append(r.reading)
         except Exception:
             pass
-        # 2. pykakasi 参考读音
-        if self._pykakasi_conv is not None:
-            try:
-                converted = self._pykakasi_conv.do(ch)
-                if converted and converted != ch and converted not in options:
-                    options.append(converted)
-            except Exception:
-                pass
         return options
 
     # ── 连浊清音→浊音映射 ──

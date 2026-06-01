@@ -9,8 +9,8 @@
 - 注音直接转换为项目规范的 annotated 行内格式（参见 ``annotated_text``）：
 
   - 段数 == 字符数且每段非空 → 直转为 ``{word||r1,r2,...,rN}``；
-  - 否则跑 Sudachi 重分析 → ``{block||reading,空,...}`` 块拼接；
-  - Sudachi 失败 → 整词单块兜底 ``{word||full_reading,空,...}``。
+  - 否则跑 fugashi 重分析 → ``{block||reading,空,...}`` 块拼接；
+  - fugashi 失败 → 整词单块兜底 ``{word||full_reading,空,...}``。
 
 Public API
 ----------
@@ -343,7 +343,7 @@ def parse_rl_dictionary(text: str) -> List[Dict[str, object]]:
     Returns:
         条目列表；每项包含 ``enabled`` (bool, 总为 True)、``word`` (str) 与
         ``reading`` (str，annotated 行内格式)。
-        被丢弃的条目（含 ASCII 字母 / 读音全空 / Sudachi 解析无注音）不出现。
+        被丢弃的条目（含 ASCII 字母 / 读音全空 / 分析器解析无注音）不出现。
     """
     entries: List[Dict[str, object]] = []
     for word, raw_readings in _detect_pairs(text):
