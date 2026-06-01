@@ -5127,7 +5127,12 @@ class EditorInterface(QWidget):
         else:
             available, _ = winrt_japanese_status()
             if not available:
-                return
+                # WinRT 不可用时检查 fugashi 回退
+                try:
+                    import fugashi  # noqa: F401
+                    import unidic_lite  # noqa: F401
+                except ImportError:
+                    return
 
         from strange_uta_game.backend.application import AutoCheckService
         from strange_uta_game.frontend.settings.settings_interface import AppSettings

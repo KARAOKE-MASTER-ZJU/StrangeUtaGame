@@ -83,10 +83,28 @@ def _run_install_blocking(parent: Optional[QWidget]) -> bool:
     return bool(result.get("ok"))
 
 
+def _fugashi_available() -> bool:
+    """检查 fugashi + unidic_lite 是否已安装（跨平台回退）。"""
+    try:
+        import fugashi  # noqa: F401
+        import unidic_lite  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def ensure_winrt_japanese(parent: Optional[QWidget] = None) -> bool:
-    """确保 WinRT 日语注音引擎可用；必要时弹引导。返回最终是否可用。"""
+    """确保日语注音引擎可用；必要时弹引导。返回最终是否可用。
+
+    优先 WinRT；如果 WinRT 不可用但 fugashi 已安装（跨平台回退），
+    则静默跳过 WinRT 引导，返回 True（注音功能可用）。
+    """
     available, reason = winrt_japanese_status()
     if available:
+        return True
+
+    # WinRT 不可用时检查 fugashi 回退
+    if _fugashi_available():
         return True
 
     if reason == "no_winrt_package":

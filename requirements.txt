@@ -13,6 +13,8 @@ numpy==2.4.4
 pykakasi==2.3.0
 # 日语分词/注音主引擎：WinRT IME（Windows.Globalization.JapanesePhoneticAnalyzer）
 # 运行时依赖系统日语 IME 功能 Language.Basic~~~ja-JP（应用内探测+引导安装）
+# 可选回退：fugashi (MeCab) 注音分词（跨平台），非 Windows 系统建议安装
+# pip install fugashi unidic-lite
 winrt-Windows.Globalization==3.2.1
 winrt-Windows.Foundation==3.2.1
 winrt-Windows.Foundation.Collections==3.2.1
