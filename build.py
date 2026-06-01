@@ -49,8 +49,11 @@ try:
     import pykakasi
     import qfluentwidgets
     import numpy
-    import winrt.windows.globalization  # 日语注音主引擎（WinRT IME）
     import jaconv
+
+    # winrt 仅在 Windows 上为必选（跨平台移至 optional-dependencies）
+    if sys.platform == "win32":
+        import winrt.windows.globalization  # 日语注音主引擎（WinRT IME）
 
     print("✓ 所有依赖已安装")
     # 打印版本信息
@@ -64,6 +67,8 @@ try:
 except ImportError as e:
     print(f"✗ 缺少依赖: {e}")
     print("请先运行: pip install -r requirements.txt")
+    print("  Windows: pip install -e .[win,dev]")
+    print("  Linux:   pip install -e .[unix,dev]")
     sys.exit(1)
 
 # 构建 PyInstaller 参数

@@ -48,6 +48,7 @@ from .base import (
 from .bass_engine import (
     _bass,
     _bass_fx,
+    _bass_str,
     BASS_ACTIVE_PAUSED_DEVICE,
     BASS_ACTIVE_PLAYING,
     BASS_ACTIVE_STALLED,
@@ -244,7 +245,7 @@ class BassTsmEngine(IAudioEngine):
     def _resolve_source_path(self, file_path: str, progress_cb=None) -> str:
         """Open directly if BASS can; else convert (video extract / wav)."""
         test = _bass.BASS_StreamCreateFile(
-            0, ctypes.c_wchar_p(file_path), 0, 0,
+            0, _bass_str(file_path), 0, 0,
             BASS_STREAM_DECODE | BASS_UNICODE,
         )
         if test:
@@ -276,7 +277,7 @@ class BassTsmEngine(IAudioEngine):
     def _decode_full_pcm(path: str) -> tuple[np.ndarray, int, int]:
         """Decode the whole file to float32 (n, ch) via BASS."""
         ds = _bass.BASS_StreamCreateFile(
-            0, ctypes.c_wchar_p(path), 0, 0,
+            0, _bass_str(path), 0, 0,
             BASS_STREAM_DECODE | BASS_STREAM_PRESCAN | BASS_SAMPLE_FLOAT | BASS_UNICODE,
         )
         if not ds:
@@ -413,7 +414,7 @@ class BassTsmEngine(IAudioEngine):
                 print("[TSM引擎] 流打开失败：源文件路径为空（加载中或未加载）")
                 return False
             new_stream = _bass.BASS_StreamCreateFile(
-                0, ctypes.c_wchar_p(self._current_source_path), 0, 0,
+                0, _bass_str(self._current_source_path), 0, 0,
                 BASS_SAMPLE_FLOAT | BASS_STREAM_PRESCAN | BASS_UNICODE,
             )
         if not new_stream:
@@ -450,7 +451,7 @@ class BassTsmEngine(IAudioEngine):
         if not source_path:
             return 0
         decode = _bass.BASS_StreamCreateFile(
-            0, ctypes.c_wchar_p(source_path), 0, 0,
+            0, _bass_str(source_path), 0, 0,
             BASS_STREAM_DECODE | BASS_STREAM_PRESCAN | BASS_SAMPLE_FLOAT | BASS_UNICODE,
         )
         if not decode:

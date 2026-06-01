@@ -23,12 +23,12 @@ echo Step 2: Activating environment...
 call conda activate sug
 
 echo.
-echo Step 3: Installing dependencies...
-pip install -r requirements.txt
+echo Step 3: Installing project with win+dev extras...
+:: Windows: 安装 winrt-* (WinRT IME 注音主引擎) + 开发工具
+pip install -e ".[win,dev]"
 
 echo.
-echo Step 4: Installing project in editable mode...
-pip install -e .
+echo Step 4: Installing project in editable mode (已完成上一步)...
 
 echo.
 echo ==========================================

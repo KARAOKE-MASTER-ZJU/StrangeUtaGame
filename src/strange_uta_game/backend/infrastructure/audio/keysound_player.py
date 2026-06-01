@@ -16,6 +16,7 @@ from .bass_engine import (
     BASS_ERROR_ALREADY,
     BASS_UNICODE,
     _bass,
+    _bass_str,
 )
 
 BASS_SAMPLE_OVER_POS: int = 0x400000  # 超出 max 时复用最旧（按播放位置）
@@ -50,7 +51,7 @@ class KeySoundPlayer:
         return int(
             _bass.BASS_SampleLoad(
                 False,
-                ctypes.c_wchar_p(str(path)),
+                _bass_str(str(path)),
                 0,
                 0,
                 _MAX_CONCURRENT,

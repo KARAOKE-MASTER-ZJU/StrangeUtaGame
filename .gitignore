@@ -5,6 +5,8 @@ __pycache__/
 
 # C extensions
 *.so
+# But track BASS Linux libraries (needed for Linux/WSL playback)
+!src/strange_uta_game/bass/linux64/*.so
 
 # Distribution / packaging
 .Python
