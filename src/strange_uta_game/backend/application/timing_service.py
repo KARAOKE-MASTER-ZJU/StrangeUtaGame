@@ -94,6 +94,8 @@ class TimingServiceQt(QObject):
     _focus_moved_signal = pyqtSignal(int, int) # line_idx , char_idx
     # 通知Karaoke将当前行居中滚动信号
     _center_current_line_signal = pyqtSignal()
+    # 通知前端发生了结构性变更（节奏点增减），需要刷新歌词显示
+    _structural_change_signal = pyqtSignal()
     def __init__(self):
         super().__init__()
 
@@ -595,14 +597,15 @@ class TimingService:
     def _on_tag_and_delete_next_key_changed(
         self, timestamp_ms: int, key_type: Literal["pressed", "released"]
     ) -> None:
-        """打轴并删除下一节奏点时间戳（原子操作）。
+        """打轴并删除下一节奏点（原子操作）。
 
         路由规则与 on_key_changed 完全一致（句尾尾部 cp 需 'released'，普通 cp
         需 'pressed'）。通过后执行：
         1. 将 timestamp_ms 写入当前 cp
-        2. 清除下一个 cp 的时间戳
-        3. 光标推进两步（跳过被清除的 cp）
-        写入 + 清除合并为一个 BatchCommand，保证撤销原子性。
+        2. 删除下一个节奏点本身（结构性变更：减少 check_count 或清除 is_sentence_end）
+        3. 重建全局 checkpoint 序列
+        4. 光标推进一步（被删节奏点已从序列消失，一步即跳过两个原始位置）
+        写入 + 删除合并为一个 SentenceSnapshotCommand，保证撤销原子性。
         """
         if not self._project:
             return
@@ -625,11 +628,18 @@ class TimingService:
 
         before_cp_idx = self._global_checkpoint_idx
 
-        # 找到下一个 cp 的位置信息（用于删除）
+        # 找到下一个 cp 的位置信息（将被删除）
         next_global_idx = self._global_checkpoint_idx + 1
         next_pos = (
             self._global_checkpoints[next_global_idx]
             if next_global_idx < len(self._global_checkpoints)
+            else None
+        )
+
+        # 找到再下一个 cp（用于确定 redo 落点）
+        next_next_pos = (
+            self._global_checkpoints[self._global_checkpoint_idx + 2]
+            if self._global_checkpoint_idx + 2 < len(self._global_checkpoints)
             else None
         )
 
@@ -638,63 +648,68 @@ class TimingService:
         old_char_idx = self._current_position.char_idx
         old_singer_id = char.singer_id
 
-        if self._command_manager and self._project:
-            from strange_uta_game.backend.application.commands import (
-                AddTimeTagCommand,
-                BatchCommand,
-                RemoveTimeTagCommand,
-            )
+        from copy import deepcopy
+        before_sentences = deepcopy(self._project.sentences)
 
-            add_cmd = AddTimeTagCommand(
-                project=self._project,
-                sentence_id=sentence.id,
-                char_idx=self._current_position.char_idx,
-                timestamp_ms=timestamp_ms,
-                checkpoint_idx=cp_idx,
-            )
-            cmds = [add_cmd]
+        # ── 直接修改（SentenceSnapshotCommand 会将结果作为 after 快照存储）──
 
-            if next_pos is not None:
-                next_sentence = self._project.sentences[next_pos.line_idx]
-                cmds.append(
-                    RemoveTimeTagCommand(
-                        project=self._project,
-                        sentence_id=next_sentence.id,
-                        char_idx=next_pos.char_idx,
-                        checkpoint_idx=next_pos.checkpoint_idx,
-                    )
-                )
-
-            advance = 2 if next_pos is not None else 1
-            batch = BatchCommand(cmds, "打轴并删除下一时间戳")
-            batch.undo_cp_idx = before_cp_idx
-            batch.redo_cp_idx = min(
-                before_cp_idx + advance, len(self._global_checkpoints) - 1
-            )
-            self._command_manager.execute(batch)
+        # 1. 写入当前 cp 时间戳
+        if is_tail:
+            char.set_sentence_end_ts(timestamp_ms)
         else:
-            # 无 CommandManager：直接修改（不产生撤销记录）
-            if is_tail:
-                char.set_sentence_end_ts(timestamp_ms)
-            else:
-                char.add_timestamp(timestamp_ms, cp_idx)
+            char.add_timestamp(timestamp_ms, cp_idx)
 
-            if next_pos is not None:
-                next_sentence = self._project.sentences[next_pos.line_idx]
-                if next_pos.char_idx < len(next_sentence.characters):
-                    next_char = next_sentence.characters[next_pos.char_idx]
-                    if next_char.is_sentence_end_tail_cp(next_pos.checkpoint_idx):
-                        next_char.clear_sentence_end_ts()
-                    else:
-                        next_char.remove_timestamp_at(next_pos.checkpoint_idx)
-
-        # 推进光标：跳过当前 cp + 跳过被删的下一 cp
-        self.move_to_next_checkpoint()
+        # 2. 删除下一节奏点（结构性变更）
         if next_pos is not None:
-            self.move_to_next_checkpoint()
+            next_sentence = self._project.sentences[next_pos.line_idx]
+            if next_pos.char_idx < len(next_sentence.characters):
+                next_char = next_sentence.characters[next_pos.char_idx]
+                if next_char.is_sentence_end_tail_cp(next_pos.checkpoint_idx):
+                    # 句尾尾部 cp：清除 is_sentence_end 标记
+                    next_char.is_sentence_end = False
+                    next_char.sentence_end_ts = None
+                    next_char._update_offset_timestamps()
+                    next_char.push_to_ruby()
+                else:
+                    # 普通节奏点：减少 check_count
+                    try:
+                        next_sentence.remove_checkpoint(next_pos.char_idx, force=True)
+                    except Exception:
+                        pass
+
+        after_sentences = deepcopy(self._project.sentences)
+
+        # ── 注册撤销命令 ──
+        if self._command_manager:
+            from strange_uta_game.backend.application.commands import SentenceSnapshotCommand
+
+            cmd = SentenceSnapshotCommand(
+                project=self._project,
+                before_sentences=before_sentences,
+                after_sentences=after_sentences,
+                description="打轴并删除下一节奏点",
+            )
+            cmd.undo_cp_idx = before_cp_idx
+            cmd.undo_position = (old_line_idx, old_char_idx)
+            # redo 落点：落在 next_next（删除后变为 next），无则保持原字符
+            redo_pos = next_next_pos or next_pos
+            if redo_pos is not None:
+                cmd.redo_position = (redo_pos.line_idx, redo_pos.char_idx)
+            else:
+                cmd.redo_position = (old_line_idx, old_char_idx)
+            cmd.redo_cp_idx = min(before_cp_idx + 1, len(self._global_checkpoints) - 1)
+            self._command_manager.execute(cmd)
+
+        # ── 重建全局 checkpoint 序列（结构性变更后必须）──
+        self._rebuild_global_checkpoints()
+
+        # ── 推进光标（被删节奏点已消失，一步即到 next_next 位置）──
+        self.move_to_next_checkpoint()
 
         self._notify_focus_moved()
         self._global_qt._center_current_line_signal.emit()
+        # 通知前端刷新歌词显示（节奏点标记数量发生了变化）
+        self._global_qt._structural_change_signal.emit()
 
         if self._callbacks:
             self._callbacks.on_timetag_added(

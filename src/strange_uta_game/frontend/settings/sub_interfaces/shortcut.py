@@ -37,7 +37,7 @@ class ShortcutSubInterface(SubSettingInterface):
         ("toggle_word_join", FIF.LINK, "连词", "连词/取消连词；划选多个字符时：全未连词则整段连为一个词，否则整段取消连词", "F3:short", "F3:short", "both", None, None, False),
         ("tag_now", FIF.PLAY, "打轴键", "打轴操作的按键【仅打轴模式】", "Space:short", "", "timing_only", None, None, False),
         ("tag_now_extra", FIF.PLAY, "打轴键 Extra", "打轴操作的备用按键【仅打轴模式】", "", "", "timing_only", None, None, False),
-        ("tag_and_delete_next", FIF.PLAY, "打轴并删除下一时间戳", "记录当前节奏点时间戳，同时清除下一节奏点的时间戳，光标跳至第二个后继节奏点【仅打轴模式】", "", "", "timing_only", None, None, False),
+        ("tag_and_delete_next", FIF.PLAY, "打轴并删除下一节奏点", "记录当前节奏点时间戳，同时删除下一个节奏点本身（减少 check_count），光标跳至原第三个节奏点【仅打轴模式】", "", "", "timing_only", None, None, False),
         ("tag_now_editor", FIF.PLAY, "打轴键（编辑模式）", "编辑模式下打轴：记录当前进度条时间戳至当前节奏点【仅编辑模式】", "", "", "edit_only", None, None, False),
         ("tag_now_extra_editor", FIF.PLAY, "打轴键 Extra（编辑模式）", "编辑模式下打轴（备用键）：记录当前进度条时间戳至当前节奏点【仅编辑模式】", "", "", "edit_only", None, None, False),
         ("seek_back", FIF.LEFT_ARROW, "后退", "后退跳转【仅打轴模式】", "Z:short", "", "timing_only", None, None, False),

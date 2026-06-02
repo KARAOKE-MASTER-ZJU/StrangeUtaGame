@@ -393,6 +393,12 @@ class EditorInterface(QWidget):
         except (TypeError, RuntimeError):
             pass
         self._timing_service._global_qt._center_current_line_signal.connect(self._handle_center_current_line)
+        # 注册结构性变更信号（节奏点增减后需要刷新歌词显示）
+        try:
+            self._timing_service._global_qt._structural_change_signal.disconnect(self.refresh_lyric_display)
+        except (TypeError, RuntimeError):
+            pass
+        self._timing_service._global_qt._structural_change_signal.connect(self.refresh_lyric_display)
         # 传音频引擎引用给 preview，使 paintEvent 可主动拉取高精度时间
         self.preview.set_audio_engine(timing_service._audio_engine)
 
