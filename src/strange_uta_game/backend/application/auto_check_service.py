@@ -737,9 +737,11 @@ class AutoCheckService:
                             kun.append(hira)
                     all_readings = set(on + kun)
                     if remaining not in all_readings:
-                        # 读音不在候选中 → 不可拆分，首字全吃
-                        # 恢复已剥离的部分
-                        return [reading if i == 0 else "" for i in range(n)]
+                        # 剩余读音不在该汉字候选中：属于熟字訓/促音化等特殊读音。
+                        # 不覆盖已剥离的部分（Step 2 尾部剥离可能已正确匹配），
+                        # 将剩余读音分配给当前字符即可。
+                        split_parts[left] = remaining
+                        return split_parts
             split_parts[left] = remaining
             return split_parts
 
