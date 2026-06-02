@@ -239,6 +239,7 @@ class EditorInterface(QWidget):
         self.toolbar.apply_singer_clicked.connect(self._on_apply_singer)
         self.toolbar.singer_manager_clicked.connect(self._on_singer_manager_clicked)
         self.toolbar.complete_timestamp_clicked.connect(self._on_complete_timestamp)
+        self.toolbar.separate_symbol_timestamp_clicked.connect(self._on_separate_symbol_timestamp)
         self.toolbar.adjust_raw_timestamp_clicked.connect(self._on_adjust_raw_timestamp)
         self.toolbar.offset_changed.connect(self._on_offset_changed)
         layout.addWidget(self.toolbar)
@@ -2045,6 +2046,68 @@ class EditorInterface(QWidget):
                 parent=self,
             )
 
+    def _on_separate_symbol_timestamp(self):
+        """分离符号时间戳功能入口"""
+        if not self._project:
+            InfoBar.warning(
+                title="无项目",
+                content="请先创建或打开项目",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+            return
+
+        from .timing.dialogs import SeparateSymbolTimestampDialog
+
+        dlg = SeparateSymbolTimestampDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.was_apply_clicked():
+            return
+
+        symbol_chars = dlg.get_symbol_chars()
+        pre_comp_ms = dlg.get_pre_comp_ms()
+        post_comp_ms = dlg.get_post_comp_ms()
+
+        if not symbol_chars:
+            InfoBar.warning(
+                title="未选择符号分组",
+                content="请至少选择一个符号分组",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+            return
+
+        post_count, pre_count = self._execute_separate_symbol_timestamp(
+            symbol_chars, pre_comp_ms, post_comp_ms
+        )
+
+        total = post_count + pre_count
+        if total > 0:
+            InfoBar.success(
+                title="分离完成",
+                content=f"共处理 {total} 个符号（后补偿 {post_count} 个，前补偿 {pre_count} 个）",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+                parent=self,
+            )
+        else:
+            InfoBar.info(
+                title="无需处理",
+                content="没有找到符合条件的符号时间戳",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+
     def _on_adjust_raw_timestamp(self):
         """调整原始时间戳功能入口 — 打开非模态调整窗口，允许边测试边调整"""
         if not self._project:
@@ -2352,6 +2415,94 @@ class EditorInterface(QWidget):
             return 0
 
         return total_count
+
+    def _execute_separate_symbol_timestamp(
+        self,
+        symbol_chars: frozenset,
+        pre_comp_ms: int,
+        post_comp_ms: int,
+    ) -> tuple:
+        """执行分离符号时间戳的核心逻辑。
+
+        两个独立 pass：
+        - Pass 1（后补偿）：符号 cc=0 且 is_sentence_end=True 且 sentence_end_ts 不为空
+          → cc 改为 1，timestamps = [old_end_ts]，sentence_end_ts 后移 post_comp_ms
+        - Pass 2（前补偿）：符号 cc=1 且紧跟的第一个非符号字符 cc=0
+          → 非符号字符 cc 改为 1 并获得符号时间戳，符号时间戳前移 pre_comp_ms
+
+        Returns:
+            (post_count, pre_count)
+        """
+        if not self._project:
+            return 0, 0
+
+        post_count = 0
+        pre_count = 0
+
+        def _mutate():
+            nonlocal post_count, pre_count
+            assert self._project is not None
+
+            # 构建全局字符列表（跨行，保持顺序）
+            all_chars: list = []
+            for sentence in self._project.sentences:
+                for ch in sentence.characters:
+                    all_chars.append(ch)
+
+            # ── Pass 1: 后补偿 ──────────────────────────────
+            for ch in all_chars:
+                if (
+                    ch.char in symbol_chars
+                    and ch.check_count == 0
+                    and ch.is_sentence_end
+                    and ch.sentence_end_ts is not None
+                ):
+                    old_end_ts = ch.sentence_end_ts
+                    ch.check_count = 1
+                    ch.timestamps = [old_end_ts]
+                    ch.sentence_end_ts = old_end_ts + post_comp_ms
+                    ch._update_offset_timestamps()
+                    ch.push_to_ruby()
+                    post_count += 1
+
+            # ── Pass 2: 前补偿 ──────────────────────────────
+            for i, ch in enumerate(all_chars):
+                if ch.char not in symbol_chars or ch.check_count != 1 or not ch.timestamps:
+                    continue
+
+                # 找紧跟的第一个非符号字符
+                next_non_sym = None
+                for j in range(i + 1, len(all_chars)):
+                    if all_chars[j].char not in symbol_chars:
+                        next_non_sym = all_chars[j]
+                        break
+
+                if next_non_sym is None or next_non_sym.check_count != 0:
+                    continue
+
+                old_sym_ts = ch.timestamps[0]
+
+                # 给紧跟非符号字符赋予符号的原始时间戳
+                next_non_sym.check_count = 1
+                next_non_sym.timestamps = [old_sym_ts]
+                next_non_sym._update_offset_timestamps()
+                next_non_sym.push_to_ruby()
+
+                # 符号时间戳前移
+                ch.timestamps = [max(0, old_sym_ts - pre_comp_ms)]
+                ch._update_offset_timestamps()
+                ch.push_to_ruby()
+
+                pre_count += 1
+
+            if post_count == 0 and pre_count == 0:
+                return None
+            return (self._current_line_idx, self.preview._current_char_idx, None, "timetags")
+
+        ok = self._execute_structural_edit("分离符号时间戳", _mutate)
+        if not ok:
+            return 0, 0
+        return post_count, pre_count
 
     # ==================== 音频 ====================
 
