@@ -73,21 +73,24 @@ except ImportError as e:
     print("  pip install -e .[dev]")
     sys.exit(1)
 
+# PyInstaller --add-data 分隔符：Windows 用 ;，Unix 用 :
+_DATA_SEP = ";" if sys.platform == "win32" else ":"
+
 # 构建 PyInstaller 参数
 args = [
     "main.py",  # 主脚本
     "--name=StrangeUtaGame",  # 应用名称
     "--onedir",  # 使用目录模式（推荐，启动更快）
-    "--windowed",  # Windows GUI 应用（无控制台窗口）
+    "--windowed",  # 隐藏控制台窗口（macOS 生成 .app bundle）
     "--noconfirm",  # 不确认覆盖
     # 数据文件
-    "--add-data=src/strange_uta_game;strange_uta_game",  # 源代码
-    "--add-data=src/strange_uta_game/resource/icon.ico;strange_uta_game/resource",  # 图标
-    "--add-data=src/strange_uta_game/config/config.json;strange_uta_game/config",  # 默认配置
-    "--add-data=src/strange_uta_game/config/dictionary.json;strange_uta_game/config",  # 默认字典
-    "--add-data=src/strange_uta_game/config/singers.json;strange_uta_game/config",  # 默认演唱者
-    "--add-data=src/strange_uta_game/config/e2k.txt;strange_uta_game/config",  # 英语注音词典 (CMU-based)
-    "--add-data=src/strange_uta_game/config/cmudict-0.7b;strange_uta_game/config",  # CMU Pronouncing Dictionary (e2k 引擎数据源)
+    f"--add-data=src/strange_uta_game{_DATA_SEP}strange_uta_game",  # 源代码
+    f"--add-data=src/strange_uta_game/resource/icon.ico{_DATA_SEP}strange_uta_game/resource",  # 图标
+    f"--add-data=src/strange_uta_game/config/config.json{_DATA_SEP}strange_uta_game/config",  # 默认配置
+    f"--add-data=src/strange_uta_game/config/dictionary.json{_DATA_SEP}strange_uta_game/config",  # 默认字典
+    f"--add-data=src/strange_uta_game/config/singers.json{_DATA_SEP}strange_uta_game/config",  # 默认演唱者
+    f"--add-data=src/strange_uta_game/config/e2k.txt{_DATA_SEP}strange_uta_game/config",  # 英语注音词典 (CMU-based)
+    f"--add-data=src/strange_uta_game/config/cmudict-0.7b{_DATA_SEP}strange_uta_game/config",  # CMU Pronouncing Dictionary (e2k 引擎数据源)
     # ── 隐藏导入（PyInstaller 可能检测不到的模块） ──
     # 音频
     "--hidden-import=sounddevice",
@@ -134,8 +137,8 @@ args = [
     "--collect-all=unidic_lite",
     "--collect-all=qfluentwidgets",
     "--collect-binaries=soundfile",
-    # 图标
-    "--icon=src/strange_uta_game/resource/icon.ico",
+    # 图标（macOS 需要 .icns / .png，windows 需要 .ico）
+    *([f"--icon=src/strange_uta_game/resource/icon.ico"] if sys.platform == "win32" else []),
 ]
 
 # --clean 由命令行参数控制（改了 import 或打包配置时使用）
