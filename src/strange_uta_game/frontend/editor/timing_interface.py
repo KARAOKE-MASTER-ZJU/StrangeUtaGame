@@ -477,6 +477,7 @@ class EditorInterface(QWidget):
             "tag_now_editor",
             "tag_now_extra_editor",
             "clear_all_checkpoints",
+            "tag_and_delete_next",
         ]
         # 默认值兜底（当设置未写入新 schema 时使用）
         defaults = {
@@ -522,6 +523,7 @@ class EditorInterface(QWidget):
             "tag_now_editor": "",
             "tag_now_extra_editor": "",
             "clear_all_checkpoints": "",
+            "tag_and_delete_next": "",
         }
 
         def _normalize_trigger(raw: str) -> str:
