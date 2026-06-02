@@ -564,6 +564,147 @@ class TimingService:
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self.on_key_changed(timestamp_ms, "released")
 
+    def on_tag_and_delete_next_pressed(self, key: str, queue_delay_ms: int = 0) -> None:
+        """打轴并删除下一时间戳 — 按下处理。
+
+        薄 shim：自动启播 + 计算时间戳 + 转发核心逻辑（'pressed'）。
+        """
+        if not self._project:
+            self._notify_error("NO_PROJECT", "未加载项目")
+            return
+
+        if not self._audio_engine.is_playing():
+            self._audio_engine.play()
+
+        timing_pos_ms = self._audio_engine.get_position_ms()
+        timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
+        self._on_tag_and_delete_next_key_changed(timestamp_ms, "pressed")
+
+    def on_tag_and_delete_next_released(self, key: str, queue_delay_ms: int = 0) -> None:
+        """打轴并删除下一时间戳 — 抬起处理。
+
+        薄 shim：计算时间戳 + 转发核心逻辑（'released'）。
+        """
+        if not self._project:
+            return
+
+        timing_pos_ms = self._audio_engine.get_position_ms()
+        timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
+        self._on_tag_and_delete_next_key_changed(timestamp_ms, "released")
+
+    def _on_tag_and_delete_next_key_changed(
+        self, timestamp_ms: int, key_type: Literal["pressed", "released"]
+    ) -> None:
+        """打轴并删除下一节奏点时间戳（原子操作）。
+
+        路由规则与 on_key_changed 完全一致（句尾尾部 cp 需 'released'，普通 cp
+        需 'pressed'）。通过后执行：
+        1. 将 timestamp_ms 写入当前 cp
+        2. 清除下一个 cp 的时间戳
+        3. 光标推进两步（跳过被清除的 cp）
+        写入 + 清除合并为一个 BatchCommand，保证撤销原子性。
+        """
+        if not self._project:
+            return
+
+        sentence, char = self._get_current_checkpoint_info()
+        if not sentence or not char:
+            if self.move_to_next_checkpoint():
+                sentence, char = self._get_current_checkpoint_info()
+            if not sentence or not char:
+                return
+
+        cp_idx = self._current_position.checkpoint_idx
+        is_tail = char.is_sentence_end_tail_cp(cp_idx)
+
+        # 角色化过滤（与 on_key_changed 保持一致）
+        if is_tail and key_type != "released":
+            return
+        if not is_tail and key_type != "pressed":
+            return
+
+        before_cp_idx = self._global_checkpoint_idx
+
+        # 找到下一个 cp 的位置信息（用于删除）
+        next_global_idx = self._global_checkpoint_idx + 1
+        next_pos = (
+            self._global_checkpoints[next_global_idx]
+            if next_global_idx < len(self._global_checkpoints)
+            else None
+        )
+
+        # 提前记录回调所需的旧位置（move 之后 _current_position 已变）
+        old_line_idx = self._current_position.line_idx
+        old_char_idx = self._current_position.char_idx
+        old_singer_id = char.singer_id
+
+        if self._command_manager and self._project:
+            from strange_uta_game.backend.application.commands import (
+                AddTimeTagCommand,
+                BatchCommand,
+                RemoveTimeTagCommand,
+            )
+
+            add_cmd = AddTimeTagCommand(
+                project=self._project,
+                sentence_id=sentence.id,
+                char_idx=self._current_position.char_idx,
+                timestamp_ms=timestamp_ms,
+                checkpoint_idx=cp_idx,
+            )
+            cmds = [add_cmd]
+
+            if next_pos is not None:
+                next_sentence = self._project.sentences[next_pos.line_idx]
+                cmds.append(
+                    RemoveTimeTagCommand(
+                        project=self._project,
+                        sentence_id=next_sentence.id,
+                        char_idx=next_pos.char_idx,
+                        checkpoint_idx=next_pos.checkpoint_idx,
+                    )
+                )
+
+            advance = 2 if next_pos is not None else 1
+            batch = BatchCommand(cmds, "打轴并删除下一时间戳")
+            batch.undo_cp_idx = before_cp_idx
+            batch.redo_cp_idx = min(
+                before_cp_idx + advance, len(self._global_checkpoints) - 1
+            )
+            self._command_manager.execute(batch)
+        else:
+            # 无 CommandManager：直接修改（不产生撤销记录）
+            if is_tail:
+                char.set_sentence_end_ts(timestamp_ms)
+            else:
+                char.add_timestamp(timestamp_ms, cp_idx)
+
+            if next_pos is not None:
+                next_sentence = self._project.sentences[next_pos.line_idx]
+                if next_pos.char_idx < len(next_sentence.characters):
+                    next_char = next_sentence.characters[next_pos.char_idx]
+                    if next_char.is_sentence_end_tail_cp(next_pos.checkpoint_idx):
+                        next_char.clear_sentence_end_ts()
+                    else:
+                        next_char.remove_timestamp_at(next_pos.checkpoint_idx)
+
+        # 推进光标：跳过当前 cp + 跳过被删的下一 cp
+        self.move_to_next_checkpoint()
+        if next_pos is not None:
+            self.move_to_next_checkpoint()
+
+        self._notify_focus_moved()
+        self._global_qt._center_current_line_signal.emit()
+
+        if self._callbacks:
+            self._callbacks.on_timetag_added(
+                old_singer_id,
+                old_line_idx,
+                old_char_idx,
+                cp_idx,
+                timestamp_ms,
+            )
+
     def on_edit_mode_tag(self) -> None:
         """编辑模式下打轴：不启动音频，读取当前进度条位置并写入当前节奏点。
 

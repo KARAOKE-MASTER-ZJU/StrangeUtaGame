@@ -145,6 +145,7 @@ class AppSettings:
                 "stop": "S:short",
                 "tag_now": "Space:short",
                 "tag_now_extra": "",
+                "tag_and_delete_next": "",
                 "seek_back": "Z:short",
                 "seek_forward": "X:short",
                 "speed_down": "Q:short",

@@ -4525,6 +4525,31 @@ class EditorInterface(QWidget):
             a0.accept()
             return
 
+        # tag_and_delete_next：同样使用 press/release 语义，不走长按检测
+        if action_short == "tag_and_delete_next" or action_long == "tag_and_delete_next":
+            if not playing:
+                self._add_checkpoint()
+                a0.accept()
+                return
+            if a0.isAutoRepeat():
+                a0.ignore()
+                return
+            if self._timing_service and key_name not in self._pressed_keys:
+                if self._keysound_player is not None:
+                    if not self._timing_service.is_current_cp_sentence_end_tail():
+                        self._keysound_player.play_press()
+                try:
+                    self._pressed_keys.add(key_name)
+                    queue_delay_ms = max(0, int((time.monotonic() - handler_entry_s) * 1000))
+                    if queue_delay_ms > 500:
+                        queue_delay_ms = 0
+                    self._timing_service.on_tag_and_delete_next_pressed(key_name, queue_delay_ms)
+                except Exception as e:
+                    self._pressed_keys.discard(key_name)
+                    self._show_runtime_error(str(e))
+            a0.accept()
+            return
+
         # 只有 short 绑定：立即执行，保留 isAutoRepeat 行为
         if action_short is not None and action_long is None:
             self._execute_action(action_short, key)
@@ -4592,6 +4617,30 @@ class EditorInterface(QWidget):
                     if queue_delay_ms > 500:
                         queue_delay_ms = 0
                     self._timing_service.on_timing_key_released(key_name, queue_delay_ms)
+                except Exception as e:
+                    self._show_runtime_error(str(e))
+                finally:
+                    self._pressed_keys.discard(key_name)
+            a0.accept()
+            return
+
+        # tag_and_delete_next 释放处理
+        if action_short == "tag_and_delete_next" or action_long == "tag_and_delete_next":
+            if not (self._timing_service and self._timing_service.is_playing()):
+                a0.accept()
+                return
+            if a0.isAutoRepeat():
+                a0.ignore()
+                return
+            if self._timing_service and key_name in self._pressed_keys:
+                if self._keysound_player is not None:
+                    if self._timing_service.is_current_cp_sentence_end_tail():
+                        self._keysound_player.play_release()
+                try:
+                    queue_delay_ms = max(0, int((time.monotonic() - handler_entry_s) * 1000))
+                    if queue_delay_ms > 500:
+                        queue_delay_ms = 0
+                    self._timing_service.on_tag_and_delete_next_released(key_name, queue_delay_ms)
                 except Exception as e:
                     self._show_runtime_error(str(e))
                 finally:
