@@ -444,12 +444,49 @@ class FugashiAnalyzer(KanaDistributingAnalyzer):
         return KanaDistributingAnalyzer._kata_to_hira(reading)
 
     def _get_pairs(self, text: str) -> List[Tuple[str, str]]:
-        """整段 → [(原文 surface, 平假名读音)]。"""
+        """整段 → [(原文 surface, 平假名读音)]。
+
+        修复两个 fugashi 跨平台问题：
+        - fugashi 跳过空格导致索引错位 → 补齐空格作独立 token
+        - 々（踊り字）无注音 → 继承前一个漢字的读音
+        """
         pairs: List[Tuple[str, str]] = []
         try:
+            idx = 0  # 在原文中的游标位置
+            prev_kanji_reading = ""  # 前一个漢字的读音，供 々 继承
+
             for token in self._tagger(text):
+                surface = token.surface
+
+                # fugashi 跳过空格；在空格位置插入 surface==reading 的占位 token，
+                # 保证下游 _results_from_pairs 按 len(surface) 计算的索引与原文一致
+                while idx < len(text) and text[idx] != surface[0]:
+                    pairs.append((text[idx], text[idx]))
+                    idx += 1
+
                 reading = self._reading_from_token(token)
-                pairs.append((token.surface, reading))
+
+                # 々（踊り字）继承前一个漢字的读音
+                # 当 fugashi 把 々 单独分词或与标点合并（如 "々，"），
+                # 其特征字段不包含注音，reading 等同于 surface。
+                # 此处检测并补上继承读音。
+                if "々" in surface and reading == surface and prev_kanji_reading:
+                    new_reading = []
+                    for c in surface:
+                        if c == "々":
+                            new_reading.append(prev_kanji_reading)
+                        else:
+                            new_reading.append(c)
+                    reading = "".join(new_reading)
+
+                pairs.append((surface, reading))
+
+                # 记录前一个漢字的注音，供后续 々 继承
+                if any(self._is_kanji(c) for c in surface):
+                    if reading and reading != surface:
+                        prev_kanji_reading = reading
+
+                idx += len(surface)
         except Exception:
             # 回退：逐字处理
             for c in text:
