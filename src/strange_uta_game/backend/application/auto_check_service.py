@@ -1773,6 +1773,11 @@ class AutoCheckService:
                     # 与已锁定区间重叠 → 整段丢弃，继续找下一处
                     search_from = idx + 1
                     continue
+                # 命中位置已在连词块内（前驱字符 linked_to_next）→ 跳过字典覆盖，
+                # 避免单字词典条目（如 光→ひかり）破坏复合词注音（如 逆光=ぎゃっこう）。
+                if idx > 0 and chars[idx - 1].linked_to_next:
+                    search_from = idx + 1
+                    continue
                 # 命中：覆盖 chars[idx..idx+wlen]
                 for k in range(wlen):
                     ch = chars[idx + k]
