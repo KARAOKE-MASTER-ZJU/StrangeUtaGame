@@ -219,26 +219,27 @@ if sys.platform == "win32":
     else:
         print("! libportaudio64bit.dll 未找到，跳过 ARM64 DLL 修复")
 
-# ── 复制 Updater.exe（如已构建） ───────────────────────────────
-# Updater.exe 由 `python updater_app/build_updater.py` 独立打包，输出至
-# `updater_app/dist/Updater.exe`。本步骤幂等：若产物存在则复制到主程序 dist
-# 同级目录；否则视为打包失败（缺少 Updater 会被用户发现为"没有自动更新"）。
-_updater_src = PROJECT_ROOT / "updater_app" / "dist" / "Updater.exe"
+# ── 复制 Updater 二进制（如已构建） ────────────────────────────
+# Updater 由 `python updater_app/build_updater.py` 独立打包，输出至
+# `updater_app/dist/Updater[.exe]`（平台相关后缀）。
+# 本步骤幂等：若产物存在则复制到主程序 dist，否则警告但不阻断。
+_UPDATER_BIN = "Updater.exe" if sys.platform == "win32" else "Updater"
+_updater_src = PROJECT_ROOT / "updater_app" / "dist" / _UPDATER_BIN
 _updater_dst_dir = PROJECT_ROOT / "dist" / "StrangeUtaGame"
-_updater_dst = _updater_dst_dir / "Updater.exe"
+_updater_dst = _updater_dst_dir / _UPDATER_BIN
 _updater_found = False
 if _updater_dst_dir.exists():
     if _updater_src.exists():
         try:
             import shutil as _shutil
             _shutil.copy2(str(_updater_src), str(_updater_dst))
-            print(f"✓ 已复制 Updater.exe → {_updater_dst}")
+            print(f"✓ 已复制 {_UPDATER_BIN} → {_updater_dst}")
             _updater_found = True
         except Exception as _e:
-            print(f"✗ 复制 Updater.exe 失败: {_e}")
+            print(f"✗ 复制 {_UPDATER_BIN} 失败: {_e}")
     else:
         print(
-            "✗ 未找到 updater_app/dist/Updater.exe。\n"
+            f"✗ 未找到 updater_app/dist/{_UPDATER_BIN}。\n"
             "  自动更新功能不可用。请先运行:\n"
             "    python updater_app/build_updater.py\n"
             "  再重新打包主程序。\n"
