@@ -33,6 +33,8 @@ class TimingSubInterface(SubSettingInterface):
             min_val=1, max_val=500, step=1, suffix=" ms", parent=g)
         self.card_disable_click_jump = SwitchSettingCard(FIF.CLOSE, "禁用单击跳转",
             "关闭单击字符/节奏点延迟后跳转到目标行的功能（双击跳转不受影响）", parent=g)
+        self.card_preview_guide = SwitchSettingCard(FIF.VIEW, "打轴预览指引",
+            "打轴播放时在当前行以光标为锚用过渡色提示：上一个打的字(80%) / 正在打的字(50%) / 下一个要打的字(20%)", parent=g)
         self.card_keysound = SwitchSettingCard(FIF.MUSIC, "按键音",
             "打轴时按下按键播放按下音、抬起句尾按键播放抬起音", parent=g)
         self.card_keysound_volume = SpinSettingCard(FIF.VOLUME, "按键音音量",
@@ -42,8 +44,8 @@ class TimingSubInterface(SubSettingInterface):
             "选择按键音音效风格",
             items=["默认", "osu", "街机风", "金属感"], parent=g)
         for c in [self.card_offset, self.card_speed_correction, self.card_export_offset,
-                  self.card_timing_step, self.card_disable_click_jump, self.card_keysound,
-                  self.card_keysound_volume, self.card_keysound_style]:
+                  self.card_timing_step, self.card_disable_click_jump, self.card_preview_guide,
+                  self.card_keysound, self.card_keysound_volume, self.card_keysound_style]:
             g.addSettingCard(c)
         self.expandLayout.addWidget(g)
 
@@ -77,6 +79,7 @@ class TimingSubInterface(SubSettingInterface):
         self.card_export_offset.value_changed.connect(self._notify_changed)
         self.card_timing_step.value_changed.connect(self._notify_changed)
         self.card_disable_click_jump.checked_changed.connect(self._notify_changed)
+        self.card_preview_guide.checked_changed.connect(self._notify_changed)
         self.card_keysound.checked_changed.connect(self._notify_changed)
         self.card_keysound_volume.value_changed.connect(self._notify_changed)
         self.card_keysound_style.index_changed.connect(self._notify_changed)
@@ -89,6 +92,7 @@ class TimingSubInterface(SubSettingInterface):
         self.card_export_offset.setValue(s.get("export.offset_ms", 0))
         self.card_timing_step.setValue(s.get("timing.timing_adjust_step_ms", 10))
         self.card_disable_click_jump.setChecked(s.get("timing.disable_click_jump", False))
+        self.card_preview_guide.setChecked(s.get("timing.preview_guide_enabled", False))
         self.card_keysound.setChecked(s.get("timing.keysound_enabled", True))
         self.card_keysound_volume.setValue(s.get("timing.keysound_volume", 100))
         style = s.get("timing.keysound_style", "default")
@@ -101,6 +105,7 @@ class TimingSubInterface(SubSettingInterface):
         s.set("export.offset_ms", self.card_export_offset.value())
         s.set("timing.timing_adjust_step_ms", self.card_timing_step.value())
         s.set("timing.disable_click_jump", self.card_disable_click_jump.isChecked())
+        s.set("timing.preview_guide_enabled", self.card_preview_guide.isChecked())
         s.set("timing.keysound_enabled", self.card_keysound.isChecked())
         s.set("timing.keysound_volume", self.card_keysound_volume.value())
         idx = self.card_keysound_style.currentIndex()

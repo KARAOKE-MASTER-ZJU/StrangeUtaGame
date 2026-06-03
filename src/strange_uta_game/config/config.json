@@ -99,7 +99,16 @@
     "enabled": true,
     "annotate_katakana_with_english": false
   },
-  "dictionary_version": 7,
+  "llm_ruby": {
+    "enabled": false,
+    "provider": "openai",
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "apply_user_dict": false,
+    "timeout_sec": 60
+  },
+  "dictionary_version": 9,
   "nicokara_tags": {
     "title": "",
     "artist": "",
@@ -132,6 +141,7 @@
       "stop": "S:short",
       "tag_now": "SPACE:short",
       "tag_now_extra": "",
+      "tag_and_delete_next": "",
       "seek_back": "Z:short",
       "seek_forward": "X:short",
       "speed_down": "Q:short",

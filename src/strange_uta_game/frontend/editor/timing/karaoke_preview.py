@@ -160,6 +160,16 @@ def _piecewise_wipe_ratio(
     return 1.0
 
 
+def _guide_colors(colors: "list[QColor]", alpha: float) -> "list[QColor]":
+    """走字预览指引：将颜色列表整体套用透明度（分色逐色保留，仅改 alpha）。"""
+    out = []
+    for _c in colors:
+        _cc = QColor(_c)
+        _cc.setAlphaF(alpha)
+        out.append(_cc)
+    return out
+
+
 def _ink_bounds(fm: QFontMetrics, text: str) -> tuple[int, int]:
     """返回 ``text`` 在给定字体度量下的墨水边界：``(ink_left, ink_width)``。
 
@@ -286,6 +296,7 @@ class KaraokePreview(QWidget):
         self._line_versions: dict = {}  # line_idx -> version
         self._global_version: int = 0  # 全局版本号，用于字体变化等全局刷新
         self._is_playing: bool = False
+        self._preview_guide_enabled: bool = False  # 走字预览指引（仅播放打轴时光标所在行生效）
         self._auto_scroll_enabled: bool = True  # 自动滚动开关，特殊场景可关闭
         self._auto_scroll_suspended: bool = False  # 用户交互后挂起自动滚动
         self._scroll_mode: str = "auto"  # auto / always / never
@@ -326,6 +337,11 @@ class KaraokePreview(QWidget):
     def set_disable_click_jump(self, disable: bool):
         """设置是否禁用单击跳转功能。"""
         self._disable_click_jump = bool(disable)
+
+    def set_preview_guide_enabled(self, enabled: bool):
+        """设置走字预览指引开关（播放打轴时当前行用过渡色提示打轴进度）。"""
+        self._preview_guide_enabled = bool(enabled)
+        self.update()
 
     def set_auto_scroll_enabled(self, enabled: bool):
         """设置是否启用自动滚动功能。特殊场景可关闭。"""
@@ -1102,34 +1118,37 @@ class KaraokePreview(QWidget):
         return None
 
     def _find_prev_line_last_timestamp(self, current_line_idx: int) -> Optional[int]:
-        """查找上一行的最后一个时间戳，用于行首无 leader 句子的 wipe 起始锚点。
+        """向前逐行查找最近一个有时间戳行的最后时间戳，用于行首 cc=0 字符的 wipe 起始锚点。
 
-        早停条件：若上一行存在 is_sentence_end=True 但无 global_sentence_end_ts，
-        或存在 check_count>0 但无 global_timestamps，说明上一行未完整打轴，
-        返回 None（调用方应跳过 wipe，不做 fallback）。
+        对每一行执行早停检测：若该行存在 is_sentence_end=True 但无 global_sentence_end_ts，
+        或存在 check_count>0 但无 global_timestamps，视为该行未完整打轴，则结束（返回 None）。
+        若该行全为 cc=0 且无时间戳，则跳过继续向前找。
 
         Returns:
-            上一行最后一个时间戳（global_sentence_end_ts 或 global_timestamps[-1]
-            中的最大值），或 None（上一行不存在 / 未完整打轴）。
+            最近一个有时间戳行的最后时间戳，或 None（遇到未完整打轴行或找到头）。
         """
         if not self._project or not self._project.sentences or current_line_idx <= 0:
             return None
-        prev_line = self._project.sentences[current_line_idx - 1]
-        last_ts: Optional[int] = None
-        for ch in prev_line.characters:
-            if ch.is_sentence_end and ch.global_sentence_end_ts is None:
-                return None  # 句尾无时间戳，上一行未完整打轴
-            if ch.check_count > 0 and not ch.global_timestamps:
-                return None  # 有 cp 标记但无时间戳，上一行未完整打轴
-            if ch.is_sentence_end and ch.global_sentence_end_ts is not None:
-                t = int(ch.global_sentence_end_ts)
-                if last_ts is None or t > last_ts:
-                    last_ts = t
-            if ch.global_timestamps:
-                t = int(ch.global_timestamps[-1])
-                if last_ts is None or t > last_ts:
-                    last_ts = t
-        return last_ts
+        for line_idx in range(current_line_idx - 1, -1, -1):
+            line = self._project.sentences[line_idx]
+            last_ts: Optional[int] = None
+            for ch in line.characters:
+                if ch.is_sentence_end and ch.global_sentence_end_ts is None:
+                    return None  # 未完整打轴，作为屏障终止查找
+                if ch.check_count > 0 and not ch.global_timestamps:
+                    return None  # 未完整打轴，作为屏障终止查找
+                if ch.is_sentence_end and ch.global_sentence_end_ts is not None:
+                    t = int(ch.global_sentence_end_ts)
+                    if last_ts is None or t > last_ts:
+                        last_ts = t
+                if ch.global_timestamps:
+                    t = int(ch.global_timestamps[-1])
+                    if last_ts is None or t > last_ts:
+                        last_ts = t
+            if last_ts is not None:
+                return last_ts
+            # 该行全为 cc=0 且无时间戳，继续向前找
+        return None
 
     def _get_sentence_render_data(
         self, idx: int, sentence, main_fm, font_key: str
@@ -1365,40 +1384,49 @@ class KaraokePreview(QWidget):
             # 句子内第一个 leader 之前的无 ts 字符
             first_leader = leaders[0]
             if first_leader > sent_start:
-                # 行头（sent_start == 0）时：先处理行首连续 cc=0 字符，
-                # 以上一行最后时间戳为起点、first_leader 的 ts 为终点分配。
-                # 遇到第一个 cc>0 的字符立即停止，剩余字符走老算法。
-                old_algo_start = sent_start
-                if sent_start == 0:
-                    no_cc_end = sent_start
-                    for ci in range(sent_start, first_leader):
-                        if characters[ci].check_count == 0:
-                            no_cc_end = ci + 1
-                        else:
-                            break
-                    if no_cc_end > sent_start:
+                # 收集句首连续 cc=0 字符；遇第一个 cc>0 立即停止
+                no_cc_end = sent_start
+                for ci in range(sent_start, first_leader):
+                    if characters[ci].check_count == 0:
+                        no_cc_end = ci + 1
+                    else:
+                        break
+
+                # 确定起始锚点：
+                #   sent_start == 0（行首句）→ 借上一行末尾时间戳
+                #   sent_start  > 0（行中句）→ 借上一句 global_sentence_end_ts
+                if no_cc_end > sent_start:
+                    _start_anchor: Optional[int] = None
+                    if sent_start == 0:
                         if _prev_line_last_ts is None:
                             _prev_line_last_ts = self._find_prev_line_last_timestamp(idx)
-                        if _prev_line_last_ts is None:
-                            no_cc_end = sent_start  # 无有效起点，不 wipe，回退至老算法
-                    if no_cc_end > sent_start:
-                        _start_nl = _prev_line_last_ts  # type: ignore[assignment]
-                        _end_nl = start_times[first_leader]
-                        if _end_nl > _start_nl:
-                            seg_w = sum(char_widths[ci] for ci in range(sent_start, no_cc_end))
-                            cum_w = 0
-                            for ci in range(sent_start, no_cc_end):
-                                w = char_widths[ci]
-                                ratio = cum_w / seg_w if seg_w > 0 else 0.0
-                                next_ratio = (cum_w + w) / seg_w if seg_w > 0 else 1.0
-                                char_wipe_times[ci] = (
-                                    int(_start_nl + (_end_nl - _start_nl) * ratio),
-                                    int(_start_nl + (_end_nl - _start_nl) * next_ratio),
-                                )
-                                cum_w += w
-                        old_algo_start = no_cc_end
+                        _start_anchor = _prev_line_last_ts
+                    else:
+                        prev_end_ts = characters[sent_start - 1].global_sentence_end_ts
+                        if prev_end_ts is not None:
+                            _start_anchor = int(prev_end_ts)
+                    if _start_anchor is None:
+                        no_cc_end = sent_start  # 无有效锚点，不 wipe
 
-                # 剩余 pre-leader 字符（cc>0 未打轴，或非行头的 pre-leader 字符）：
+                # 将 cc=0 字符分配到 [_start_anchor, first_leader_ts]
+                old_algo_start = sent_start
+                if no_cc_end > sent_start:
+                    _end_nl = start_times[first_leader]
+                    if _end_nl > _start_anchor:  # type: ignore[operator]
+                        seg_w = sum(char_widths[ci] for ci in range(sent_start, no_cc_end))
+                        cum_w = 0
+                        for ci in range(sent_start, no_cc_end):
+                            w = char_widths[ci]
+                            ratio = cum_w / seg_w if seg_w > 0 else 0.0
+                            next_ratio = (cum_w + w) / seg_w if seg_w > 0 else 1.0
+                            char_wipe_times[ci] = (
+                                int(_start_anchor + (_end_nl - _start_anchor) * ratio),  # type: ignore[operator]
+                                int(_start_anchor + (_end_nl - _start_anchor) * next_ratio),  # type: ignore[operator]
+                            )
+                            cum_w += w
+                    old_algo_start = no_cc_end
+
+                # 剩余 pre-leader 字符（cc>0 未打轴）：
                 # 老算法——按像素宽度加权分配到 first_leader 的 wipe 窗口内
                 if old_algo_start < first_leader and first_leader in char_wipe_times:
                     leader_start_ts, leader_end_ts = char_wipe_times[first_leader]
@@ -1457,47 +1485,66 @@ class KaraokePreview(QWidget):
                 group_ruby_ink[leader_ci] = _ink_bounds(fm_ruby, merged_text)
 
         # ---------- 连词组 ruby 的分段 wipe 时间轴 ----------
-        # 将组内每个成员的 ruby 分段（part 锚点或整段 wipe 窗口）按顺序拼接，
-        # 累计墨水 advance 占比 → segments = [(t0, t1, w0, w1), ...]。
-        # 渲染层用 _piecewise_wipe_ratio 求比例，使连词组 ruby 与原字符逻辑一致：
-        # 按时间比例分段、空 part 不推进、段间空隙保持，墨水边缘走字（非匀速）。
+        # 连词组的 ruby 横跨整个组（如「明日」中「日」无节奏点，与「明」合并重分配
+        # 区间）。ruby 的假名边界必须来自各成员**实际打轴的** global_timestamps，
+        # 而非成员主文字 wipe 窗口的末端——后者可能是重分配出来的临时分割点
+        # （明的主文字在组中段就走完，若用它当 ruby 末锚点，あした 会在「明」走完时
+        # 就全部走完，丢失「日」对应的时长）。
+        #
+        # 做法：把组内所有成员的 (mora 时间戳, mora 墨水 advance) 按序摊平，相邻时间戳
+        # 即段边界；**最后一段延伸到整组真正的结束时间**（组尾成员 wipe 终点）。
+        # 空 part（advance=0）消耗时间但不推进墨水；段间空隙保持不推进。
         group_ruby_wipe: dict[int, list[tuple[int, int, float, float]]] = {}
         for leader_ci, group in linked_leader_groups.items():
-            raw_segs: list[tuple[int, int, float]] = []  # (t0, t1, advance_w)
+            # 组真正的结束时间：组尾成员主文字 wipe 终点（无则回退到组内最大终点）
+            group_end: int | None = None
+            _gw_last = char_wipe_times.get(group[-1])
+            if _gw_last:
+                group_end = _gw_last[1]
+            else:
+                for gci in group:
+                    _wt = char_wipe_times.get(gci)
+                    if _wt and (group_end is None or _wt[1] > group_end):
+                        group_end = _wt[1]
+            # 摊平各成员的 mora：(时间戳, 墨水 advance)
+            flat: list[tuple[int, float]] = []
             for gci in group:
                 ruby = characters[gci].ruby
                 if not ruby or not ruby.text:
                     continue
-                anchors = char_part_anchors.get(gci)
-                if anchors and len(anchors) >= 2:
-                    n = len(anchors) - 1
-                    parts = ruby.parts if ruby.parts else []
-                    if len(parts) == n:
-                        seg_ws = [
-                            float(fm_ruby.horizontalAdvance(p.text)) for p in parts
-                        ]
-                    else:
-                        # part 数与段数不匹配：整串 advance 等分到 N 段
-                        _tot = float(fm_ruby.horizontalAdvance(ruby.text))
-                        seg_ws = [_tot / n] * n
-                    for k in range(n):
-                        raw_segs.append((anchors[k], anchors[k + 1], seg_ws[k]))
+                gts = list(characters[gci].global_timestamps)
+                parts = ruby.parts if ruby.parts else []
+                if gts and len(parts) == len(gts):
+                    for _ts, _p in zip(gts, parts):
+                        flat.append((int(_ts), float(fm_ruby.horizontalAdvance(_p.text))))
+                elif gts:
+                    # parts 数与时间戳数不一致：整串 advance 等分到各时间戳
+                    _per = float(fm_ruby.horizontalAdvance(ruby.text)) / len(gts)
+                    for _ts in gts:
+                        flat.append((int(_ts), _per))
                 else:
-                    wt = char_wipe_times.get(gci)
-                    if wt:
-                        raw_segs.append(
-                            (wt[0], wt[1], float(fm_ruby.horizontalAdvance(ruby.text)))
+                    # 成员无自身节奏点但带 ruby：以其主文字 wipe 起点为锚整段推进
+                    _wt = char_wipe_times.get(gci)
+                    if _wt:
+                        flat.append(
+                            (_wt[0], float(fm_ruby.horizontalAdvance(ruby.text)))
                         )
-            if not raw_segs:
+            if not flat or group_end is None:
                 continue
-            total_w = sum(w for _, _, w in raw_segs)
+            # 时间戳须单调（防脏数据）；末锚点延伸到 group_end
+            flat.sort(key=lambda it: it[0])
+            total_w = sum(w for _, w in flat)
             if total_w <= 0:
                 continue
             segs: list[tuple[int, int, float, float]] = []
             cum = 0.0
-            for t0, t1, w in raw_segs:
+            for i, (_ts, _w) in enumerate(flat):
+                t0 = _ts
+                t1 = flat[i + 1][0] if i + 1 < len(flat) else group_end
+                if t1 < t0:
+                    t1 = t0
                 w0 = cum / total_w
-                cum += w
+                cum += _w
                 segs.append((t0, t1, w0, cum / total_w))
             group_ruby_wipe[leader_ci] = segs
 
@@ -1615,6 +1662,55 @@ class KaraokePreview(QWidget):
             else:
                 self.seek_to_char_requested.emit(line_idx, char_idx)
             return
+
+    def _compute_guide_alpha(self, characters, cursor_idx: int) -> dict:
+        """走字预览指引：返回 ``char_pos -> 透明度(alphaF)`` 映射。
+
+        以打轴光标 ``cursor_idx``（``_current_char_idx``）为锚，而非时间戳分布——
+        "用户正在打哪个字"的唯一真相来源是光标，回跳/seek/跳着打都能正确跟随。
+
+        分群：每个 ``check_count > 0`` 的字符开启一个新字群，其后紧邻的
+        ``check_count == 0``（无 cc，不单独打轴）字符并入该字群——即"上一个打的字
+        与当前打的字之间不需要打的字"会被组合进同一个字群。
+
+        再按光标所在字群相对位置上色（分色由 ``_draw_split_text`` 负责）：
+
+          - 光标所在字群        = 正在打的字 → 0.5（无时间戳、走不了字，主动上色）
+          - 紧邻的上一个字群    = 上一个打的字 → 0.8（避免"已完成"误解）
+          - 紧邻的下一个字群    = 下一个要打的字 → 0.2
+
+        其余字符不返回（保持正常着色/走字）。
+        """
+        groups: list[list[int]] = []
+        char_to_group: dict[int, int] = {}
+        cur: Optional[list[int]] = None
+        for ci, ch in enumerate(characters):
+            if ch.check_count > 0:
+                cur = [ci]
+                groups.append(cur)
+            elif cur is not None:
+                cur.append(ci)
+            else:
+                cur = [ci]
+                groups.append(cur)
+            char_to_group[ci] = len(groups) - 1
+        if not groups:
+            return {}
+
+        # 光标定位到字群：越界时 clamp 到行内有效范围
+        ci_clamped = max(0, min(cursor_idx, len(characters) - 1))
+        cur_gi = char_to_group.get(ci_clamped, 0)
+
+        alpha: dict[int, float] = {}
+        for ci in groups[cur_gi]:
+            alpha[ci] = 0.5
+        if cur_gi - 1 >= 0:
+            for ci in groups[cur_gi - 1]:
+                alpha[ci] = 0.8
+        if cur_gi + 1 < len(groups):
+            for ci in groups[cur_gi + 1]:
+                alpha[ci] = 0.2
+        return alpha
 
     # ---- 绘制 ----
 
@@ -1744,6 +1840,21 @@ class KaraokePreview(QWidget):
                 main_fm = fm_context
                 base_color = theme.karaoke_text_future
 
+            # 走字预览指引：仅在「设置开启 + 播放中 + 打轴光标所在行」时，对本行
+            # 以光标 _current_char_idx 为锚，计算"上一个/正在/下一个"字群的过渡透明度。
+            # 锚定 _current_line_idx（打轴光标行）而非 effective_current（视觉高亮行），
+            # 两者在播放/自动滚动挂起等状态下可能不一致。
+            if (
+                self._preview_guide_enabled
+                and self._is_playing
+                and idx == self._current_line_idx
+            ):
+                guide_alpha = self._compute_guide_alpha(
+                    line.characters, self._current_char_idx
+                )
+            else:
+                guide_alpha = {}
+
             # 使用缓存的渲染数据（字符宽度/分组/wipe时间/连词信息）
             _rd = self._get_sentence_render_data(
                 idx, line, main_fm, "cur" if is_current else "ctx"
@@ -1861,16 +1972,26 @@ class KaraokePreview(QWidget):
                         _r_ink_off, _r_ink_w = _group_ruby_ink.get(char_pos, (0, ruby_text_w))
                         _r_ink_x = ruby_x + _r_ink_off
                         painter.setFont(font_ruby)
-                        painter.setPen(base_color)
-                        painter.drawText(int(ruby_x), ruby_y, _merged)
-                        # Wipe — 连词组 ruby 与原字符逻辑一致：按各成员/各 part 的
-                        # 时间轴分段，空 part 不推进、段间空隙保持，墨水边缘走字（非匀速）。
-                        # 缺分段数据时回退为整段线性（组首 wipe 始 → 组尾 wipe 终）。
                         _rh_colors = _char_singer_colors.get(_grp[0], [highlight_color])
                         # Ruby 分色边界：基于该 ruby 串的实际墨水范围
                         _rh_br = fm_ruby.tightBoundingRect(_merged)
                         _rh_ink_top = ruby_y + _rh_br.top()
                         _rh_ink_bottom = ruby_y + _rh_br.bottom() + 1
+                        # 底色：命中走字预览指引时用走字后分色 × 透明度，否则用 base_color。
+                        # wipe 照常在底色之上叠加——能 wipe 的自然走字，无需任何拦截。
+                        _g_alpha_ruby = guide_alpha.get(char_pos)
+                        if _g_alpha_ruby is not None:
+                            _draw_split_text(
+                                painter, int(ruby_x), ruby_y, _merged,
+                                _guide_colors(_rh_colors, _g_alpha_ruby),
+                                _rh_ink_top, _rh_ink_bottom,
+                            )
+                        else:
+                            painter.setPen(base_color)
+                            painter.drawText(int(ruby_x), ruby_y, _merged)
+                        # Wipe — 连词组 ruby 与原字符逻辑一致：按各成员/各 part 的
+                        # 时间轴分段，空 part 不推进、段间空隙保持，墨水边缘走字（非匀速）。
+                        # 缺分段数据时回退为整段线性（组首 wipe 始 → 组尾 wipe 终）。
                         _segs = _group_ruby_wipe.get(char_pos)
                         if _segs:
                             _rr = _piecewise_wipe_ratio(_segs, current_time)
@@ -1981,9 +2102,6 @@ class KaraokePreview(QWidget):
                         _r_ink_off, _r_ink_w = _char_ruby_ink.get(char_pos, (0, ruby_text_w))
                         _r_ink_x = ruby_x + _r_ink_off
                         painter.setFont(font_ruby)
-                        painter.setPen(base_color)
-                        painter.drawText(int(ruby_x), ruby_y, _ruby_disp)
-                        # Wipe — 优先用 part 锚点轴分段；缺锚点回退旧整段线性
                         ruby_highlight_colors = _char_singer_colors.get(
                             char_pos, [highlight_color]
                         )
@@ -1991,6 +2109,19 @@ class KaraokePreview(QWidget):
                         _ruby_br = fm_ruby.tightBoundingRect(_ruby_disp)
                         _ruby_ink_top = ruby_y + _ruby_br.top()
                         _ruby_ink_bottom = ruby_y + _ruby_br.bottom() + 1
+                        # 底色：命中走字预览指引时用走字后分色 × 透明度，否则用 base_color。
+                        # wipe 照常在底色之上叠加——能 wipe 的自然走字，无需任何拦截。
+                        _g_alpha_ruby = guide_alpha.get(char_pos)
+                        if _g_alpha_ruby is not None:
+                            _draw_split_text(
+                                painter, int(ruby_x), ruby_y, _ruby_disp,
+                                _guide_colors(ruby_highlight_colors, _g_alpha_ruby),
+                                _ruby_ink_top, _ruby_ink_bottom,
+                            )
+                        else:
+                            painter.setPen(base_color)
+                            painter.drawText(int(ruby_x), ruby_y, _ruby_disp)
+                        # Wipe — 优先用 part 锚点轴分段；缺锚点回退旧整段线性
                         _r_anchors = _char_part_anchors.get(char_pos)
                         if _r_anchors is not None and len(_r_anchors) >= 2:
                             _i, _sr, _n = _anchor_segment(_r_anchors, current_time)
@@ -2077,6 +2208,11 @@ class KaraokePreview(QWidget):
                 char_text_w = main_fm.horizontalAdvance(ch)
                 char_draw_x = curr_x + (char_w - char_text_w) // 2
 
+                # 走字预览指引：命中时把"未走字部分的底色"换成走字后分色 × 透明度
+                # （上一个=0.8 / 正在=0.5 / 下一个=0.2）。底色之上 wipe 照常叠加——
+                # 能 wipe 的字走字后色会盖住底色自然走字，打完检查时一切正常，无需拦截。
+                _g_alpha = guide_alpha.get(char_pos)
+
                 if char_pos in char_wipe_times:
                     char_time, next_time = char_wipe_times[char_pos]
 
@@ -2109,9 +2245,16 @@ class KaraokePreview(QWidget):
                             ch, char_colors, _line_ink_top, _line_ink_bottom,
                         )
                     elif wipe_ratio > 0.0:
-                        # 正在唱 → wipe 渐变
-                        painter.setPen(base_color)
-                        painter.drawText(int(char_draw_x), int(y_center), ch)
+                        # 正在唱 → wipe 渐变。底色优先用指引过渡色（命中时）。
+                        if _g_alpha is not None:
+                            _draw_split_text(
+                                painter, int(char_draw_x), int(y_center),
+                                ch, _guide_colors(char_colors, _g_alpha),
+                                _line_ink_top, _line_ink_bottom,
+                            )
+                        else:
+                            painter.setPen(base_color)
+                            painter.drawText(int(char_draw_x), int(y_center), ch)
 
                         # 按字形墨水（ink）边界裁剪，而非 advance box：
                         # - 起点 = char_draw_x + ink_left（字形真正起墨像素列）
@@ -2139,13 +2282,27 @@ class KaraokePreview(QWidget):
                         # ink_w == 0（空格/全角空格/NBSP/Tab 等空白字符）：
                         # 没有可见墨水，跳过 clip 绘制，wipe 期间保持 base_color 即可。
                     else:
-                        # 未唱 → 基色
+                        # 未唱 → 基色（命中指引时改用过渡色）
+                        if _g_alpha is not None:
+                            _draw_split_text(
+                                painter, int(char_draw_x), int(y_center),
+                                ch, _guide_colors(char_colors, _g_alpha),
+                                _line_ink_top, _line_ink_bottom,
+                            )
+                        else:
+                            painter.setPen(base_color)
+                            painter.drawText(int(char_draw_x), int(y_center), ch)
+                else:
+                    # 不在任何字符组内 → 基色（命中指引时改用过渡色）
+                    if _g_alpha is not None:
+                        _draw_split_text(
+                            painter, int(char_draw_x), int(y_center),
+                            ch, _guide_colors(char_colors, _g_alpha),
+                            _line_ink_top, _line_ink_bottom,
+                        )
+                    else:
                         painter.setPen(base_color)
                         painter.drawText(int(char_draw_x), int(y_center), ch)
-                else:
-                    # 不在任何字符组内 → 基色
-                    painter.setPen(base_color)
-                    painter.drawText(int(char_draw_x), int(y_center), ch)
 
                 # 当前打轴位置指示线
                 if is_current and char_pos == self._current_char_idx:

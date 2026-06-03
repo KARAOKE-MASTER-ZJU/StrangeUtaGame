@@ -169,6 +169,7 @@ class RubyAnalyzeWorker(QObject):
     """
 
     progress = pyqtSignal(int, int)    # (current_line, total_lines)
+    llm_waiting = pyqtSignal()         # LLM 整首批量请求发出、等待返回中
     finished = pyqtSignal(object, int) # (analyzed_project_copy, deleted_count)
     error = pyqtSignal(str)
 
@@ -178,12 +179,15 @@ class RubyAnalyzeWorker(QObject):
         auto_check,
         only_noruby: bool,
         delete_types: list,
+        llm_apply_user_dict: bool = True,
     ):
         super().__init__()
         self._project = project_copy
         self._auto_check = auto_check
         self._only_noruby = only_noruby
         self._delete_types = delete_types
+        # LLM 注音时是否仍应用用户词典（非 LLM 模式恒为 True，无副作用）
+        self._llm_apply_user_dict = llm_apply_user_dict
 
     def run(self) -> None:
         try:
@@ -198,11 +202,17 @@ class RubyAnalyzeWorker(QObject):
             def _progress_cb(current: int, total: int) -> None:
                 self.progress.emit(current, total)
 
+            # LLM 注音：显式预热整首批量请求，期间发「等待 LLM」信号给 UI。
+            _analyzer = getattr(self._auto_check, "_analyzer", None)
+            if _analyzer is not None and hasattr(_analyzer, "prewarm"):
+                self.llm_waiting.emit()
+                _analyzer.prewarm()
+
             # Step 1: 生成假名注音（延迟 romaji，delete 之后再转）
             self._auto_check.apply_to_project(
                 self._project,
                 only_noruby=self._only_noruby,
-                apply_user_dict=not bool(self._delete_types),
+                apply_user_dict=(not bool(self._delete_types)) and self._llm_apply_user_dict,
                 progress_callback=_progress_cb,
                 skip_romanize=True,
             )
@@ -217,7 +227,8 @@ class RubyAnalyzeWorker(QObject):
                 deleted_count = delete_rubies_by_type_names(
                     self._project, self._delete_types
                 )
-                self._auto_check.apply_user_dict_to_project(self._project, skip_romanize=True)
+                if self._llm_apply_user_dict:
+                    self._auto_check.apply_user_dict_to_project(self._project, skip_romanize=True)
 
             # Step 3: 罗马音转换（走在 delete 之后，只转换剩余的假名注音）
             self._auto_check.romanize_project_rubies(self._project)
@@ -239,14 +250,22 @@ class RubySubsetAnalyzeWorker(QObject):
         restrict_indices=None 表示整行分析。
     """
 
+    llm_waiting = pyqtSignal()     # LLM 整首批量请求发出、等待返回中
     finished = pyqtSignal(object)  # analyzed project copy
     error = pyqtSignal(str)
 
-    def __init__(self, project_copy: "Project", auto_check, specs: list):
+    def __init__(
+        self,
+        project_copy: "Project",
+        auto_check,
+        specs: list,
+        apply_user_dict: bool = True,
+    ):
         super().__init__()
         self._project = project_copy
         self._auto_check = auto_check
         self._specs = specs
+        self._apply_user_dict = apply_user_dict
 
     def run(self) -> None:
         try:
@@ -256,16 +275,51 @@ class RubySubsetAnalyzeWorker(QObject):
             except Exception:
                 pass
 
+            # LLM 注音：显式预热整首批量请求，期间发「等待 LLM」信号给 UI。
+            _analyzer = getattr(self._auto_check, "_analyzer", None)
+            if _analyzer is not None and hasattr(_analyzer, "prewarm"):
+                self.llm_waiting.emit()
+                _analyzer.prewarm()
+
             for line_idx, restrict_indices in self._specs:
                 sentence = self._project.sentences[line_idx]
                 self._auto_check.apply_to_sentence(
-                    sentence, only_noruby=False, restrict_indices=restrict_indices
+                    sentence, only_noruby=False, restrict_indices=restrict_indices,
+                    apply_user_dict=self._apply_user_dict,
                 )
                 self._auto_check.update_checkpoints_from_rubies(sentence)
 
             self.finished.emit(self._project)
         except Exception as e:
             self.error.emit(str(e))
+
+
+# ──────────────────────────────────────────────
+# LLM 注音连通性测试
+# ──────────────────────────────────────────────
+
+
+class LLMTestWorker(QObject):
+    """后台测试 LLM 注音连通性，避免阻塞设置页 UI。"""
+
+    finished = pyqtSignal(bool, str)  # (ok, message)
+
+    def __init__(self, config, proxies=None):
+        super().__init__()
+        self._config = config
+        self._proxies = proxies
+
+    def run(self) -> None:
+        try:
+            from strange_uta_game.backend.infrastructure.parsers.llm_ruby import (
+                LLMRubyClient,
+            )
+
+            client = LLMRubyClient(self._config, proxies=self._proxies)
+            ok, msg = client.test_connection()
+            self.finished.emit(ok, msg)
+        except Exception as e:  # noqa: BLE001
+            self.finished.emit(False, f"{type(e).__name__}: {e}")
 
 
 # ──────────────────────────────────────────────

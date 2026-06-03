@@ -62,6 +62,13 @@ theme.mode = mode_map.get(theme_value, ThemeMode.AUTO)
 if _icon_path.exists():
     app.setWindowIcon(QIcon(str(_icon_path)))
 
+# 清理上次会话残留的 LLM 请求日志（每次启动从干净状态开始）
+try:
+    from strange_uta_game.backend.infrastructure.parsers.llm_ruby import clear_llm_logs
+    clear_llm_logs()
+except Exception:
+    pass
+
 # 现在可以安全导入其他模块
 from strange_uta_game.frontend.main_window import MainWindow
 

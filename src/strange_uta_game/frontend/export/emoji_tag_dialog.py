@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -133,6 +134,10 @@ class EmojiTagDialog(QDialog):
         self._populate_rows()
 
     def _init_ui(self):
+        screen = self.parent().screen() if self.parent() else QApplication.primaryScreen()
+        if screen:
+            self.setMaximumHeight(int(screen.availableGeometry().height() * 0.85))
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 16)
         layout.setSpacing(12)
@@ -170,10 +175,9 @@ class EmojiTagDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(300)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(self._row_widget)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, stretch=1)
 
         layout.addStretch()
 

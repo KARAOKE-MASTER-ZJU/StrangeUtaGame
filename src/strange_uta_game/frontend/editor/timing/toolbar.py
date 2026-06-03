@@ -42,8 +42,9 @@ class EditorToolBar(QFrame):
     set_singer_by_line_clicked = pyqtSignal()
     apply_singer_clicked = pyqtSignal()
     singer_manager_clicked = pyqtSignal()
-    complete_timestamp_clicked = pyqtSignal()  # 补全时间戳
-    adjust_raw_timestamp_clicked = pyqtSignal()  # 调整原始时间戳
+    complete_timestamp_clicked = pyqtSignal()          # 补全时间戳
+    separate_symbol_timestamp_clicked = pyqtSignal()   # 分离符号时间戳
+    adjust_raw_timestamp_clicked = pyqtSignal()        # 调整原始时间戳
     offset_changed = pyqtSignal(int)  # 偏移量变化（毫秒）
 
     def __init__(self, parent=None):
@@ -122,17 +123,16 @@ class EditorToolBar(QFrame):
         self.btn_fulltext.clicked.connect(self.open_fulltext_clicked.emit)
         layout.addWidget(self.btn_fulltext)
 
-        self.btn_complete_timestamp = PushButton("补全时间戳", self)
-        self.btn_complete_timestamp.setIcon(FIF.DATE_TIME)
-        self.btn_complete_timestamp.setFixedHeight(32)
-        self.btn_complete_timestamp.clicked.connect(self.complete_timestamp_clicked.emit)
-        layout.addWidget(self.btn_complete_timestamp)
-
-        self.btn_adjust_raw_timestamp = PushButton("调整原始时间戳", self)
-        self.btn_adjust_raw_timestamp.setIcon(FIF.DATE_TIME)
-        self.btn_adjust_raw_timestamp.setFixedHeight(32)
-        self.btn_adjust_raw_timestamp.clicked.connect(self.adjust_raw_timestamp_clicked.emit)
-        layout.addWidget(self.btn_adjust_raw_timestamp)
+        # 时间戳工具下拉菜单
+        self.btn_timestamp = DropDownPushButton("时间戳工具", self)
+        self.btn_timestamp.setIcon(FIF.DATE_TIME)
+        self.btn_timestamp.setFixedHeight(32)
+        ts_menu = RoundMenu(parent=self.btn_timestamp)
+        ts_menu.addAction(Action(FIF.DATE_TIME, "补全时间戳", self, triggered=self.complete_timestamp_clicked.emit))
+        ts_menu.addAction(Action(FIF.DATE_TIME, "分离符号时间戳", self, triggered=self.separate_symbol_timestamp_clicked.emit))
+        ts_menu.addAction(Action(FIF.DATE_TIME, "调整原始时间戳", self, triggered=self.adjust_raw_timestamp_clicked.emit))
+        self.btn_timestamp.setMenu(ts_menu)
+        layout.addWidget(self.btn_timestamp)
 
         layout.addSpacing(10)
 

@@ -235,6 +235,16 @@ class ExportInterface(QWidget):
         )
         self._chk_insert_singer_tags.hide()
 
+        self._chk_insert_singer_each_line = CheckBox("->每行行首都插入演唱者")
+        self._chk_insert_singer_each_line.setToolTip(
+            "每一行开头都插入演唱者名称标签（需先启用「在演唱者切换处插入标签」）"
+        )
+        self._chk_insert_singer_each_line.setEnabled(False)
+        self._chk_insert_singer_each_line.hide()
+        self._chk_insert_singer_tags.stateChanged.connect(
+            lambda state: self._chk_insert_singer_each_line.setEnabled(bool(state))
+        )
+
         # 分色标签设置助手按钮（仅 Nicokara 格式显示，紧接「插入演唱者标签」之后）
         self._btn_emoji_config = PushButton("分色标签设置助手...", self)
         self._btn_emoji_config.setToolTip(
@@ -246,6 +256,7 @@ class ExportInterface(QWidget):
         self._singer_group.hide()
         right_layout.addWidget(self._singer_group)
         right_layout.addWidget(self._chk_insert_singer_tags)
+        right_layout.addWidget(self._chk_insert_singer_each_line)
         right_layout.addWidget(self._btn_emoji_config)
 
         right_layout.addStretch()
@@ -347,6 +358,7 @@ class ExportInterface(QWidget):
             self.btn_tags.setVisible(is_nicokara)
             self._singer_group.setVisible(is_nicokara)
             self._chk_insert_singer_tags.setVisible(is_nicokara)
+            self._chk_insert_singer_each_line.setVisible(is_nicokara)
             self._btn_emoji_config.setVisible(is_nicokara)
             if is_nicokara:
                 self._refresh_singer_checkboxes()
@@ -687,6 +699,7 @@ class ExportInterface(QWidget):
             offset_ms=self._get_export_offset(),
             singer_ids=self._get_selected_singer_ids(),
             insert_singer_tags=self._chk_insert_singer_tags.isChecked(),
+            insert_singer_each_line=self._chk_insert_singer_each_line.isChecked(),
             singer_map=self._get_singer_map(),
             software_compensation_ms=self._get_software_compensation(),
         )

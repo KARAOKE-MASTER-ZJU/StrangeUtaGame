@@ -83,6 +83,7 @@ class NicokaraExporter(BaseExporter):
         file_path: str,
         singer_ids: Optional[Set[str]] = None,
         insert_singer_tags: bool = False,
+        insert_singer_each_line: bool = False,
         singer_map: Optional[Dict[str, str]] = None,
     ) -> None:
         """导出为 Nicokara 逐字 LRC 格式
@@ -92,6 +93,7 @@ class NicokaraExporter(BaseExporter):
             file_path: 输出文件路径
             singer_ids: 要输出的演唱者 ID 集合（None 表示全部）
             insert_singer_tags: 是否在演唱者切换处插入【演唱者名】标签
+            insert_singer_each_line: 是否在每行行首插入演唱者名称标签
             singer_map: singer_id → 演唱者显示名的映射（insert_singer_tags 时使用）
         """
         self._validate_project(project)
@@ -115,12 +117,15 @@ class NicokaraExporter(BaseExporter):
             # 段落间距不再自动插入空行：由 project.sentences 原始空行负责
             # （批 18 #6：导入剥空行 / 导出保留空行，双向对称）
 
+            # 每行行首模式：重置 prev_singer_id 使首字符触发标签插入
+            effective_prev = None if insert_singer_each_line else prev_singer_id
+
             line_text, prev_singer_id = self._export_sentence_with_singer(
                 sentence,
                 singer_ids,
                 insert_singer_tags,
                 singer_map,
-                prev_singer_id,
+                effective_prev,
                 default_singer_id,
                 known_singer_ids,
             )
@@ -341,6 +346,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
         file_path: str,
         singer_ids: Optional[Set[str]] = None,
         insert_singer_tags: bool = False,
+        insert_singer_each_line: bool = False,
         singer_map: Optional[Dict[str, str]] = None,
         tag_data: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -351,6 +357,7 @@ class NicokaraWithRubyExporter(NicokaraExporter):
             file_path: 输出文件路径
             singer_ids: 要输出的演唱者 ID 集合（None 表示全部）
             insert_singer_tags: 是否在演唱者切换处插入【演唱者名】标签
+            insert_singer_each_line: 是否在每行行首插入演唱者名称标签
             singer_map: singer_id → 演唱者显示名的映射
             tag_data: Nicokara 元数据标签，格式与 AppSettings["nicokara_tags"] 相同
         """
@@ -373,12 +380,15 @@ class NicokaraWithRubyExporter(NicokaraExporter):
 
             # 段落间距不再自动插入空行（批 18 #6）
 
+            # 每行行首模式：重置 prev_singer_id 使首字符触发标签插入
+            effective_prev = None if insert_singer_each_line else prev_singer_id
+
             line_text, prev_singer_id = self._export_sentence_with_singer(
                 sentence,
                 singer_ids,
                 insert_singer_tags,
                 singer_map,
-                prev_singer_id,
+                effective_prev,
                 default_singer_id,
             )
             # 空行（只有空格、无时间戳）统一输出为真正的空行

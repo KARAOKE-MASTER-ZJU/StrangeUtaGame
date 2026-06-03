@@ -71,6 +71,7 @@ class ExportService:
         offset_ms: int = 0,
         singer_ids: Optional[Set[str]] = None,
         insert_singer_tags: bool = False,
+        insert_singer_each_line: bool = False,
         singer_map: Optional[Dict[str, str]] = None,
         software_compensation_ms: int = 0,
     ) -> ExportResult:
@@ -84,6 +85,7 @@ class ExportService:
                        global_timestamps，本参数保留只为向后兼容，不会被使用。
             singer_ids: 要输出的演唱者 ID 集合（None=全部，仅 Nicokara 格式有效）
             insert_singer_tags: 是否在演唱者切换处插入【演唱者名】标签
+            insert_singer_each_line: 是否在每行行首插入演唱者名称标签
             singer_map: singer_id → 演唱者显示名的映射
             software_compensation_ms: 软件导出补偿（毫秒），导出时给时间戳加上此值
 
@@ -131,6 +133,7 @@ class ExportService:
                     file_path,
                     singer_ids=singer_ids,
                     insert_singer_tags=insert_singer_tags,
+                    insert_singer_each_line=insert_singer_each_line,
                     singer_map=singer_map,
                 )
             elif isinstance(exporter, NicokaraExporter):
@@ -139,6 +142,7 @@ class ExportService:
                     file_path,
                     singer_ids=singer_ids,
                     insert_singer_tags=insert_singer_tags,
+                    insert_singer_each_line=insert_singer_each_line,
                     singer_map=singer_map,
                 )
             else:

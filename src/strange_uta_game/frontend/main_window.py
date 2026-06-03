@@ -4,7 +4,7 @@
 参考 March7thAssistant 的 UI 架构。
 """
 
-from PyQt6.QtCore import Qt, QThread, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
@@ -49,6 +49,15 @@ class MainWindow(MSFluentWindow):
 
         # 跟踪当前界面（用于 switchTo 自动应用修改，必须在 _init_navigation 之前）
         self._current_interface = None
+
+        # 窗口大小/最大化记忆：使用独立的 AppSettings 实例，与设置页的编辑
+        # 生命周期解耦；保存前会 reload，避免覆盖设置页刚写入的其它字段。
+        from strange_uta_game.frontend.settings.app_settings import AppSettings
+        self._win_settings = AppSettings()
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(400)
+        self._geometry_save_timer.timeout.connect(self._save_window_geometry)
 
         self._init_window()
         self._init_interfaces()
@@ -137,6 +146,69 @@ class MainWindow(MSFluentWindow):
                 (geometry.width() - self.width()) // 2,
                 (geometry.height() - self.height()) // 2,
             )
+
+        # 应用用户上次的窗口大小/最大化习惯（覆盖上面的默认尺寸）
+        self._restore_window_geometry()
+
+    def _restore_window_geometry(self):
+        """启动时从 config.json 恢复窗口大小与最大化状态（仅读取一次）。
+
+        读取 ``ui.window_size`` / ``ui.window_maximized``；字段缺失时维持
+        :meth:`_init_window` 设定的默认尺寸（即不做任何改动）。
+        """
+        try:
+            size = self._win_settings.get("ui.window_size", None)
+            if isinstance(size, (list, tuple)) and len(size) == 2:
+                self.resize(int(size[0]), int(size[1]))
+                # 改变尺寸后重新居中
+                screen = QApplication.primaryScreen()
+                if screen is not None:
+                    geo = screen.availableGeometry()
+                    self.move(
+                        (geo.width() - self.width()) // 2,
+                        (geo.height() - self.height()) // 2,
+                    )
+            if self._win_settings.get("ui.window_maximized", False):
+                self.showMaximized()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("恢复窗口几何状态失败", exc_info=True)
+
+    def _save_window_geometry(self):
+        """把当前窗口大小与最大化状态实时写入 config.json。
+
+        先 ``reload`` 取得磁盘上最新的完整配置（避免覆盖设置页刚保存的其它
+        字段），再仅更新窗口两项后落盘。最大化/全屏时不覆盖 ``window_size``，
+        以便退出最大化后仍能恢复用户习惯的普通窗口尺寸。
+        """
+        win_settings = getattr(self, "_win_settings", None)
+        if win_settings is None:
+            return
+        try:
+            maximized = self.isMaximized() or self.isFullScreen()
+            win_settings.reload()
+            win_settings.set("ui.window_maximized", maximized)
+            if not maximized:
+                win_settings.set("ui.window_size", [self.width(), self.height()])
+            win_settings.save()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("保存窗口几何状态失败", exc_info=True)
+
+    def _schedule_geometry_save(self):
+        """触发防抖保存（拖拽缩放过程中合并多次事件，停止后才写盘）。"""
+        timer = getattr(self, "_geometry_save_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_geometry_save()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._schedule_geometry_save()
 
     def _on_theme_changed(self):
         """主题变化时更新 Win10 兜底背景色"""
@@ -856,6 +928,9 @@ class MainWindow(MSFluentWindow):
         表示当前流程是 updater 触发的硬退出 —— 不弹"未保存"对话框，改为
         把脏数据兜底写到临时文件（next 启动会触发"闪退恢复"机制），然后立刻退出。
         """
+        # 退出前确保窗口大小/最大化状态已落盘（防抖定时器可能来不及触发）
+        self._save_window_geometry()
+
         if self._force_quitting:
             # 兜底保存（脏数据写到 .cache/.untitled.sug.temp 或 .项目名.sug.temp）
             try:
@@ -869,6 +944,7 @@ class MainWindow(MSFluentWindow):
                     self.editorInterface.release_resources()
                 except Exception:
                     pass
+            self._clear_llm_logs()
             QApplication.quit()
             e.accept()
             return
@@ -902,8 +978,20 @@ class MainWindow(MSFluentWindow):
         # 释放编辑器资源
         if hasattr(self, "editorInterface"):
             self.editorInterface.release_resources()
+        self._clear_llm_logs()
         QApplication.quit()
         e.accept()
+
+    @staticmethod
+    def _clear_llm_logs() -> None:
+        """退出时清除会话级 LLM 请求日志。"""
+        try:
+            from strange_uta_game.backend.infrastructure.parsers.llm_ruby import (
+                clear_llm_logs,
+            )
+            clear_llm_logs()
+        except Exception:
+            pass
 
     def request_force_quit(self) -> None:
         """立即退出主程序（由 updater 流程调用）。

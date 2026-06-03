@@ -20,12 +20,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QVBoxLayout,
@@ -35,6 +36,8 @@ from PyQt6.QtGui import QIntValidator
 from qfluentwidgets import (
     ComboBox,
     FluentIcon as FIF,
+    InfoBar,
+    InfoBarPosition,
     LineEdit,
     PrimaryPushButton,
     PushButton,
@@ -236,6 +239,97 @@ class DictionarySubInterface(SubSettingInterface):
         g.addSettingCard(self.card_annotate_katakana_with_english)
         self.expandLayout.addWidget(g)
 
+        self._init_llm_ui()
+
+    def _init_llm_ui(self):
+        """LLM 注音设置组。"""
+        g = SettingCardGroup("LLM 注音", self.scrollWidget)
+
+        # 1. 总开关
+        self.card_llm_enabled = SwitchSettingCard(
+            FIF.ROBOT, "启用 LLM 注音",
+            "开启后注音改用 LLM（整首一次发送、保留上下文），跳过 WinRT/Sudachi/pykakasi；"
+            "请求失败时自动回退本地引擎。",
+            parent=g)
+
+        # 2. 接口格式
+        provider_card = SettingCard(FIF.GLOBE, "接口格式",
+            "选择服务商的接口形态：Chat Completions 覆盖大多数（含本地 Ollama/LM Studio）；"
+            "Anthropic 用 /v1/messages；Responses 用 /v1/responses（OpenAI 新接口）", g)
+        self._llm_provider_combo = ComboBox(provider_card)
+        # 显示文本 ↔ 内部 key（与 LLMRubyConfig.api_format 对应）
+        self._LLM_PROVIDERS = [
+            ("OpenAI Chat Completions（兼容）", "openai"),
+            ("Anthropic Messages", "anthropic"),
+            ("OpenAI Responses", "responses"),
+        ]
+        for label, _key in self._LLM_PROVIDERS:
+            self._llm_provider_combo.addItem(label)
+        self._llm_provider_combo.setFixedWidth(240)
+        provider_card.hBoxLayout.addWidget(self._llm_provider_combo, 0, Qt.AlignmentFlag.AlignRight)
+        provider_card.hBoxLayout.addSpacing(16)
+        self.provider_card = provider_card
+
+        # 3. Base URL
+        base_card = SettingCard(FIF.LINK, "API 地址 (Base URL)",
+            "如 https://api.openai.com/v1（自动补 /chat/completions）；填完整端点也可，"
+            "末尾加 # 表示按字面 URL 使用不再追加路径", g)
+        self._llm_base_edit = LineEdit(base_card)
+        self._llm_base_edit.setFixedWidth(320)
+        self._llm_base_edit.setPlaceholderText("https://api.openai.com/v1")
+        self._llm_base_edit.setClearButtonEnabled(True)
+        base_card.hBoxLayout.addWidget(self._llm_base_edit, 0, Qt.AlignmentFlag.AlignRight)
+        base_card.hBoxLayout.addSpacing(16)
+        self.base_card = base_card
+
+        # 4. API Key（密码回显）
+        key_card = SettingCard(FIF.VPN, "API Key",
+            "仅保存在本地 config.json（明文）；默认留空", g)
+        self._llm_key_edit = LineEdit(key_card)
+        self._llm_key_edit.setFixedWidth(320)
+        self._llm_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._llm_key_edit.setPlaceholderText("sk-...")
+        self._llm_key_edit.setClearButtonEnabled(True)
+        key_card.hBoxLayout.addWidget(self._llm_key_edit, 0, Qt.AlignmentFlag.AlignRight)
+        key_card.hBoxLayout.addSpacing(16)
+        self.key_card = key_card
+
+        # 5. 模型
+        model_card = SettingCard(FIF.TAG, "模型 (Model)",
+            "如 gpt-4o-mini、deepseek-chat、claude-3-5-haiku-latest", g)
+        self._llm_model_edit = LineEdit(model_card)
+        self._llm_model_edit.setFixedWidth(320)
+        self._llm_model_edit.setPlaceholderText("gpt-4o-mini")
+        self._llm_model_edit.setClearButtonEnabled(True)
+        model_card.hBoxLayout.addWidget(self._llm_model_edit, 0, Qt.AlignmentFlag.AlignRight)
+        model_card.hBoxLayout.addSpacing(16)
+        self.model_card = model_card
+
+        # 6. 测试连通性
+        test_card = SettingCard(FIF.CONNECT, "测试连通性",
+            "用当前配置对一行示例发起注音请求，验证地址/Key/模型是否可用", g)
+        self.btn_llm_test = PushButton("测试", test_card)
+        self.btn_llm_test.setFont(QFont("Microsoft YaHei", 10))
+        self.btn_llm_test.clicked.connect(self._on_llm_test)
+        test_card.hBoxLayout.addWidget(self.btn_llm_test, 0, Qt.AlignmentFlag.AlignRight)
+        test_card.hBoxLayout.addSpacing(16)
+        self.test_card = test_card
+
+        # 7. LLM 注音时应用用户词典
+        self.card_llm_apply_dict = SwitchSettingCard(
+            FIF.DICTIONARY, "LLM 注音时应用用户词典",
+            "开启后即便使用 LLM 注音，用户词典条目仍以最高优先级覆盖；关闭则完全以 LLM 结果为准",
+            parent=g)
+
+        g.addSettingCard(self.card_llm_enabled)
+        g.addSettingCard(self.provider_card)
+        g.addSettingCard(self.base_card)
+        g.addSettingCard(self.key_card)
+        g.addSettingCard(self.model_card)
+        g.addSettingCard(self.test_card)
+        g.addSettingCard(self.card_llm_apply_dict)
+        self.expandLayout.addWidget(g)
+
     # ──────────────────────────────────────────────
     # 对话框入口（按钮槽）
     # ──────────────────────────────────────────────
@@ -298,6 +392,92 @@ class DictionarySubInterface(SubSettingInterface):
         self.card_auto_update_enabled.checked_changed.connect(self._on_auto_update_enabled_changed)
         self._interval_edit.editingFinished.connect(self._on_interval_changed)
         self._interval_combo.currentIndexChanged.connect(lambda _: self._on_interval_changed())
+        # LLM 注音
+        self.card_llm_enabled.checked_changed.connect(
+            lambda _: self._save_llm("enabled", self.card_llm_enabled.isChecked()))
+        self.card_llm_apply_dict.checked_changed.connect(
+            lambda _: self._save_llm("apply_user_dict", self.card_llm_apply_dict.isChecked()))
+        self._llm_provider_combo.currentIndexChanged.connect(self._on_llm_provider_changed)
+        self._llm_base_edit.editingFinished.connect(
+            lambda: self._save_llm("base_url", self._llm_base_edit.text().strip()))
+        self._llm_key_edit.editingFinished.connect(
+            lambda: self._save_llm("api_key", self._llm_key_edit.text().strip()))
+        self._llm_model_edit.editingFinished.connect(
+            lambda: self._save_llm("model", self._llm_model_edit.text().strip()))
+
+    # ──────────────────────────────────────────────
+    # LLM 注音槽
+    # ──────────────────────────────────────────────
+
+    def _save_llm(self, key: str, value) -> None:
+        if self._settings_ref is None:
+            return
+        self._settings_ref.set(f"llm_ruby.{key}", value)
+        self._settings_ref.save()
+        self._notify_changed()
+
+    def _on_llm_provider_changed(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._LLM_PROVIDERS):
+            return
+        self._save_llm("provider", self._LLM_PROVIDERS[idx][1])
+
+    def _on_llm_test(self) -> None:
+        """后台测试 LLM 连通性，结果以 InfoBar 展示。"""
+        if self._settings_ref is None:
+            return
+        # 先把当前输入框内容落盘，确保用最新配置测试
+        self._save_llm("base_url", self._llm_base_edit.text().strip())
+        self._save_llm("api_key", self._llm_key_edit.text().strip())
+        self._save_llm("model", self._llm_model_edit.text().strip())
+
+        from strange_uta_game.backend.infrastructure.parsers.llm_ruby import (
+            LLMRubyConfig,
+            _resolve_proxies,
+        )
+        from strange_uta_game.frontend.workers import LLMTestWorker
+
+        cfg = LLMRubyConfig.from_settings(self._settings_ref)
+        if not cfg.is_complete():
+            InfoBar.warning(
+                title="连接信息不完整",
+                content="请先填写 Base URL、API Key 与模型",
+                orient=Qt.Orientation.Horizontal, isClosable=True,
+                position=InfoBarPosition.TOP, duration=3000, parent=self)
+            return
+
+        self.btn_llm_test.setEnabled(False)
+        self.btn_llm_test.setText("测试中…")
+
+        worker = LLMTestWorker(cfg, proxies=_resolve_proxies(self._settings_ref))
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        # 强引用防回收
+        self._llm_test_worker = worker
+        self._llm_test_thread = thread
+
+        def _on_finished(ok: bool, msg: str) -> None:
+            self.btn_llm_test.setEnabled(True)
+            self.btn_llm_test.setText("测试")
+            if ok:
+                InfoBar.success(
+                    title="连接成功", content=msg,
+                    orient=Qt.Orientation.Horizontal, isClosable=True,
+                    position=InfoBarPosition.TOP, duration=4000, parent=self)
+            else:
+                InfoBar.warning(
+                    title="连接失败", content=msg,
+                    orient=Qt.Orientation.Horizontal, isClosable=True,
+                    position=InfoBarPosition.TOP, duration=6000, parent=self)
+            thread.quit()
+
+        def _cleanup() -> None:
+            self._llm_test_worker = None
+            self._llm_test_thread = None
+
+        worker.finished.connect(_on_finished)
+        thread.started.connect(worker.run)
+        thread.finished.connect(_cleanup)
+        thread.start()
 
     def _on_auto_update_enabled_changed(self, _checked: bool):
         if self._settings_ref is None:
@@ -357,6 +537,18 @@ class DictionarySubInterface(SubSettingInterface):
                 self._interval_combo.setCurrentIndex(i)
                 break
 
+        # LLM 注音
+        self.card_llm_enabled.setChecked(bool(s.get("llm_ruby.enabled", False)))
+        self.card_llm_apply_dict.setChecked(bool(s.get("llm_ruby.apply_user_dict", True)))
+        self._llm_base_edit.setText(str(s.get("llm_ruby.base_url", "") or ""))
+        self._llm_key_edit.setText(str(s.get("llm_ruby.api_key", "") or ""))
+        self._llm_model_edit.setText(str(s.get("llm_ruby.model", "") or ""))
+        provider_key = str(s.get("llm_ruby.provider", "openai") or "openai")
+        for i, (_label, key) in enumerate(self._LLM_PROVIDERS):
+            if key == provider_key:
+                self._llm_provider_combo.setCurrentIndex(i)
+                break
+
     def collect_settings(self, s):
         s.set("ruby_dictionary.annotate_katakana_with_english",
               self.card_annotate_katakana_with_english.isChecked())
@@ -373,3 +565,13 @@ class DictionarySubInterface(SubSettingInterface):
         if 0 <= unit_idx < len(self._UNIT_LABELS):
             s.set("network_dictionary.auto_update.interval_unit",
                   self._UNIT_LABELS[unit_idx][1])
+
+        # LLM 注音
+        s.set("llm_ruby.enabled", self.card_llm_enabled.isChecked())
+        s.set("llm_ruby.apply_user_dict", self.card_llm_apply_dict.isChecked())
+        s.set("llm_ruby.base_url", self._llm_base_edit.text().strip())
+        s.set("llm_ruby.api_key", self._llm_key_edit.text().strip())
+        s.set("llm_ruby.model", self._llm_model_edit.text().strip())
+        prov_idx = self._llm_provider_combo.currentIndex()
+        if 0 <= prov_idx < len(self._LLM_PROVIDERS):
+            s.set("llm_ruby.provider", self._LLM_PROVIDERS[prov_idx][1])

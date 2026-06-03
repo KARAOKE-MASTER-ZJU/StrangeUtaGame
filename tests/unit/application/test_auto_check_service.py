@@ -395,14 +395,14 @@ class TestFallbackSplitPeelKana:
     """连词回退：头尾假名剥离策略（_fallback_split_peel_kana）"""
 
     def test_kana_suffix_preserved(self):
-        """可愛い / かわいい → 使用 DummyAnalyzer 时无候选，首字全吃"""
+        """可愛い / かわいい → 头剥可=か、尾剥假名い，剩余わい分配给中间的愛。
+
+        pykakasi 提供单字候选（可=か），故能头部剥离；剥离后只剩中间字「愛」时，
+        把剩余读音直接给它，而不是把整串读音倒灌首字（旧「首字全吃」语义）。
+        """
         service = AutoCheckService(DummyAnalyzer())
         parts = service._fallback_split_peel_kana("可愛い", "かわいい")
-        assert len(parts) == 3
-        # DummyAnalyzer 无候选读音，首字承载全部读音
-        assert parts[0] == "かわいい", f"首字应承载全部读音，实际 {parts[0]}"
-        assert parts[1] == "", f"愛 应无读音，实际 {parts[1]}"
-        assert parts[2] == "", f"い 应无读音（被首字吸收），实际 {parts[2]}"
+        assert parts == ["か", "わい", "い"], f"应分配到各字，实际 {parts}"
 
     def test_pure_kanji_no_candidates_first_char_all(self):
         """无候选回退：XYZ/ABC → 首字全吃（保留原语义）"""
@@ -411,15 +411,21 @@ class TestFallbackSplitPeelKana:
         assert parts == ["ABC", "", ""], f"无候选应首字全吃，实际 {parts}"
 
     def test_kana_prefix_and_suffix_preserved(self):
-        """お可愛い / おかわいい → 使用 DummyAnalyzer 时无候选，首字全吃"""
+        """お可愛い / おかわいい → 头剥お+可、尾剥假名い，剩余わい给中间的愛。"""
         service = AutoCheckService(DummyAnalyzer())
         parts = service._fallback_split_peel_kana("お可愛い", "おかわいい")
-        assert len(parts) == 4
-        # DummyAnalyzer 无候选读音，首字承载全部读音
-        assert parts[0] == "おかわいい", f"首字应承载全部读音，实际 {parts[0]}"
-        assert parts[1] == "", f"可 应无读音，实际 {parts[1]}"
-        assert parts[2] == "", f"愛 应无读音，实际 {parts[2]}"
-        assert parts[3] == "", f"い 应无读音（被首字吸收），实际 {parts[3]}"
+        assert parts == ["お", "か", "わい", "い"], f"应分配到各字，实际 {parts}"
+
+    def test_compound_sokuon_keeps_peeled_suffix(self):
+        """逆光 / ぎゃっこう：尾剥光=こう，剩余ぎゃっ给逆（即便字典只有ぎゃく）。
+
+        复合词促音便使「逆」读 ぎゃっ 而非字典单字读音 ぎゃく，此前的「读音不在
+        候选中→首字全吃」会把整串 ぎゃっこう 倒灌「逆」、清空「光」。现在应保留
+        已成功剥离的 光=こう。
+        """
+        service = AutoCheckService(DummyAnalyzer())
+        parts = service._fallback_split_peel_kana("逆光", "ぎゃっこう")
+        assert parts == ["ぎゃっ", "こう"], f"应保留尾剥 光=こう，实际 {parts}"
 
     def test_single_char_returns_full_reading(self):
         """单字：直接返回 reading"""
@@ -471,6 +477,81 @@ class TestLibraryBlockFallbackLinking:
         assert not chars[1].linked_to_next, "冒→険 不应 linked（读音已拆分）"
         # 各字有自己的 mora ruby
         assert all(c.ruby is not None and len(c.ruby.parts) == 2 for c in chars)
+
+    def test_gyakkou_compound_splits_but_links(self):
+        """逆光（ぎゃっこう）：fallback 拆成 逆=ぎゃっ・光=こう，但保持连词。
+
+        促音便使「逆」读 ぎゃっ（≠ 字典 ぎゃく），单字读音仅在复合词里成立，
+        故两字虽各带 ruby 仍需连词，避免被当成可独立复用的单字读音、也避免
+        整串读音倒灌「逆」而「光」误落回单字训读 ひかり。
+        """
+        analyzer = _get_sudachi_analyzer()
+        if analyzer is None:
+            pytest.skip("WinRT 注音引擎不可用")
+        service = AutoCheckService(analyzer)
+        sentence = Sentence.from_text("逆光", "s1")
+        service.apply_to_sentence(sentence)
+
+        chars = sentence.characters
+        assert len(chars) == 2
+        assert [p.text for p in chars[0].ruby.parts] == ["ぎゃっ"], "逆 应为 ぎゃっ"
+        assert [p.text for p in chars[1].ruby.parts] == ["こ", "う"], "光 应为 こう"
+        assert chars[0].linked_to_next, "逆→光 应连词（复合词读音）"
+
+
+class TestLinkedMemberNotReAnnotated:
+    """连词组成员（参与过复合词注音）不应被 only_noruby 独立再注音。
+
+    场景：分析器把整词读音压在首字（如 今日→今=きょう、日=空、连词承载）。
+    「日」自身无 ruby，但属于已注音的连词组，必须视为已注音 —— 否则
+    only_noruby 会把它当未注音字符独立再注音，拿到错误单字训读（如 光→ひかり），
+    破坏复合词读音。
+    """
+
+    class _CompoundAnalyzer(RubyAnalyzer):
+        """把「今日」整词返回 きょう（其余字符自注音）。"""
+
+        def analyze(self, text):
+            if text == "今日":
+                return [RubyResult(text="今日", reading="きょう", start_idx=0, end_idx=2)]
+            return [
+                RubyResult(text=c, reading=c, start_idx=i, end_idx=i + 1)
+                for i, c in enumerate(text)
+            ]
+
+        def get_reading(self, text):
+            return "".join(r.reading for r in self.analyze(text))
+
+    def _kyou_sentence(self):
+        # 今日→きょう 整词：きょう 2 拍无法均分到 2 字 → 压在首字「今」、「日」空 ruby、连词
+        service = AutoCheckService(self._CompoundAnalyzer())
+        sentence = Sentence.from_text("今日", "s1")
+        service.apply_to_sentence(sentence)
+        return service, sentence
+
+    def test_empty_linked_member_counts_as_rubied(self):
+        service, sentence = self._kyou_sentence()
+        chars = sentence.characters
+        # 前置条件：今 有 ruby 且连词，日 无自身 ruby
+        assert chars[0].ruby is not None and chars[0].linked_to_next
+        assert chars[1].ruby is None
+        # 连词组成员「日」应被判定为已注音
+        assert service._is_char_already_rubied(sentence, 1) is True
+
+    def test_only_noruby_preserves_linked_member(self):
+        service, sentence = self._kyou_sentence()
+        before = [
+            (c.char, None if c.ruby is None else [p.text for p in c.ruby.parts],
+             c.linked_to_next)
+            for c in sentence.characters
+        ]
+        service.apply_to_sentence(sentence, only_noruby=True)
+        after = [
+            (c.char, None if c.ruby is None else [p.text for p in c.ruby.parts],
+             c.linked_to_next)
+            for c in sentence.characters
+        ]
+        assert after == before, f"only_noruby 不应改动连词组：{before} -> {after}"
 
 
 class TestEnglishWordCheckpoints:

@@ -59,6 +59,7 @@ from qfluentwidgets import (
     LineEdit,
     CheckBox,
     ScrollArea,
+    SpinBox,
     setCustomStyleSheet,
 )
 
@@ -643,6 +644,7 @@ class InsertGuideSymbolDialog(QDialog):
         saved_duration = settings.get("timing.guide_duration_ms", 1000)
 
         saved_reverse = settings.get("timing.guide_reverse", False)
+        saved_fill_gap = settings.get("timing.guide_fill_gap", False)
 
         self.setWindowTitle("插入导唱符")
         self.resize(400, 320)
@@ -673,10 +675,21 @@ class InsertGuideSymbolDialog(QDialog):
         self.edit_duration.setPlaceholderText("每个导唱符持续时间（毫秒）")
         form.addRow("持续时间 (ms):", self.edit_duration)
 
-        # Field 5: Reverse timestamp order
+        # Field 5: Fill gap — 补足间隔时间
+        # 勾选后忽略手动持续时间，自动在「前一个时间戳」与「本字符首个时间戳」
+        # 之间平均分配，前一个时间戳搜索不到时以 0ms（歌曲开始）为起点。
+        self.chk_fill_gap = QCheckBox("补足间隔时间")
+        self.chk_fill_gap.setChecked(bool(saved_fill_gap))
+        self.chk_fill_gap.toggled.connect(self._on_fill_gap_toggled)
+        form.addRow("", self.chk_fill_gap)
+
+        # Field 6: Reverse timestamp order
         self.chk_reverse = QCheckBox("时间戳反向")
         self.chk_reverse.setChecked(bool(saved_reverse))
         form.addRow("", self.chk_reverse)
+
+        # 初始化持续时间输入框可用状态
+        self._on_fill_gap_toggled(self.chk_fill_gap.isChecked())
 
         layout.addLayout(form)
         layout.addStretch()
@@ -692,6 +705,22 @@ class InsertGuideSymbolDialog(QDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
+    def _on_fill_gap_toggled(self, checked: bool):
+        """勾选「补足间隔时间」时禁用手动持续时间输入框"""
+        self.edit_duration.setEnabled(not checked)
+
+    def _find_prev_timestamp(self) -> int:
+        """向前搜索最近的一个时间戳（含句尾时间戳）作为时间起点。
+
+        从 char_idx-1 往前逐字符查找，取最近一个有时间戳字符的最大时间戳。
+        搜索不到时返回 0（歌曲开始处 00:00:00）。
+        """
+        for i in range(self._char_idx - 1, -1, -1):
+            ts_list = self._sentence.characters[i].all_timestamps
+            if ts_list:
+                return max(ts_list)
+        return 0
+
     def _on_execute(self):
         from strange_uta_game.backend.domain.models import Character
 
@@ -706,21 +735,8 @@ class InsertGuideSymbolDialog(QDialog):
         except ValueError:
             count = 1
 
-        try:
-            duration_ms = max(100, int(self.edit_duration.text().strip()))
-        except ValueError:
-            duration_ms = 1000
-
         reverse = self.chk_reverse.isChecked()
-
-        # 保存设置到 AppSettings
-        from strange_uta_game.frontend.settings.settings_interface import AppSettings
-        settings = AppSettings()
-        settings.set("timing.guide_symbol", symbol)
-        settings.set("timing.guide_count", count)
-        settings.set("timing.guide_duration_ms", duration_ms)
-        settings.set("timing.guide_reverse", reverse)
-        settings.save()
+        fill_gap = self.chk_fill_gap.isChecked()
 
         # Get reference char's timestamp and singer
         ref_char = self._sentence.characters[self._char_idx]
@@ -728,6 +744,50 @@ class InsertGuideSymbolDialog(QDialog):
 
         # Get reference timestamp (first timestamp of selected char)
         ref_ts = ref_char.timestamps[0] if ref_char.timestamps else None
+
+        if fill_gap:
+            # 补足间隔时间：起点 = 向前最近的时间戳（搜索不到则 0），
+            # 终点 = 本字符首个时间戳，按个数平均分配。
+            if ref_ts is None:
+                InfoBar.warning(
+                    title="无法补足间隔时间",
+                    content="当前字符没有时间戳，无法确定间隔终点。",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self,
+                )
+                return
+            start_ts = self._find_prev_timestamp()
+            if start_ts >= ref_ts:
+                InfoBar.warning(
+                    title="无法补足间隔时间",
+                    content=f"起点 {start_ts}ms 不早于终点 {ref_ts}ms，间隔无效。",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self,
+                )
+                return
+            duration_ms = (ref_ts - start_ts) // count
+        else:
+            try:
+                duration_ms = max(100, int(self.edit_duration.text().strip()))
+            except ValueError:
+                duration_ms = 1000
+
+        # 保存设置到 AppSettings
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
+        settings = AppSettings()
+        settings.set("timing.guide_symbol", symbol)
+        settings.set("timing.guide_count", count)
+        if not fill_gap:
+            settings.set("timing.guide_duration_ms", duration_ms)
+        settings.set("timing.guide_reverse", reverse)
+        settings.set("timing.guide_fill_gap", fill_gap)
+        settings.save()
 
         # Build guide characters
         # Each guide symbol has linked_to_next=True (they chain), except last
@@ -1678,3 +1738,254 @@ class CompleteTimestampDialog(QDialog):
             return int(self._edit_tail_offset.text())
         except ValueError:
             return 150
+
+
+class AdjustRawTimestampDialog(QDialog):
+    """调整原始时间戳对话框 — 非模态，应用后不关闭，允许边测试边调整。
+
+    每次点击「应用」即执行一次整体偏移，结果可叠加。
+    窗口与主界面并存，用户可切换回主界面试听后继续调整。
+    """
+
+    apply_requested = pyqtSignal(int)  # delta_ms
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("调整原始时间戳")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.resize(340, 200)
+        self.setFont(QFont("Microsoft YaHei", 10))
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        desc = QLabel(
+            "正数：所有原始时间戳向后移；负数：向前移。\n"
+            "每次点击「应用」立即执行偏移，可叠加多次操作。"
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        form = QFormLayout()
+        self.spin_delta = SpinBox(self)
+        self.spin_delta.setRange(-9999, 9999)
+        self.spin_delta.setValue(0)
+        self.spin_delta.setSuffix(" ms")
+        form.addRow("偏移量:", self.spin_delta)
+        layout.addLayout(form)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setWordWrap(True)
+        layout.addWidget(self.lbl_status)
+
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_apply = PrimaryPushButton("应用", self)
+        self.btn_apply.clicked.connect(self._on_apply)
+        btn_layout.addWidget(self.btn_apply)
+        btn_close = PushButton("关闭", self)
+        btn_close.clicked.connect(self.close)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+    def _on_apply(self):
+        delta = self.spin_delta.value()
+        if delta == 0:
+            self.lbl_status.setText("偏移量为 0，未做任何修改")
+            return
+        self.apply_requested.emit(delta)
+
+    def set_status(self, text: str, success: bool = True):
+        color = "#2d7d46" if success else "#c0392b"
+        self.lbl_status.setText(f'<span style="color:{color}">{text}</span>')
+
+
+# ── 分离符号时间戳 — 符号分组定义 ──────────────────────────────────────────
+# 每组：(key, 中文标签, 示例显示, 字符集)
+_SEPARATE_SYM_GROUPS: list[tuple[str, str, str, frozenset]] = [
+    ("parentheses",        "圆括号",       "( )（）",         frozenset("()（）")),
+    ("brackets",           "方括号",       "[ ]【】",          frozenset("[]【】")),
+    ("exclamation",        "感叹号",       "! ！",             frozenset("!！")),
+    ("angle_brackets",     "尖括号",       "< >《》〈〉",      frozenset("<>《》〈〉")),
+    ("ja_quotes",          "日文引号",     "「 」",            frozenset("「」")),
+    ("ja_dbl_quotes",      "日文双引号",   "『 』",            frozenset("『』")),
+    ("question",           "问号",         "? ？",             frozenset("?？")),
+    ("ellipsis",           "省略号",       "… .",              frozenset({"…", "."})),
+    ("period",             "句号",         "。",               frozenset("。")),
+    ("comma",              "逗号",         ", ，",             frozenset(",，")),
+    ("ideographic_comma",  "顿号",         "、",               frozenset("、")),
+    ("semicolon",          "分号",         "; ；",             frozenset(";；")),
+    ("colon",              "冒号",         ": ：",             frozenset(":：")),
+    ("wave",               "波浪号",       "~ ～ 〜",          frozenset("~～〜")),
+    ("dash",               "破折号",       "— ―",              frozenset("—―")),
+    ("middle_dot",         "中点",         "· ・ •",           frozenset("·・•")),
+    ("music_note",         "音符",         "♪ ♫ ♩ ♬",         frozenset("♪♫♩♬")),
+    ("heart",              "爱心",         "♡ ♥",              frozenset("♡♥")),
+    ("star",               "星形",         "★ ☆",              frozenset("★☆")),
+]
+
+# 默认选中分组（用户明确列出的常见符号）
+_SEPARATE_SYM_DEFAULT: frozenset[str] = frozenset({
+    "parentheses", "brackets", "exclamation", "angle_brackets",
+    "ja_quotes", "question", "ellipsis", "period", "comma",
+})
+
+
+class SeparateSymbolTimestampDialog(QDialog):
+    """分离符号时间戳对话框 — 与补全时间戳类似的批量操作窗口。
+
+    针对歌词中常见符号自动处理时间戳：
+
+    * **后补偿**：符号 cc=0 且 is_sentence_end=True 且有 sentence_end_ts 时，
+      将句尾时间戳提升为普通时间戳（cc 改为 1），并将 sentence_end_ts 后移
+      「后补偿」毫秒。
+    * **前补偿**：符号 cc=1 且紧跟的第一个非符号字符 cc=0 时，将符号时间戳
+      传递给该后续字符（cc 改为 1），并将符号自身时间戳前移「前补偿」毫秒。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("分离符号时间戳")
+        self.resize(600, 640)
+        self.setFont(QFont("Microsoft YaHei", 10))
+        self._apply_clicked = False
+
+        # 读取上次设置
+        try:
+            from strange_uta_game.frontend.settings.app_settings import AppSettings
+            settings = AppSettings()
+            saved_groups = settings.get("separate_symbol_ts.groups", list(_SEPARATE_SYM_DEFAULT))
+            self._saved_groups: set[str] = set(saved_groups)
+            self._saved_pre_comp: int = settings.get("separate_symbol_ts.pre_comp_ms", 150)
+            self._saved_post_comp: int = settings.get("separate_symbol_ts.post_comp_ms", 150)
+        except Exception:
+            self._saved_groups = set(_SEPARATE_SYM_DEFAULT)
+            self._saved_pre_comp = 150
+            self._saved_post_comp = 150
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # 说明文本
+        desc = QLabel(
+            "针对选中的符号分组，自动处理时间戳：\n"
+            "• 后补偿：符号无普通时间戳（cc=0）但有句尾停顿标记时，将停顿时间提升为普通时间戳，"
+            "并将句尾时间戳后移「后补偿」值。\n"
+            "• 前补偿：符号已有时间戳（cc=1）且紧跟的第一个非符号字符无时间戳（cc=0）时，"
+            "将符号时间戳传递给该字符，并将符号时间戳前移「前补偿」值。"
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # 符号分组选择（两列布局）
+        group_box = QGroupBox("适用符号分组")
+        group_hlayout = QHBoxLayout(group_box)
+        mid = (len(_SEPARATE_SYM_GROUPS) + 1) // 2
+        left_col = QVBoxLayout()
+        right_col = QVBoxLayout()
+
+        self._group_checkboxes: dict[str, QCheckBox] = {}
+        for i, (key, label, examples, _) in enumerate(_SEPARATE_SYM_GROUPS):
+            chk = QCheckBox(f"{label}   {examples}")
+            chk.setChecked(key in self._saved_groups)
+            self._group_checkboxes[key] = chk
+            if i < mid:
+                left_col.addWidget(chk)
+            else:
+                right_col.addWidget(chk)
+        left_col.addStretch()
+        right_col.addStretch()
+        group_hlayout.addLayout(left_col)
+        group_hlayout.addLayout(right_col)
+        layout.addWidget(group_box)
+
+        # 全选 / 全不选
+        sel_row = QHBoxLayout()
+        btn_all = PushButton("全选", self)
+        btn_all.clicked.connect(self._select_all)
+        btn_none = PushButton("全不选", self)
+        btn_none.clicked.connect(self._deselect_all)
+        sel_row.addWidget(btn_all)
+        sel_row.addWidget(btn_none)
+        sel_row.addStretch()
+        layout.addLayout(sel_row)
+
+        # 补偿设置
+        comp_box = QGroupBox("补偿时间戳")
+        comp_form = QFormLayout(comp_box)
+
+        self.spin_pre_comp = SpinBox(self)
+        self.spin_pre_comp.setRange(0, 9999)
+        self.spin_pre_comp.setValue(self._saved_pre_comp)
+        self.spin_pre_comp.setSuffix(" ms")
+        self.spin_pre_comp.setToolTip(
+            "符号已有时间戳（cc=1）时，将其时间戳前移的量；\n"
+            "同时将原始符号时间戳赋给紧跟的无时间戳非符号字符"
+        )
+        comp_form.addRow("前补偿（前移符号时间戳）:", self.spin_pre_comp)
+
+        self.spin_post_comp = SpinBox(self)
+        self.spin_post_comp.setRange(0, 9999)
+        self.spin_post_comp.setValue(self._saved_post_comp)
+        self.spin_post_comp.setSuffix(" ms")
+        self.spin_post_comp.setToolTip(
+            "符号无普通时间戳（cc=0）但有句尾停顿时，将句尾时间戳后移的量"
+        )
+        comp_form.addRow("后补偿（后移句尾时间戳）:", self.spin_post_comp)
+
+        layout.addWidget(comp_box)
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_apply = PrimaryPushButton("应用", self)
+        btn_apply.clicked.connect(self._on_apply)
+        btn_layout.addWidget(btn_apply)
+        btn_cancel = PushButton("取消", self)
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _select_all(self):
+        for chk in self._group_checkboxes.values():
+            chk.setChecked(True)
+
+    def _deselect_all(self):
+        for chk in self._group_checkboxes.values():
+            chk.setChecked(False)
+
+    def _on_apply(self):
+        self._apply_clicked = True
+        try:
+            from strange_uta_game.frontend.settings.app_settings import AppSettings
+            settings = AppSettings()
+            settings.set("separate_symbol_ts.groups", list(self.get_selected_groups()))
+            settings.set("separate_symbol_ts.pre_comp_ms", self.get_pre_comp_ms())
+            settings.set("separate_symbol_ts.post_comp_ms", self.get_post_comp_ms())
+            settings.save()
+        except Exception:
+            pass
+        self.accept()
+
+    def was_apply_clicked(self) -> bool:
+        return self._apply_clicked
+
+    def get_selected_groups(self) -> set[str]:
+        return {key for key, chk in self._group_checkboxes.items() if chk.isChecked()}
+
+    def get_symbol_chars(self) -> frozenset:
+        """返回所有选中分组的字符集合"""
+        chars: set = set()
+        selected = self.get_selected_groups()
+        for key, _, _, char_set in _SEPARATE_SYM_GROUPS:
+            if key in selected:
+                chars |= char_set
+        return frozenset(chars)
+
+    def get_pre_comp_ms(self) -> int:
+        return self.spin_pre_comp.value()
+
+    def get_post_comp_ms(self) -> int:
+        return self.spin_post_comp.value()

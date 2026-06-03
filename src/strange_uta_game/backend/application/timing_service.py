@@ -94,6 +94,8 @@ class TimingServiceQt(QObject):
     _focus_moved_signal = pyqtSignal(int, int) # line_idx , char_idx
     # 通知Karaoke将当前行居中滚动信号
     _center_current_line_signal = pyqtSignal()
+    # 通知前端发生了结构性变更（节奏点增减），需要刷新歌词显示
+    _structural_change_signal = pyqtSignal()
     def __init__(self):
         super().__init__()
 
@@ -563,6 +565,160 @@ class TimingService:
         timing_pos_ms = self._audio_engine.get_position_ms()
         timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
         self.on_key_changed(timestamp_ms, "released")
+
+    def on_tag_and_delete_next_pressed(self, key: str, queue_delay_ms: int = 0) -> None:
+        """打轴并删除下一时间戳 — 按下处理。
+
+        薄 shim：自动启播 + 计算时间戳 + 转发核心逻辑（'pressed'）。
+        """
+        if not self._project:
+            self._notify_error("NO_PROJECT", "未加载项目")
+            return
+
+        if not self._audio_engine.is_playing():
+            self._audio_engine.play()
+
+        timing_pos_ms = self._audio_engine.get_position_ms()
+        timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
+        self._on_tag_and_delete_next_key_changed(timestamp_ms, "pressed")
+
+    def on_tag_and_delete_next_released(self, key: str, queue_delay_ms: int = 0) -> None:
+        """打轴并删除下一时间戳 — 抬起处理。
+
+        薄 shim：计算时间戳 + 转发核心逻辑（'released'）。
+        """
+        if not self._project:
+            return
+
+        timing_pos_ms = self._audio_engine.get_position_ms()
+        timestamp_ms = max(0, timing_pos_ms - queue_delay_ms + self._timing_offset_ms)
+        self._on_tag_and_delete_next_key_changed(timestamp_ms, "released")
+
+    def _on_tag_and_delete_next_key_changed(
+        self, timestamp_ms: int, key_type: Literal["pressed", "released"]
+    ) -> None:
+        """打轴并删除下一节奏点（原子操作）。
+
+        路由规则与 on_key_changed 完全一致（句尾尾部 cp 需 'released'，普通 cp
+        需 'pressed'）。通过后执行：
+        1. 将 timestamp_ms 写入当前 cp
+        2. 删除下一个节奏点本身（结构性变更：减少 check_count 或清除 is_sentence_end）
+        3. 重建全局 checkpoint 序列
+        4. 光标推进一步（被删节奏点已从序列消失，一步即跳过两个原始位置）
+        写入 + 删除合并为一个 SentenceSnapshotCommand，保证撤销原子性。
+        """
+        if not self._project:
+            return
+
+        sentence, char = self._get_current_checkpoint_info()
+        if not sentence or not char:
+            if self.move_to_next_checkpoint():
+                sentence, char = self._get_current_checkpoint_info()
+            if not sentence or not char:
+                return
+
+        cp_idx = self._current_position.checkpoint_idx
+        is_tail = char.is_sentence_end_tail_cp(cp_idx)
+
+        # 角色化过滤（与 on_key_changed 保持一致）
+        if is_tail and key_type != "released":
+            return
+        if not is_tail and key_type != "pressed":
+            return
+
+        before_cp_idx = self._global_checkpoint_idx
+
+        # 找到下一个 cp 的位置信息（将被删除）
+        next_global_idx = self._global_checkpoint_idx + 1
+        next_pos = (
+            self._global_checkpoints[next_global_idx]
+            if next_global_idx < len(self._global_checkpoints)
+            else None
+        )
+
+        # 找到再下一个 cp（用于确定 redo 落点）
+        next_next_pos = (
+            self._global_checkpoints[self._global_checkpoint_idx + 2]
+            if self._global_checkpoint_idx + 2 < len(self._global_checkpoints)
+            else None
+        )
+
+        # 提前记录回调所需的旧位置（move 之后 _current_position 已变）
+        old_line_idx = self._current_position.line_idx
+        old_char_idx = self._current_position.char_idx
+        old_singer_id = char.singer_id
+
+        from copy import deepcopy
+        before_sentences = deepcopy(self._project.sentences)
+
+        # ── 直接修改（SentenceSnapshotCommand 会将结果作为 after 快照存储）──
+
+        # 1. 写入当前 cp 时间戳
+        if is_tail:
+            char.set_sentence_end_ts(timestamp_ms)
+        else:
+            char.add_timestamp(timestamp_ms, cp_idx)
+
+        # 2. 删除下一节奏点（结构性变更）
+        if next_pos is not None:
+            next_sentence = self._project.sentences[next_pos.line_idx]
+            if next_pos.char_idx < len(next_sentence.characters):
+                next_char = next_sentence.characters[next_pos.char_idx]
+                if next_char.is_sentence_end_tail_cp(next_pos.checkpoint_idx):
+                    # 句尾尾部 cp：清除 is_sentence_end 标记
+                    next_char.is_sentence_end = False
+                    next_char.sentence_end_ts = None
+                    next_char._update_offset_timestamps()
+                    next_char.push_to_ruby()
+                else:
+                    # 普通节奏点：减少 check_count
+                    try:
+                        next_sentence.remove_checkpoint(next_pos.char_idx, force=True)
+                    except Exception:
+                        pass
+
+        after_sentences = deepcopy(self._project.sentences)
+
+        # ── 注册撤销命令 ──
+        if self._command_manager:
+            from strange_uta_game.backend.application.commands import SentenceSnapshotCommand
+
+            cmd = SentenceSnapshotCommand(
+                project=self._project,
+                before_sentences=before_sentences,
+                after_sentences=after_sentences,
+                description="打轴并删除下一节奏点",
+            )
+            cmd.undo_cp_idx = before_cp_idx
+            cmd.undo_position = (old_line_idx, old_char_idx)
+            # redo 落点：落在 next_next（删除后变为 next），无则保持原字符
+            redo_pos = next_next_pos or next_pos
+            if redo_pos is not None:
+                cmd.redo_position = (redo_pos.line_idx, redo_pos.char_idx)
+            else:
+                cmd.redo_position = (old_line_idx, old_char_idx)
+            cmd.redo_cp_idx = min(before_cp_idx + 1, len(self._global_checkpoints) - 1)
+            self._command_manager.execute(cmd)
+
+        # ── 重建全局 checkpoint 序列（结构性变更后必须）──
+        self._rebuild_global_checkpoints()
+
+        # ── 推进光标（被删节奏点已消失，一步即到 next_next 位置）──
+        self.move_to_next_checkpoint()
+
+        self._notify_focus_moved()
+        self._global_qt._center_current_line_signal.emit()
+        # 通知前端刷新歌词显示（节奏点标记数量发生了变化）
+        self._global_qt._structural_change_signal.emit()
+
+        if self._callbacks:
+            self._callbacks.on_timetag_added(
+                old_singer_id,
+                old_line_idx,
+                old_char_idx,
+                cp_idx,
+                timestamp_ms,
+            )
 
     def on_edit_mode_tag(self) -> None:
         """编辑模式下打轴：不启动音频，读取当前进度条位置并写入当前节奏点。

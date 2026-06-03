@@ -857,7 +857,13 @@ class RubyInterface(QWidget):
         annotate_katakana_with_english = app_settings.get(
             "ruby_dictionary.annotate_katakana_with_english", False
         )
+        # LLM 整首一次发送：传入全部行文本以保留上下文（LLM 未激活时忽略）。
+        lines = [s.text for s in self._project.sentences] if self._project else []
+        analyzer = app_settings.build_ruby_analyzer(
+            lines, annotate_katakana_with_english=annotate_katakana_with_english
+        )
         return AutoCheckService(
+            ruby_analyzer=analyzer,
             auto_check_flags=auto_check_flags,
             user_dictionary=user_dict,
             annotate_katakana_with_english=annotate_katakana_with_english,
@@ -880,12 +886,17 @@ class RubyInterface(QWidget):
         if self.is_dirty():
             self._on_apply_changes()
 
-        from strange_uta_game.frontend.winrt_japanese_guide import (
-            ensure_winrt_japanese,
-        )
+        from strange_uta_game.frontend.settings.settings_interface import AppSettings
 
-        if not ensure_winrt_japanese(self):
-            return
+        _llm_active = AppSettings().llm_ruby_active()
+        # LLM 注音激活时不需要本地日语 IME，跳过 WinRT 安装引导。
+        if not _llm_active:
+            from strange_uta_game.frontend.winrt_japanese_guide import (
+                ensure_winrt_japanese,
+            )
+
+            if not ensure_winrt_japanese(self):
+                return
 
         # 三选项对话框
         msg = QMessageBox(self)
@@ -909,13 +920,32 @@ class RubyInterface(QWidget):
         only_noruby = clicked is btn_only_noruby
 
         auto_check = self._create_auto_check_service()
+        # LLM 注音时是否仍应用用户词典（非 LLM 模式恒为 True）。
+        _apply_user_dict = (
+            AppSettings().llm_apply_user_dict() if _llm_active else True
+        )
 
         # 第一步：应用注音
         try:
-            auto_check.apply_to_project(self._project, only_noruby=only_noruby)
+            auto_check.apply_to_project(
+                self._project, only_noruby=only_noruby,
+                apply_user_dict=_apply_user_dict,
+            )
             self._refresh_display()
             if hasattr(self, "_store"):
                 self._store.notify("rubies")
+            # LLM 注音失败时已回退本地引擎，提示用户。
+            _analyzer = getattr(auto_check, "_analyzer", None)
+            if getattr(_analyzer, "llm_failed", False):
+                InfoBar.warning(
+                    title="LLM 注音失败，已回退本地引擎",
+                    content=str(getattr(_analyzer, "last_error", "") or ""),
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=5000,
+                    parent=self,
+                )
         except Exception as e:
             InfoBar.warning(
                 title="注音分析失败",

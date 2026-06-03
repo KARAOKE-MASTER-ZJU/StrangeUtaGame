@@ -49,12 +49,16 @@ class LatestRelease:
     def pick_primary_asset(self, preferred_name: Optional[str] = None) -> Optional[ReleaseAsset]:
         """挑选用于安装的主资产。
 
-        优先级：
-        1. 名字精确等于 ``preferred_name``（通常是 ``StrangeUtaGame-v{ver}.zip``）；
-        2. 任何 ``.zip``；
-        3. 任何 ``.rar`` —— 兼容旧版发布；
-        4. 任何 ``.7z``；
-        5. 第一个非 ``.sha256`` 资产。
+        当 ``preferred_name`` 被指定时（变体感知场景），**精确匹配或返回 None**：
+        - 找到 → 返回对应资产；
+        - 找不到 → 返回 ``None``（调用方据此判定"此变体的资产尚未上传"）。
+        这样可防止 noWinIME 变体在找不到自己的 zip 时误下载主版本 zip。
+
+        当 ``preferred_name`` 未指定时，使用回退顺序：
+        1. 任何 ``.zip``；
+        2. 任何 ``.rar`` —— 兼容旧版发布；
+        3. 任何 ``.7z``；
+        4. 第一个非 ``.sha256`` 资产。
         """
         if not self.assets:
             return None
@@ -62,6 +66,8 @@ class LatestRelease:
             for a in self.assets:
                 if a.name == preferred_name:
                     return a
+            # preferred 明确但未找到 → 不回退，返回 None 以防变体混装
+            return None
         for ext in (".zip", ".rar", ".7z"):
             for a in self.assets:
                 if a.name.lower().endswith(ext):

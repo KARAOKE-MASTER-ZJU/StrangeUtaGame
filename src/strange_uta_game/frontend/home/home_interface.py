@@ -479,6 +479,12 @@ class HomeInterface(QWidget):
                         "ruby_dictionary.annotate_katakana_with_english", False
                     )
 
+                    llm_active = app_settings.llm_ruby_active()
+                    # LLM 注音时是否仍应用用户词典（非 LLM 模式恒为 True）。
+                    _apply_user_dict = (
+                        app_settings.llm_apply_user_dict() if llm_active else True
+                    )
+
                     auto_check = None
                     if chinese_mode:
                         auto_check = AutoCheckService(
@@ -489,16 +495,40 @@ class HomeInterface(QWidget):
                         )
                         auto_check.apply_to_project(project, only_noruby=True, skip_romanize=True)
                     else:
-                        from strange_uta_game.frontend.winrt_japanese_guide import (
-                            ensure_winrt_japanese,
-                        )
-                        if ensure_winrt_japanese(self):
+                        # LLM 注音激活时不需要本地日语 IME，跳过 WinRT 引导。
+                        _proceed = True
+                        if not llm_active:
+                            from strange_uta_game.frontend.winrt_japanese_guide import (
+                                ensure_winrt_japanese,
+                            )
+                            _proceed = ensure_winrt_japanese(self)
+                        if _proceed:
+                            # LLM 整首一次发送：传入全部行文本以保留上下文。
+                            lines = [s.text for s in project.sentences]
+                            analyzer = app_settings.build_ruby_analyzer(
+                                lines,
+                                annotate_katakana_with_english=annotate_katakana_with_english,
+                            )
                             auto_check = AutoCheckService(
+                                ruby_analyzer=analyzer,
                                 auto_check_flags=auto_check_flags,
                                 user_dictionary=user_dict,
                                 annotate_katakana_with_english=annotate_katakana_with_english,
                             )
-                            auto_check.apply_to_project(project, only_noruby=True, skip_romanize=True)
+                            auto_check.apply_to_project(
+                                project, only_noruby=True, skip_romanize=True,
+                                apply_user_dict=_apply_user_dict,
+                            )
+                            if getattr(analyzer, "llm_failed", False):
+                                InfoBar.warning(
+                                    title="LLM 注音失败，已回退本地引擎",
+                                    content=str(getattr(analyzer, "last_error", "") or ""),
+                                    orient=Qt.Orientation.Horizontal,
+                                    isClosable=True,
+                                    position=InfoBarPosition.TOP,
+                                    duration=5000,
+                                    parent=self,
+                                )
 
                     # 自动删除指定类型的注音
                     delete_types = auto_check_flags.get("delete_ruby_types", [])
@@ -510,7 +540,7 @@ class HomeInterface(QWidget):
                         delete_rubies_by_type_names(project, delete_types)
                         # delete 后重新应用用户词典，补回被删除类型覆盖的词典条目
                         # （与 RubyAnalyzeWorker 路径行为一致）
-                        if auto_check is not None:
+                        if auto_check is not None and _apply_user_dict:
                             auto_check.apply_user_dict_to_project(project, skip_romanize=True)
 
                     # 罗马音转换（在 delete 之后，只转换剩余的假名注音）

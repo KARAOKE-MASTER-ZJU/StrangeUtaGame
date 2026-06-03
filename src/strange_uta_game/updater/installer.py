@@ -152,12 +152,17 @@ def _fetch_remote_manifest(
 
     manifest 是一个小 JSON 文件，包含各 part 的 sha256 内容哈希，用于在下载
     app.zip 之前先判断是否需要更新，避免不必要的大文件下载。
+
+    manifest 文件名从 ``plan.asset_name`` 派生：
+    ``StrangeUtaGame-noWinIME-v1.0.3.zip`` → ``manifest-noWinIME-v1.0.3.json``
     """
     import requests
 
+    manifest_filename = plan.asset_name.replace("StrangeUtaGame", "manifest", 1).replace(".zip", ".json")
+
     for _source_id, url in plan.download_urls:
         prefix = url.rsplit("/", 1)[0]
-        manifest_url = f"{prefix}/manifest-v{plan.target_version}.json"
+        manifest_url = f"{prefix}/{manifest_filename}"
         try:
             resp = requests.get(
                 manifest_url,
@@ -303,7 +308,11 @@ def _update_updater_from_remote(
     # 成功下载并校验后不删除该文件——Updater 启动后发现文件已存在，会发 Range
     # 请求确认完整性（服务器返回 HTTP 416），然后直接走本地内容哈希校验，
     # 完全跳过重新下载，彻底消除对同一文件的二次下载浪费。
-    app_zip_name = f"StrangeUtaGame-v{plan.target_version}-app.zip"
+    # app part zip 名从全量 asset name 派生：
+    # "StrangeUtaGame-noWinIME-v1.0.3.zip" → "StrangeUtaGame-noWinIME-v1.0.3-app.zip"
+    app_zip_name = plan.asset_name.replace(
+        f"-v{plan.target_version}.zip", f"-v{plan.target_version}-app.zip"
+    )
     shared_parts_dir = Path(tempfile.gettempdir()) / TMP_DIR_NAME / "parts"
     try:
         shared_parts_dir.mkdir(parents=True, exist_ok=True)
