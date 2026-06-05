@@ -36,7 +36,7 @@ on:
           - full        # 测试 + 打包
       ref:
         description: "分支/tag"
-        default: "feat/fugashi-only"
+        default: "main"
         type: string
 
 concurrency:
@@ -45,6 +45,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
+  PYTHONUTF8: "1"
 
 jobs:
   # ── Helper: 解析 workflow_dispatch 参数 ──
@@ -77,7 +78,7 @@ jobs:
       matrix:
         include:
           - { os: Linux,      runner: ubuntu-24.04 }
-          - { os: macOS-x86,  runner: macos-13 }
+          - { os: macOS-x86,  runner: macos-15-intel }
           - { os: macOS-ARM,  runner: macos-15 }
           - { os: Windows,    runner: windows-2025 }
 
@@ -116,7 +117,9 @@ jobs:
         run: |
           import fugashi
           t = fugashi.Tagger()
-          print(f"fugashi OK: {t.parse('日本語')!r}")
+          parsed = t.parse("日本語")
+          escaped = parsed.encode("unicode_escape").decode("ascii")
+          print(f"fugashi OK: {escaped}")
 
       - name: Run unit tests (ruby analyzer)
         run: python -m pytest tests/unit/infrastructure/test_ruby_analyzer.py -v --tb=short -x
@@ -146,7 +149,7 @@ jobs:
             updater_name: Updater
 
           - os: macOS-x86
-            runner: macos-13
+            runner: macos-15-intel
             artifact_name: StrangeUtaGame-macos-x86_64
             ext: .zip
             updater_name: Updater
@@ -182,11 +185,15 @@ jobs:
         id: version
         shell: python
         run: |
-          import sys; sys.path.insert(0, 'src')
+          import os
+          import sys
+          sys.path.insert(0, "src")
           from strange_uta_game.__version__ import __version__
           tag = "${{ github.ref_name }}"
           ver = tag[4:] if tag.startswith("SUGv") else tag[1:] if tag.startswith("v") else __version__
           print(f"app_version={ver}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"app_version={ver}\n")
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -259,22 +266,35 @@ jobs:
             Write-Error "dist/StrangeUtaGame not found"; Get-ChildItem dist; exit 1
           }
 
-      # ── 打包 Updater（所有平台统一逻辑） ──
-      - name: Package Updater
+      # ── 打包 Updater ──
+      - name: Package Updater (Linux / macOS)
+        if: always() && runner.os != 'Windows'
+        shell: bash
         run: |
           cd updater_app/dist
           if [ -f "${{ matrix.updater_name }}" ]; then
             if [ "${{ matrix.ext }}" = ".tar.gz" ]; then
-              tar czf ../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.tar.gz \
+              tar czf ../../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.tar.gz \
                 "${{ matrix.updater_name }}"
             else
-              zip ../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.zip \
+              zip ../../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.zip \
                 "${{ matrix.updater_name }}"
             fi
           else
             echo "::warning::Updater binary not found at updater_app/dist/${{ matrix.updater_name }}"
           fi
-        if: always()
+
+      - name: Package Updater (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $updater = "updater_app/dist/${{ matrix.updater_name }}"
+          $archive = "${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.zip"
+          if (Test-Path $updater) {
+            Compress-Archive -Path $updater -DestinationPath $archive -Force
+          } else {
+            Write-Warning "Updater binary not found at $updater"
+          }
 
       # ── 上传主程序 + Updater 产物 ──
       - name: Upload main app
