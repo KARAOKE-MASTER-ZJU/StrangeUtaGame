@@ -809,11 +809,11 @@ class MainWindow(MSFluentWindow):
             if not accepted or choice == "later":
                 return
 
-            # 用户确认更新 → 启动 Updater.exe 并退出
+            # 用户确认更新 → 启动独立 Updater 并退出
             if not upd_installer.is_updater_available():
                 InfoBar.warning(
                     title="更新器未就绪",
-                    content="未找到 Updater.exe。请到 GitHub 手动下载完整安装包。",
+                    content="未找到更新器。请到 GitHub 手动下载完整安装包。",
                     orient=Qt.Orientation.Horizontal,
                     isClosable=True,
                     position=InfoBarPosition.TOP,
@@ -1110,6 +1110,7 @@ class MainWindow(MSFluentWindow):
                         AppSettings.set_default_provider(None)
                 except Exception:
                     pass
+            self._shutdown_background_threads()
             self._clear_llm_logs()
             e.accept()
             return
@@ -1130,6 +1131,7 @@ class MainWindow(MSFluentWindow):
                     self.editorInterface.release_resources()
                 except Exception:
                     pass
+            self._shutdown_background_threads()
             self._clear_llm_logs()
             QApplication.quit()
             e.accept()
@@ -1164,9 +1166,23 @@ class MainWindow(MSFluentWindow):
         # 释放编辑器资源
         if hasattr(self, "editorInterface"):
             self.editorInterface.release_resources()
+        self._shutdown_background_threads()
         self._clear_llm_logs()
         QApplication.quit()
         e.accept()
+
+    def _shutdown_background_threads(self) -> None:
+        """在 Qt 销毁窗口子对象前停止后台线程，避免 QThread 析构触发 abort。"""
+        checker = getattr(self, "_update_checker", None)
+        if checker is not None and hasattr(checker, "shutdown"):
+            try:
+                checker.shutdown(timeout_ms=3000)
+            except Exception:
+                pass
+
+        from strange_uta_game.frontend.thread_cleanup import stop_child_qthreads
+
+        stop_child_qthreads(self, timeout_ms=3000)
 
     @staticmethod
     def _clear_llm_logs() -> None:

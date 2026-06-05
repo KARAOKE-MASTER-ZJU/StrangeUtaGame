@@ -331,11 +331,11 @@ def _show_update_dialog(parent: "SettingsInterface", result: CheckResult) -> Non
     if not accepted or choice == "later":
         return
 
-    # 用户点击立即更新 —— 启动 Updater.exe 并退出应用
+    # 用户点击立即更新 —— 启动独立 Updater 并退出应用
     if not installer.is_updater_available():
         InfoBar.error(
             title="更新器未就绪",
-            content="缺少 Updater.exe。请到 GitHub Release 手动下载最新版本。",
+            content="缺少更新器。请到 GitHub Release 手动下载最新版本。",
             orient=Qt.Orientation.Horizontal,
             isClosable=True,
             position=InfoBarPosition.TOP,

@@ -252,10 +252,21 @@ if sys.platform == "win32":
 # ── 复制 Updater 二进制（如已构建） ────────────────────────────
 # Updater 由 `python updater_app/build_updater.py` 独立打包，输出至
 # `updater_app/dist/Updater[.exe]`（平台相关后缀）。
-# 本步骤幂等：若产物存在则复制到主程序 dist，否则警告但不阻断。
+# Windows/Linux 放在主程序根目录；macOS 放进 .app 的 Contents/MacOS，
+# 与主可执行文件同级，保证运行时可以直接定位并启动。
+# 本步骤幂等：若产物存在则复制到主程序产物，否则警告但不阻断。
 _UPDATER_BIN = "Updater.exe" if sys.platform == "win32" else "Updater"
 _updater_src = PROJECT_ROOT / "updater_app" / "dist" / _UPDATER_BIN
-_updater_dst_dir = PROJECT_ROOT / "dist" / "StrangeUtaGame"
+if sys.platform == "darwin":
+    _updater_dst_dir = (
+        PROJECT_ROOT
+        / "dist"
+        / "StrangeUtaGame.app"
+        / "Contents"
+        / "MacOS"
+    )
+else:
+    _updater_dst_dir = PROJECT_ROOT / "dist" / "StrangeUtaGame"
 _updater_dst = _updater_dst_dir / _UPDATER_BIN
 _updater_found = False
 if _updater_dst_dir.exists():
@@ -263,6 +274,8 @@ if _updater_dst_dir.exists():
         try:
             import shutil as _shutil
             _shutil.copy2(str(_updater_src), str(_updater_dst))
+            if sys.platform != "win32":
+                _updater_dst.chmod(_updater_dst.stat().st_mode | 0o111)
             print(f"✓ 已复制 {_UPDATER_BIN} → {_updater_dst}")
             _updater_found = True
         except Exception as _e:
@@ -277,18 +290,47 @@ if _updater_dst_dir.exists():
         )
         _updater_found = False
 else:
-    print("! dist/StrangeUtaGame/ 目录不存在，跳过 Updater.exe 复制")
+    print(f"! 主程序输出目录不存在，跳过 {_UPDATER_BIN} 复制: {_updater_dst_dir}")
+
+# PyInstaller 会在生成 macOS App 时完成一次签名。之后新增 Updater 会改变 bundle，
+# 因此需要重新做 ad-hoc 签名，避免 Gatekeeper 判定 App 已被修改。
+if sys.platform == "darwin" and _updater_found:
+    _app_bundle = PROJECT_ROOT / "dist" / "StrangeUtaGame.app"
+    try:
+        import subprocess as _subprocess
+
+        _subprocess.run(
+            ["codesign", "--force", "--deep", "--sign", "-", str(_app_bundle)],
+            check=True,
+        )
+        print(f"✓ 已重新签名 macOS App: {_app_bundle}")
+    except (OSError, _subprocess.CalledProcessError) as _e:
+        raise SystemExit(f"✗ macOS App 重新签名失败: {_e}") from _e
 
 # ── 验证 updater 子包是否被 PyInstaller 收集 ──────────────────────
-_updater_pkg = PROJECT_ROOT / "dist" / "StrangeUtaGame" / "_internal" / "strange_uta_game" / "updater"
-if _updater_pkg.is_dir():
-    _n = len(list(_updater_pkg.iterdir()))
-    print(f"✓ strange_uta_game.updater 子包已收集（{_n} 文件）")
+if sys.platform == "darwin":
+    _updater_pkg_candidates = [
+        PROJECT_ROOT / "dist" / "StrangeUtaGame.app" / "Contents" / location
+        / "strange_uta_game" / "updater"
+        for location in ("Frameworks", "Resources")
+    ]
 else:
+    _updater_pkg_candidates = [
+        PROJECT_ROOT / "dist" / "StrangeUtaGame" / "_internal"
+        / "strange_uta_game" / "updater"
+    ]
+
+_updater_pkg = next((p for p in _updater_pkg_candidates if p.is_dir()), None)
+if _updater_pkg is not None:
+    _n = len(list(_updater_pkg.iterdir()))
+    print(f"✓ strange_uta_game.updater 子包已收集（{_n} 文件）: {_updater_pkg}")
+else:
+    _checked_paths = "\n".join(f"    - {p}" for p in _updater_pkg_candidates)
     print(
         "✗ strange_uta_game.updater 子包未被打包!\n"
         "  这将导致设置界面的代理和更新卡片消失, 版本号不会刷新.\n"
-        "  请确认 build.py 中包含 --collect-submodules=strange_uta_game.updater."
+        "  请确认 build.py 中包含 --collect-submodules=strange_uta_game.updater.\n"
+        f"  已检查:\n{_checked_paths}"
     )
 
 # 打包后的说明

@@ -128,10 +128,13 @@ class AboutSubInterface(SubSettingInterface):
             return
 
         new_dir_path = Path(new_dir)
-        program_dir = Path(sys.argv[0]).resolve().parent
-        redirect_file = program_dir / ".config_redirect"
+        from strange_uta_game.runtime_paths import (
+            config_redirect_path,
+            default_config_dir,
+        )
 
-        if new_dir_path.resolve() == program_dir.resolve():
+        redirect_file = config_redirect_path()
+        if new_dir_path.resolve() == default_config_dir().resolve():
             try:
                 if redirect_file.exists():
                     redirect_file.unlink()
@@ -139,6 +142,7 @@ class AboutSubInterface(SubSettingInterface):
                 pass
         else:
             try:
+                redirect_file.parent.mkdir(parents=True, exist_ok=True)
                 redirect_file.write_text(str(new_dir_path), encoding="utf-8")
             except Exception as e:
                 InfoBar.error(title="更改失败", content=f"无法写入重定向文件: {e}",

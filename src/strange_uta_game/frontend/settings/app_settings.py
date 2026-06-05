@@ -309,20 +309,10 @@ class AppSettings:
 
     @staticmethod
     def get_config_dir() -> Path:
-        """获取配置文件目录（默认为程序所在目录）。
+        """获取平台配置目录，并应用用户设置的目录重定向。"""
+        from strange_uta_game.runtime_paths import config_dir
 
-        支持通过程序目录下的 .config_redirect 文件重定向到自定义位置。
-        """
-        program_dir = Path(sys.argv[0]).resolve().parent
-        redirect_file = program_dir / ".config_redirect"
-        if redirect_file.exists():
-            try:
-                custom_dir = Path(redirect_file.read_text(encoding="utf-8").strip())
-                if custom_dir.is_dir():
-                    return custom_dir
-            except Exception:
-                pass
-        return program_dir
+        return config_dir()
 
     @staticmethod
     def _get_packaged_config_path(filename: str) -> Optional[Path]:
@@ -370,12 +360,13 @@ class AppSettings:
             if config_path is None:
                 config_dir = self.get_config_dir()
                 try:
-                    config_dir.mkdir(exist_ok=True)
+                    config_dir.mkdir(parents=True, exist_ok=True)
                 except OSError:
                     # 程序目录不可写时回退到用户目录
                     config_dir = Path.home() / ".strange_uta_game"
-                    config_dir.mkdir(exist_ok=True)
+                    config_dir.mkdir(parents=True, exist_ok=True)
                 self._config_path = config_dir / "config.json"
+                self._migrate_legacy_macos_files()
                 # 如果用户配置不存在，从内嵌配置复制
                 if not self._config_path.exists():
                     self._copy_packaged_config()
@@ -409,6 +400,30 @@ class AppSettings:
                 loaded = {}
             if isinstance(loaded, dict):
                 self._deep_merge(self._settings, deepcopy(loaded))
+
+    def _migrate_legacy_macos_files(self) -> None:
+        """把旧版写在 ``.app/Contents/MacOS`` 的用户文件迁到标准目录。"""
+        if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+            return
+        legacy_dir = Path(sys.executable).resolve().parent
+        if legacy_dir == self._config_path.parent:
+            return
+
+        import shutil
+
+        for filename in (
+            "config.json",
+            "dictionary.json",
+            "network_dictionary.json",
+            "singers.json",
+        ):
+            source = legacy_dir / filename
+            destination = self._config_path.parent / filename
+            if source.is_file() and not destination.exists():
+                try:
+                    shutil.copy2(source, destination)
+                except OSError:
+                    pass
 
     def _force_upgrade_dictionary_if_needed(self) -> None:
         """词典版本升级：比较内置词典版本号与用户已应用版本号。

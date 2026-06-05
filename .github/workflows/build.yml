@@ -125,10 +125,8 @@ jobs:
         run: python -m pytest tests/unit/infrastructure/test_ruby_analyzer.py -v --tb=short -x
 
       - name: Run other unit tests
-        run: |
-          python -m pytest tests/unit/ -v --tb=line -x \
-            --ignore=tests/unit/infrastructure/test_ruby_analyzer.py \
-          || echo "::warning::Some tests failed (non-critical)"
+        continue-on-error: true
+        run: python -m pytest tests/unit/ -v --tb=line -x --ignore=tests/unit/infrastructure/test_ruby_analyzer.py
 
   # ──────────────────────────────────────────────
   # 打包
@@ -216,9 +214,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: updater_app/build/
-          key: updater-work-${{ runner.os }}-${{ hashFiles('updater_app/main.py', 'updater_app/build_updater.py', 'updater_app/__init__.py', 'src/strange_uta_game/__version__.py') }}
+          key: updater-work-${{ matrix.os }}-${{ hashFiles('updater_app/main.py', 'updater_app/build_updater.py', 'updater_app/__init__.py', 'src/strange_uta_game/__version__.py') }}
           restore-keys: |
-            updater-work-${{ runner.os }}-
+            updater-work-${{ matrix.os }}-
 
       # 缓存二进制产物 → 同版本重跑直接跳过编译
       - name: Restore Updater binary cache
@@ -226,15 +224,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: updater_app/dist/${{ matrix.updater_name }}
-          key: updater-bin-${{ runner.os }}-${{ steps.version.outputs.app_version }}
-          restore-keys: |
-            updater-bin-${{ runner.os }}-
+          key: updater-bin-${{ matrix.os }}-${{ steps.version.outputs.app_version }}-${{ hashFiles('updater_app/main.py', 'updater_app/build_updater.py', 'updater_app/__init__.py') }}
 
       - name: Build Updater
         run: python updater_app/build_updater.py --skip-if-exists
 
       - name: Build Main App
         run: python build.py
+
+      - name: Verify bundled Updater (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: test -x dist/StrangeUtaGame/Updater
+
+      - name: Verify bundled Updater (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: test -x dist/StrangeUtaGame.app/Contents/MacOS/Updater
+
+      - name: Verify bundled Updater (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/StrangeUtaGame/Updater.exe" -PathType Leaf)) {
+            Write-Error "Bundled Updater.exe not found"
+            exit 1
+          }
 
       # ── 打包 ──
       - name: Package (Linux / tar.gz)
@@ -266,51 +281,13 @@ jobs:
             Write-Error "dist/StrangeUtaGame not found"; Get-ChildItem dist; exit 1
           }
 
-      # ── 打包 Updater ──
-      - name: Package Updater (Linux / macOS)
-        if: always() && runner.os != 'Windows'
-        shell: bash
-        run: |
-          cd updater_app/dist
-          if [ -f "${{ matrix.updater_name }}" ]; then
-            if [ "${{ matrix.ext }}" = ".tar.gz" ]; then
-              tar czf ../../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.tar.gz \
-                "${{ matrix.updater_name }}"
-            else
-              zip ../../${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.zip \
-                "${{ matrix.updater_name }}"
-            fi
-          else
-            echo "::warning::Updater binary not found at updater_app/dist/${{ matrix.updater_name }}"
-          fi
-
-      - name: Package Updater (Windows)
-        if: always() && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $updater = "updater_app/dist/${{ matrix.updater_name }}"
-          $archive = "${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}.zip"
-          if (Test-Path $updater) {
-            Compress-Archive -Path $updater -DestinationPath $archive -Force
-          } else {
-            Write-Warning "Updater binary not found at $updater"
-          }
-
-      # ── 上传主程序 + Updater 产物 ──
+      # Updater 已包含在主程序产物中，不再单独发布。
       - name: Upload main app
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}-${{ steps.version.outputs.app_version }}
           path: ${{ matrix.artifact_name }}-${{ steps.version.outputs.app_version }}${{ matrix.ext }}
           if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload Updater
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}
-          path: ${{ matrix.artifact_name }}-updater-${{ steps.version.outputs.app_version }}${{ matrix.ext }}
-          if-no-files-found: warn
           compression-level: 0
 
   # ──────────────────────────────────────────────

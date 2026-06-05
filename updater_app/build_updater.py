@@ -5,7 +5,8 @@
   Linux:   ``<repo>/updater_app/dist/Updater``
   macOS:   ``<repo>/updater_app/dist/Updater``
 
-主程序 ``build.py`` 会自动把 Updater 复制到 ``dist/StrangeUtaGame/``。
+主程序 ``build.py`` 会自动把 Updater 复制到最终产物中：Windows/Linux 位于
+``dist/StrangeUtaGame/``，macOS 位于 App 的 ``Contents/MacOS/``。
 
 使用:
 
