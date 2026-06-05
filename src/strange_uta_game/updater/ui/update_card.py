@@ -28,6 +28,7 @@ from qfluentwidgets import (
     SwitchButton,
 )
 
+from strange_uta_game.frontend.font_utils import DEFAULT_FONT_FAMILY
 from ...__version__ import __version__
 from .. import installer
 from ..settings import UpdaterSettings, ensure_persisted
@@ -94,7 +95,7 @@ class _SourceOrderCard(SettingCard):
             parent,
         )
         self.btn_edit = PushButton("编辑顺序", self)
-        self.btn_edit.setFont(QFont("Microsoft YaHei", 10))
+        self.btn_edit.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         self.btn_edit.setMinimumWidth(110)
         self.hBoxLayout.addWidget(self.btn_edit, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)
@@ -129,7 +130,7 @@ class _CheckNowCard(SettingCard):
             parent,
         )
         self.btn = PushButton("检查更新", self)
-        self.btn.setFont(QFont("Microsoft YaHei", 10))
+        self.btn.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         self.btn.setMinimumWidth(120)
         self.hBoxLayout.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)

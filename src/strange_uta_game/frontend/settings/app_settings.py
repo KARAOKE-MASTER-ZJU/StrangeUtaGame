@@ -13,6 +13,10 @@ import json
 import sys
 
 
+_DEFAULT_UI_FONT = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei"
+_LEGACY_UI_FONT = "Microsoft YaHei"
+
+
 class AppSettings:
     """应用设置管理"""
 
@@ -81,8 +85,8 @@ class AppSettings:
             "window_size": [1400, 900],
             "window_maximized": False,
             "font_size": 24,
-            "main_font": "Microsoft YaHei",
-            "ruby_font": "Microsoft YaHei",
+            "main_font": _DEFAULT_UI_FONT,
+            "ruby_font": _DEFAULT_UI_FONT,
             "lyrics_alignment": "left",
             "alignment_margin": 168,
             "checkpoint_markers": {
@@ -458,7 +462,19 @@ class AppSettings:
                 except Exception:
                     pass
 
+        self._apply_platform_defaults(defaults)
         return defaults
+
+    def _apply_platform_defaults(self, settings: Dict[str, Any]) -> None:
+        """Apply platform-native defaults without overwriting custom choices."""
+        if sys.platform != "darwin":
+            return
+        ui = settings.get("ui")
+        if not isinstance(ui, dict):
+            return
+        for key in ("main_font", "ruby_font"):
+            if ui.get(key) in (None, "", _LEGACY_UI_FONT):
+                ui[key] = _DEFAULT_UI_FONT
 
     def _load_packaged_defaults(self) -> Dict[str, Any]:
         """从内嵌 config.json 加载默认配置"""

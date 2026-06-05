@@ -24,7 +24,7 @@ if sys.platform == "win32":
 # 必须先创建 QApplication，再导入任何 QWidget
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QFont, QIcon
 
 # 启用 DPI 缩放
 QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -32,7 +32,15 @@ QApplication.setHighDpiScaleFactorRoundingPolicy(
 )
 
 # 创建应用实例
+if sys.platform == "darwin":
+    QFont.insertSubstitution("Segoe UI", "PingFang SC")
+    QFont.insertSubstitution("Microsoft YaHei", "PingFang SC")
+    QFont.insertSubstitution("Monospace", "Menlo")
 app = QApplication(sys.argv)
+if sys.platform == "darwin":
+    app.setFont(QFont("PingFang SC"))
+    from qfluentwidgets import setFontFamilies
+    setFontFamilies(["PingFang SC", "Helvetica Neue", "Arial"])
 
 # 确定图标路径（后续多次使用）
 _icon_path = (
