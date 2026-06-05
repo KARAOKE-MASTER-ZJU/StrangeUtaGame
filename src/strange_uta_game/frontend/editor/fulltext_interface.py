@@ -858,6 +858,8 @@ class RubyInterface(QWidget):
         annotate_katakana_with_english = app_settings.get(
             "ruby_dictionary.annotate_katakana_with_english", False
         )
+        # 用户主动触发：不做中文检测——按下"自动分析全部注音"按钮即明确表达
+        # 注音意图，避免纯汉字日文行被误判跳过。
         # LLM 整首一次发送：传入全部行文本以保留上下文（LLM 未激活时忽略）。
         lines = [s.text for s in self._project.sentences] if self._project else []
         analyzer = app_settings.build_ruby_analyzer(

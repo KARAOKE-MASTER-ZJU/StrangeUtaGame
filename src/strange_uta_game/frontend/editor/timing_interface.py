@@ -400,6 +400,17 @@ class EditorInterface(QWidget):
         self._store = store
         store.data_changed.connect(self._on_data_changed)
 
+    def _get_setting_interface(self):
+        """Return SUG's settings interface even when embedded in a host window."""
+        widget = self
+        while widget is not None:
+            setting_iface = getattr(widget, "settingInterface", None)
+            if setting_iface is not None:
+                return setting_iface
+            widget = widget.parentWidget()
+        main_window = self.window()
+        return getattr(main_window, "settingInterface", None)
+
     def _on_data_changed(self, change_type: str):
         """响应 ProjectStore 的数据变更。"""
         if change_type == "project":
@@ -416,11 +427,21 @@ class EditorInterface(QWidget):
 
     def _apply_settings(self):
         """从 AppSettings 读取设定并应用到编辑器。"""
+        try:
+            self._apply_settings_inner()
+        except Exception as e:
+            # 此方法挂在 ProjectStore.data_changed("settings") 信号槽上，
+            # 任何未捕获的 Python 异常都可能在 Qt C++ 派发层变为 0xC0000409
+            # STATUS_STACK_BUFFER_OVERRUN 原生闪退（参见 commit fccb832）。
+            # 兜底打日志，决不让 cascade 击穿到 Qt。
+            print(f"[Settings] _apply_settings 失败: {e}")
+
+    def _apply_settings_inner(self):
         if not self._store:
             return
-        # 通过 MainWindow 的 settingInterface 获取 AppSettings
-        main_window = self.window()
-        setting_iface = getattr(main_window, "settingInterface", None)
+        # In embedded mode, self.window() is the host window. Walk parents to
+        # find SUG's own MainWindow so runtime settings apply immediately.
+        setting_iface = self._get_setting_interface()
         if setting_iface is None:
             return
         settings = setting_iface.get_settings()
@@ -608,7 +629,13 @@ class EditorInterface(QWidget):
             self._project.global_offset_ms = render_offset
             for sentence in self._project.sentences:
                 for ch in sentence.characters:
-                    ch.set_offset(render_offset)
+                    # 旧版 .sug 升级 / 第三方导入可能在 timestamps 中混入
+                    # 非 int（None / 字符串），ch.set_offset 内部的算术会抛
+                    # TypeError。单个脏字符不应阻断整次 settings cascade。
+                    try:
+                        ch.set_offset(render_offset)
+                    except Exception as e:
+                        print(f"[Settings] set_offset 跳过脏字符: {e}")
         # 应用歌词对齐方式
         lyrics_alignment = settings.get("ui.lyrics_alignment", "center")
         self.preview.set_alignment(lyrics_alignment)
@@ -706,8 +733,7 @@ class EditorInterface(QWidget):
         # 否则 _store.notify("settings") 触发 _apply_settings() 时读到的还是旧值，
         # 会立刻把刚设的偏移回滚掉。
         try:
-            main_window = self.window()
-            setting_iface = getattr(main_window, "settingInterface", None)
+            setting_iface = self._get_setting_interface()
             if setting_iface:
                 app_settings = setting_iface.get_settings()
             else:
@@ -720,13 +746,19 @@ class EditorInterface(QWidget):
         # 同步到Project对象
         if self._project:
             self._project.global_offset_ms = offset_ms
-        # 更新所有字符的偏移时间戳
+        # 更新所有字符的偏移时间戳（单个脏字符不能阻断整次更新）
         if self._project:
             for sentence in self._project.sentences:
                 for ch in sentence.characters:
-                    ch.set_offset(offset_ms)
+                    try:
+                        ch.set_offset(offset_ms)
+                    except Exception as e:
+                        print(f"[Offset] set_offset 跳过脏字符: {e}")
         # 更新渲染
-        self.preview.set_global_offset(offset_ms)
+        try:
+            self.preview.set_global_offset(offset_ms)
+        except Exception as e:
+            print(f"[Offset] preview.set_global_offset 失败: {e}")
         # 通知 ProjectStore，使 Settings 页面等监听者同步更新
         if hasattr(self, "_store") and self._store:
             self._store.notify("settings")
@@ -736,8 +768,7 @@ class EditorInterface(QWidget):
         # 获取AppSettings实例（与_apply_settings使用同一个）
         app_settings = None
         try:
-            main_window = self.window()
-            setting_iface = getattr(main_window, "settingInterface", None)
+            setting_iface = self._get_setting_interface()
             if setting_iface:
                 app_settings = setting_iface.get_settings()
         except Exception:
@@ -2479,8 +2510,7 @@ class EditorInterface(QWidget):
 
         # 应用设置中的默认音量和速度
         if self._timing_service:
-            main_window = self.window()
-            setting_iface = getattr(main_window, "settingInterface", None)
+            setting_iface = self._get_setting_interface()
             if setting_iface is not None:
                 settings = setting_iface.get_settings()
                 default_volume = int(settings.get("audio.default_volume", 80))
@@ -4654,8 +4684,7 @@ class EditorInterface(QWidget):
         self._scroll_mode = modes[(modes.index(self._scroll_mode) + 1) % len(modes)]
         self._sync_scroll_mode()
         # 持久化到 config
-        main_window = self.window()
-        setting_iface = getattr(main_window, "settingInterface", None)
+        setting_iface = self._get_setting_interface()
         if setting_iface is not None:
             s = setting_iface.get_settings()
             s.set("timing.scroll_mode", self._scroll_mode)
@@ -4901,7 +4930,7 @@ class EditorInterface(QWidget):
     def refresh_lyric_display(self):
         self.preview._update_display()
 
-    def _auto_analyze_rubies(self, only_noruby: bool = False):
+    def _auto_analyze_rubies(self, only_noruby: bool = False, auto_detect_chinese: bool = False):
         """执行注音分析（核心逻辑，供多处复用）。
 
         分析在后台 QThread 中进行，不阻塞 UI。分析结果通过信号回调到主线程，
@@ -4909,23 +4938,21 @@ class EditorInterface(QWidget):
 
         Args:
             only_noruby: True=仅分析未注音字符，False=全部重新分析
+            auto_detect_chinese: True=自动检测纯中文歌词并走中文模式（跳过注音）。
+                仅导入歌词后的自动触发应传 True；用户手动按"注音分析"按钮明确表达了
+                注音意图，应传 False，避免纯汉字日文行被误判为中文。
         """
         if not self._project:
             return
         if getattr(self, "_ruby_analyzing", False):
             return
 
-        from strange_uta_game.frontend.winrt_japanese_guide import (
-            ensure_winrt_japanese,
-        )
-        if not ensure_winrt_japanese(self):
-            return
-
-        from strange_uta_game.backend.application import AutoCheckService
+        from strange_uta_game.backend.application import AutoCheckService, is_chinese_lyrics
         from strange_uta_game.frontend.settings.settings_interface import AppSettings
         from strange_uta_game.frontend.workers import RubyAnalyzeWorker
 
         app_settings = AppSettings()
+        llm_active = app_settings.llm_ruby_active()
         auto_check_flags = app_settings.get_all().get("auto_check", {})
         user_dict = app_settings.load_effective_dictionary()
         annotate_katakana_with_english = app_settings.get(
@@ -4933,12 +4960,44 @@ class EditorInterface(QWidget):
         )
         delete_types = auto_check_flags.get("delete_ruby_types", [])
 
-        # AutoCheckService（含 WinRTAnalyzer）在主线程创建，确保 WinRT STA apartment 正确。
-        auto_check = AutoCheckService(
-            auto_check_flags=auto_check_flags,
-            user_dictionary=user_dict,
-            annotate_katakana_with_english=annotate_katakana_with_english,
+        # 中文歌词检测：仅导入歌词的自动触发阶段启用；用户主动触发注音分析时
+        # 视为明确需要注音，不再检测中文（避免纯汉字日文行被误判）。
+        chinese_mode = (
+            auto_detect_chinese
+            and auto_check_flags.get("chinese_lyrics_detection", True)
+            and is_chinese_lyrics("".join(s.text for s in self._project.sentences))
         )
+
+        # LLM 注音激活时不依赖本地 fugashi，中文模式同样无需注音引擎。
+        if not chinese_mode and not llm_active:
+            from strange_uta_game.frontend.winrt_japanese_guide import (
+                ensure_winrt_japanese,
+            )
+            if not ensure_winrt_japanese(self):
+                return
+
+        # LLM 整首一次发送需传入全部行文本；本地回退始终使用 fugashi。
+        if chinese_mode:
+            analyzer = None
+            llm_apply_user_dict = True
+            auto_check = AutoCheckService(
+                auto_check_flags=auto_check_flags,
+                user_dictionary=user_dict,
+                annotate_katakana_with_english=annotate_katakana_with_english,
+                chinese_mode=True,
+            )
+        else:
+            lines = [s.text for s in self._project.sentences]
+            analyzer = app_settings.build_ruby_analyzer(
+                lines, annotate_katakana_with_english=annotate_katakana_with_english
+            )
+            llm_apply_user_dict = app_settings.llm_apply_user_dict() if llm_active else True
+            auto_check = AutoCheckService(
+                ruby_analyzer=analyzer,
+                auto_check_flags=auto_check_flags,
+                user_dictionary=user_dict,
+                annotate_katakana_with_english=annotate_katakana_with_english,
+            )
 
         # 在主线程提前快照 before 状态和光标位置（worker 运行期间不能读 self._project）
         before_sentences = deepcopy(self._project.sentences)
@@ -4964,7 +5023,13 @@ class EditorInterface(QWidget):
         state_tooltip.show()
         self._ruby_analyzing = True
 
-        worker = RubyAnalyzeWorker(project_copy, auto_check, only_noruby, delete_types)
+        worker = RubyAnalyzeWorker(
+            project_copy,
+            auto_check,
+            only_noruby,
+            delete_types,
+            llm_apply_user_dict=llm_apply_user_dict,
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
 
@@ -4983,6 +5048,17 @@ class EditorInterface(QWidget):
         def _on_finished(analyzed_project, deleted_count: int) -> None:
             state_tooltip.setState(True)
             _cleanup()
+
+            if getattr(analyzer, "llm_failed", False):
+                InfoBar.warning(
+                    title="LLM 注音失败，已回退本地引擎",
+                    content=str(getattr(analyzer, "last_error", "") or ""),
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=5000,
+                    parent=self,
+                )
 
             after_sentences = analyzed_project.sentences
             command_manager = (
@@ -5043,7 +5119,11 @@ class EditorInterface(QWidget):
                 parent=self,
             )
 
+        def _on_llm_waiting() -> None:
+            state_tooltip.setContent("正在等待 LLM 返回…（整首歌词一次性发送，请稍候）")
+
         thread.started.connect(worker.run)
+        worker.llm_waiting.connect(_on_llm_waiting)
         worker.progress.connect(_on_progress)
         worker.finished.connect(_on_finished)
         worker.error.connect(_on_error)
@@ -5117,22 +5197,41 @@ class EditorInterface(QWidget):
         if getattr(self, "_ruby_subset_analyzing", False):
             return
 
-        from strange_uta_game.frontend.winrt_japanese_guide import ensure_winrt_japanese
-
-        if not ensure_winrt_japanese(self):
-            return
-
         from strange_uta_game.backend.application import AutoCheckService
         from strange_uta_game.frontend.settings.settings_interface import AppSettings
         from strange_uta_game.frontend.workers import RubySubsetAnalyzeWorker
 
         app_settings = AppSettings()
+        llm_active = app_settings.llm_ruby_active()
+
+        # LLM 注音激活时不依赖本地 fugashi。
+        # 用户主动触发的按行/按选定字符分析：不做中文检测——按下"注音分析"按钮
+        # 即表示需要注音，避免纯汉字日文行被误判为中文跳过。
+        if not llm_active:
+            from strange_uta_game.frontend.winrt_japanese_guide import (
+                _fugashi_available,
+                ensure_winrt_japanese,
+            )
+
+            if show_winrt_dialog:
+                if not ensure_winrt_japanese(self):
+                    return
+            else:
+                if not _fugashi_available():
+                    return
+
         auto_check_flags = app_settings.get_all().get("auto_check", {})
         user_dict = app_settings.load_effective_dictionary()
         annotate_katakana_with_english = app_settings.get(
             "ruby_dictionary.annotate_katakana_with_english", False
         )
+        lines = [s.text for s in self._project.sentences]
+        analyzer = app_settings.build_ruby_analyzer(
+            lines, annotate_katakana_with_english=annotate_katakana_with_english
+        )
+        llm_apply_user_dict = app_settings.llm_apply_user_dict() if llm_active else True
         auto_check = AutoCheckService(
+            ruby_analyzer=analyzer,
             auto_check_flags=auto_check_flags,
             user_dictionary=user_dict,
             annotate_katakana_with_english=annotate_katakana_with_english,
@@ -5146,7 +5245,26 @@ class EditorInterface(QWidget):
         project_copy = deepcopy(self._project)
         self._ruby_subset_analyzing = True
 
-        worker = RubySubsetAnalyzeWorker(project_copy, auto_check, specs)
+        subset_tooltip = None
+        if llm_active:
+            green = theme.status_complete.name()
+            subset_tooltip = StateToolTip("正在分析注音", "正在等待 LLM 返回…", self)
+            subset_tooltip.setStyleSheet(f"""
+                StateToolTip {{
+                    background-color: {green};
+                    border: 1px solid {green};
+                    border-radius: 8px;
+                }}
+                StateToolTip QLabel {{
+                    color: white;
+                }}
+            """)
+            subset_tooltip.move(subset_tooltip.getSuitablePos())
+            subset_tooltip.show()
+
+        worker = RubySubsetAnalyzeWorker(
+            project_copy, auto_check, specs, apply_user_dict=llm_apply_user_dict
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
 
@@ -5158,8 +5276,23 @@ class EditorInterface(QWidget):
             self._ruby_subset_analyze_thread = None
             self._ruby_subset_analyzing = False
 
+        def _close_tooltip() -> None:
+            if subset_tooltip is not None:
+                subset_tooltip.setState(True)
+
         def _on_finished(analyzed_project) -> None:
             _cleanup()
+            _close_tooltip()
+            if getattr(analyzer, "llm_failed", False):
+                InfoBar.warning(
+                    title="LLM 注音失败，已回退本地引擎",
+                    content=str(getattr(analyzer, "last_error", "") or ""),
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=5000,
+                    parent=self,
+                )
             after_sentences = analyzed_project.sentences
             command_manager = (
                 self._timing_service.command_manager if self._timing_service else None
@@ -5193,6 +5326,7 @@ class EditorInterface(QWidget):
 
         def _on_error(err: str) -> None:
             _cleanup()
+            _close_tooltip()
             InfoBar.warning(
                 title=f"{label}失败",
                 content=err,
@@ -5203,7 +5337,12 @@ class EditorInterface(QWidget):
                 parent=self,
             )
 
+        def _on_llm_waiting() -> None:
+            if subset_tooltip is not None:
+                subset_tooltip.setContent("正在等待 LLM 返回…（整首歌词一次性发送，请稍候）")
+
         thread.started.connect(worker.run)
+        worker.llm_waiting.connect(_on_llm_waiting)
         worker.finished.connect(_on_finished)
         worker.error.connect(_on_error)
         worker.finished.connect(thread.quit)

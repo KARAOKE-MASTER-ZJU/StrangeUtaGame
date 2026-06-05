@@ -118,10 +118,16 @@ class SettingsInterface(ScrollArea):
     _SHORTCUT_ACTIONS = ShortcutSubInterface._SHORTCUT_ACTIONS
     _SHORTCUT_MODES   = ShortcutSubInterface._SHORTCUT_MODES
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_provider=None):
         super().__init__(parent)
         self._store = None
-        self._settings = AppSettings()
+        self._settings_provider = settings_provider
+        self._settings = AppSettings(provider=settings_provider)
+        self._embedded = settings_provider is not None
+        self._tab_config = [
+            item for item in self.TAB_CONFIG
+            if not (self._embedded and item[0] == "network")
+        ]
         self._initialized = False       # True = _preload 已调度（但可能还未完成）
         self._fully_initialized = False  # True = 所有子页面全部创建并连接完毕
 
@@ -196,7 +202,7 @@ class SettingsInterface(ScrollArea):
         self.pivot.setFixedHeight(40)
         self.vBoxLayout.addWidget(self.pivot)
 
-        for key, text in self.TAB_CONFIG:
+        for key, text in self._tab_config:
             self.pivot.addItem(
                 routeKey=key,
                 text=text,
@@ -205,7 +211,7 @@ class SettingsInterface(ScrollArea):
 
         self.vBoxLayout.addWidget(self.stackedWidget)
 
-        self.pivot.setCurrentItem(self.TAB_CONFIG[0][0])
+        self.pivot.setCurrentItem(self._tab_config[0][0])
         self.stackedWidget.setCurrentIndex(0)
 
     def _preload(self):
@@ -228,7 +234,7 @@ class SettingsInterface(ScrollArea):
         self.uiInterface        = UISubInterface(self)
         self.exportInterface    = ExportSubInterface(self)
         self.shortcutInterface  = ShortcutSubInterface(self)
-        self.networkInterface   = NetworkSubInterface(self)
+        self.networkInterface   = None if self._embedded else NetworkSubInterface(self)
         self.aboutInterface     = AboutSubInterface(self)
 
         QTimer.singleShot(0, self._preload_finalize)
@@ -236,12 +242,15 @@ class SettingsInterface(ScrollArea):
     def _preload_finalize(self):
         """第三批：连接信号、加载设置、注入 updater UI。"""
         # 把所有子页面按顺序加入 stackedWidget
-        for iface in [
+        interfaces = [
             self.playbackInterface, self.timingInterface, self.autoSaveInterface,
             self.autoCheckInterface, self.dictionaryInterface, self.uiInterface,
-            self.exportInterface, self.shortcutInterface, self.networkInterface,
+            self.exportInterface, self.shortcutInterface,
             self.aboutInterface,
-        ]:
+        ]
+        if self.networkInterface is not None:
+            interfaces.insert(-1, self.networkInterface)
+        for iface in interfaces:
             self.stackedWidget.addWidget(iface)
 
         # 传入 store（若已由外层设置）
@@ -254,26 +263,30 @@ class SettingsInterface(ScrollArea):
 
         # 让每个子页面把控件变更信号连到各自的 _notify_changed，
         # 再通过 set_change_callback 冒泡到 _schedule_auto_save。
+        # 同时注入 _silent_save 通道：用于那些只在导出/导入时才被消费、
+        # 改完不影响任何运行时状态的设置项，绕开整条 settings cascade。
         for iface in [
             self.playbackInterface, self.timingInterface, self.autoSaveInterface,
             self.autoCheckInterface, self.dictionaryInterface, self.uiInterface,
             self.exportInterface, self.shortcutInterface,
         ]:
             iface.set_change_callback(self._schedule_auto_save)
+            iface.set_silent_save_callback(self._silent_save_setting)
             iface.connect_signals()
 
         # 初始加载设置
         self._load_current_settings()
 
         # 注入 updater UI（只在初始化阶段执行一次）
-        self.networkInterface.attach_updater_ui(self._settings)
+        if self.networkInterface is not None:
+            self.networkInterface.attach_updater_ui(self._settings)
 
         self._fully_initialized = True
 
     # ── 选项卡切换 ────────────────────────────────────────────────────
 
     def _on_tab_changed(self, routeKey: str):
-        tab_map = {k: i for i, (k, _) in enumerate(self.TAB_CONFIG)}
+        tab_map = {k: i for i, (k, _) in enumerate(self._tab_config)}
         self.stackedWidget.setCurrentIndex(tab_map.get(routeKey, 0))
 
     # ── 外部接口 ──────────────────────────────────────────────────────
@@ -299,6 +312,22 @@ class SettingsInterface(ScrollArea):
         if self._loading_settings:
             return
         self._auto_save_timer.start()
+
+    def _silent_save_setting(self, path: str, value) -> None:
+        """直接持久化单个 key，不触发 settings_changed / notify("settings")。
+
+        子页面对"只在导出/导入时才被消费"的设置项调用本方法，避免每次
+        微调都跑一遍 timing_interface._apply_settings 全量重应用
+        （后者会遍历项目所有字符、可能触发 BASS 重载，是已知的 cascade
+        噪声源；参见 commit fccb832 关于 cascade 内异常变原生闪退的记录）。
+        """
+        if self._loading_settings:
+            return
+        try:
+            self._settings.set(path, value)
+            self._settings.save()
+        except Exception as e:
+            print(f"[Settings] 静默保存 {path} 失败: {e}")
 
     def _do_auto_save(self):
         if not self._fully_initialized:
@@ -328,7 +357,8 @@ class SettingsInterface(ScrollArea):
                 self.exportInterface, self.shortcutInterface, self.aboutInterface,
             ]:
                 iface.load_settings(s)
-            self.networkInterface.load_settings(s)
+            if self.networkInterface is not None:
+                self.networkInterface.load_settings(s)
             self._apply_theme_setting()
         finally:
             self._loading_settings = False
@@ -387,9 +417,14 @@ class SettingsInterface(ScrollArea):
         msg.exec()
         if msg.clickedButton() is btn_yes:
             try:
-                if self._settings._config_path.exists():
-                    self._settings._config_path.unlink()
-                self._settings = AppSettings()
+                if self._settings_provider is not None:
+                    self._settings = AppSettings(provider=self._settings_provider)
+                    self._settings._settings = self._settings._load_packaged_defaults()
+                    self._settings.save()
+                else:
+                    if self._settings._config_path.exists():
+                        self._settings._config_path.unlink()
+                    self._settings = AppSettings()
                 self._load_current_settings()
                 InfoBar.success(title="设置已重置", content="所有设置已恢复为默认值",
                     orient=Qt.Orientation.Horizontal, isClosable=True,

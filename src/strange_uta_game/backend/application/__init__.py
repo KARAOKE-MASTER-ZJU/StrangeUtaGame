@@ -2,7 +2,7 @@
 
 from .command_manager import CommandManager
 from .project_service import ProjectService, ProjectCallbacks, ProjectServiceError
-from .auto_check_service import AutoCheckService, AutoCheckResult
+from .auto_check_service import AutoCheckService, AutoCheckResult, is_chinese_lyrics
 from .singer_service import SingerService, SingerCallbacks
 from .export_service import ExportService, ExportResult
 from .timing_service import TimingService, TimingCallbacks, CheckpointPosition
@@ -34,6 +34,7 @@ __all__ = [
     "ProjectServiceError",
     "AutoCheckService",
     "AutoCheckResult",
+    "is_chinese_lyrics",
     "SingerService",
     "SingerCallbacks",
     "ExportService",

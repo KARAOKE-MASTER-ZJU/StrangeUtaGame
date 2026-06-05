@@ -73,6 +73,28 @@ _TYPE_FLAG_MAP: Dict[CharType, str] = {
 _SMALL_KANA_SET = frozenset("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮゕゖ")
 
 
+# 中文歌词判据用的假名字符集：仅平/片假名 + 小假名，不含 の（中文歌中常见装饰字）、
+# 也不含 ーｰ～〜（长音/波浪符号——非真正的假名）。
+_KANA_DETECTION_CHARS = frozenset(
+    "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞた"
+    "だちぢっつづてでとどなにぬねはばぱひびぴふぶぷへべぺほぼぽ"
+    "まみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ"
+    "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタ"
+    "ダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポ"
+    "マミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ"
+)
+
+
+def is_chinese_lyrics(text: str) -> bool:
+    """判断文本是否为「纯中文歌词」（不含任何平/片假名）。
+
+    用于自动注音流程决定是否走中文模式（每字 cc=1、无 ruby、无用户词典、无 LLM）。
+    """
+    if not text:
+        return False
+    return not any(c in _KANA_DETECTION_CHARS for c in text)
+
+
 def _merge_trailing_n_ruby_parts(parts: List[str]) -> List[str]:
     """将非起始位置的「ん/ン」分段并入前一拍。
 
@@ -936,86 +958,157 @@ class AutoCheckService:
             if i < len(check_counts) and ch in PUNCTUATION_SET and not ch.isspace():
                 check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
 
-    def _analyze_sentence_chinese(
+    def _apply_chinese_to_sentence(
         self,
-        chars: List[str],
-        check_counts: List[int],
-        text: str,
-    ) -> List[AutoCheckResult]:
-        """中文歌词模式的句子分析（跳过日文注音）。
+        sentence: Sentence,
+        keep_existing_timetags: bool = True,
+    ) -> None:
+        """中文歌词模式：按字符流计算节奏点；跳过日语注音引擎、用户词典、ruby、罗马音。
 
-        每个字符独立为一个节奏点；英文按音节；空格/标点由 flags 控制。
+        完整尊重 auto_check_flags：
+        - 字符类型开关：hiragana/katakana/kanji/alphabet/digit/symbol（关→该类 cc=0）
+        - 空格：space + space_after_alphabet/space_after_symbol 子开关
+        - 行首/行尾：check_line_start / check_line_end / check_space_as_line_end
+        - 括号/标点：check_parentheses（False 时括号内 cc=0）/ checkpoint_on_punctuation
+        - 英文：english_syllable_check（按音节）/ check_english_word_end（多字母词末为停顿）
+        - 空行：check_empty_lines（保留语义但中文模式不生成 ruby）
+
+        全程不产生 ruby，也不查询用户词典/词组词典。
         """
-        # check_line_start
-        if self._flags.get("check_line_start", False) and check_counts and text.strip():
-            check_counts[0] = max(check_counts[0], 1)
+        text = sentence.text
+        is_blank_line = not text.strip()
+        if not text:
+            return
 
-        for i, char in enumerate(chars):
-            if i >= len(check_counts):
-                break
-            ct = get_char_type(char) if len(char) == 1 else CharType.OTHER
+        old_timestamps: Dict[int, List[int]] = {}
+        old_sentence_end_ts: Dict[int, int] = {}
+        old_singer_map: Dict[int, str] = {}
+        for i, c in enumerate(sentence.characters):
+            if c.timestamps:
+                old_timestamps[i] = list(c.timestamps)
+            if c.sentence_end_ts is not None:
+                old_sentence_end_ts[i] = c.sentence_end_ts
+            old_singer_map[i] = c.singer_id
 
-            # 空格：主开关决定是否打 CP；中文模式下汉字后不使用 space_after_japanese
+        chars = list(text)
+        n = len(chars)
+        check_counts: List[int] = [1] * n
+
+        # 字符类型开关 + 空格规则
+        for i, ch in enumerate(chars):
+            ct = get_char_type(ch) if len(ch) == 1 else CharType.OTHER
             if ct == CharType.SPACE:
                 if not self._flags.get("space", True) or i == 0:
                     check_counts[i] = 0
                 else:
                     prev_ct = (
-                        get_char_type(chars[i - 1]) if len(chars[i - 1]) == 1 else CharType.OTHER
+                        get_char_type(chars[i - 1])
+                        if len(chars[i - 1]) == 1
+                        else CharType.OTHER
                     )
                     if prev_ct == CharType.ALPHABET:
-                        check_counts[i] = 1 if self._flags.get("space_after_alphabet", True) else 0
+                        check_counts[i] = (
+                            1 if self._flags.get("space_after_alphabet", True) else 0
+                        )
                     elif prev_ct in (CharType.SYMBOL, CharType.NUMBER):
-                        check_counts[i] = 1 if self._flags.get("space_after_symbol", True) else 0
+                        check_counts[i] = (
+                            1 if self._flags.get("space_after_symbol", True) else 0
+                        )
                     else:
-                        # 汉字/其他：仅受 space 主开关控制（已通过），视为 1 cp
+                        # 汉字/假名/其他：仅受 space 主开关控制（已通过），1 cp
                         check_counts[i] = 1
                 continue
-
             flag_key = _TYPE_FLAG_MAP.get(ct)
             if flag_key and not self._flags.get(flag_key, True):
                 check_counts[i] = 0
-                continue
+
+        # 行首
+        if self._flags.get("check_line_start", False) and not is_blank_line:
+            for i in range(n):
+                if not chars[i].isspace():
+                    check_counts[i] = max(check_counts[i], 1)
+                    break
 
         # 括号内字符过滤
         if not self._flags.get("check_parentheses", True):
             in_paren = False
-            for i, char in enumerate(chars):
-                if char in ("(", "（"):
+            for i, ch in enumerate(chars):
+                if ch in ("(", "（"):
                     in_paren = True
-                elif char in (")", "）"):
+                    check_counts[i] = 0
+                elif ch in (")", "）"):
+                    check_counts[i] = 0
                     in_paren = False
-                elif in_paren and i < len(check_counts):
+                elif in_paren:
                     check_counts[i] = 0
 
         # 标点符号最终覆盖
-        _enable_punct_cp = self._flags.get("checkpoint_on_punctuation", False)
+        enable_punct_cp = self._flags.get("checkpoint_on_punctuation", False)
         for i, ch in enumerate(chars):
-            if i < len(check_counts) and ch in PUNCTUATION_SET and not ch.isspace():
-                check_counts[i] = max(check_counts[i], 1) if _enable_punct_cp else 0
+            if ch in PUNCTUATION_SET and not ch.isspace():
+                check_counts[i] = max(check_counts[i], 1) if enable_punct_cp else 0
 
-        # 英文按音节规则
-        _english_syllable_check = self._flags.get("english_syllable_check", True)
-        for _start, _end, _word in find_english_words(text):
-            _syllable_starts = (
-                get_syllable_start_offsets(_word) if _english_syllable_check else {0}
+        # 英文音节规则
+        english_syllable_check = self._flags.get("english_syllable_check", True)
+        check_english_word_end = self._flags.get("check_english_word_end", True)
+        english_sentence_end_idx: set = set()
+        for start, end, word in find_english_words(text):
+            syllable_starts = (
+                get_syllable_start_offsets(word) if english_syllable_check else {0}
             )
-            for _idx in range(_start, _end):
-                if _idx < len(check_counts):
-                    check_counts[_idx] = 1 if (_idx - _start) in _syllable_starts else 0
+            for idx in range(start, end):
+                if idx < n:
+                    check_counts[idx] = 1 if (idx - start) in syllable_starts else 0
+            if end - 1 < n and end - start > 1 and check_english_word_end:
+                english_sentence_end_idx.add(end - 1)
 
-        results = []
-        for i, (char, count) in enumerate(zip(chars, check_counts)):
-            results.append(
-                AutoCheckResult(
-                    line_idx=0,
-                    char_idx=i,
-                    char=char,
-                    check_count=count,
-                    ruby=None,
-                )
+        # 行尾 / 空格视为句尾
+        add_line_end = self._flags.get("check_line_end", True) and not is_blank_line
+        check_space_as_line_end = (
+            self._flags.get("check_space_as_line_end", True) and not is_blank_line
+        )
+        last_non_space_idx = -1
+        for i, ch in enumerate(chars):
+            if not ch.isspace():
+                last_non_space_idx = i
+
+        new_characters: List[Character] = []
+        for i, ch in enumerate(chars):
+            cc = check_counts[i]
+            is_line_end = False
+            is_sentence_end = False
+            if not ch.isspace():
+                if add_line_end and i == last_non_space_idx:
+                    is_line_end = True
+                    is_sentence_end = True
+                if (
+                    check_space_as_line_end
+                    and (i + 1 < n)
+                    and chars[i + 1].isspace()
+                ):
+                    is_sentence_end = True
+                if i in english_sentence_end_idx:
+                    is_sentence_end = True
+
+            character = Character(
+                char=ch,
+                ruby=None,
+                check_count=cc,
+                is_line_end=is_line_end,
+                is_sentence_end=is_sentence_end,
+                singer_id=old_singer_map.get(i, sentence.singer_id),
             )
-        return results
+            new_characters.append(character)
+
+        if keep_existing_timetags:
+            for i, char in enumerate(new_characters):
+                if i in old_timestamps:
+                    char.timestamps = old_timestamps[i][: char.check_count]
+                if char.is_sentence_end and i in old_sentence_end_ts:
+                    char.sentence_end_ts = old_sentence_end_ts[i]
+                    char.push_to_ruby()
+
+        sentence.characters = new_characters
 
     def analyze_sentence(
         self, sentence: Sentence, split_config: Optional[SplitConfig] = None
@@ -1047,10 +1140,6 @@ class AutoCheckService:
 
         # 拆分文本
         chars, check_counts = split_text(text, split_config)
-
-        # 中文歌词模式：跳过日文注音分析，每字视为一个节奏点
-        if self._chinese_mode:
-            return self._analyze_sentence_chinese(chars, check_counts, text)
 
         # 分析注音
         ruby_results = self._analyzer.analyze(text)
@@ -1715,6 +1804,8 @@ class AutoCheckService:
 
     def romanize_project_rubies(self, project: Project) -> int:
         """对项目所有句子执行罗马音转换（供外部在 delete 之后调用）。"""
+        if self._chinese_mode:
+            return 0
         if not self._romanize_ruby:
             return 0
         changed = 0
@@ -1881,6 +1972,13 @@ class AutoCheckService:
         """分析并应用到整个项目"""
         sentences = project.sentences
         total = len(sentences)
+        if self._chinese_mode:
+            for i, sentence in enumerate(sentences):
+                self._apply_chinese_to_sentence(sentence, keep_existing_timetags)
+                if progress_callback is not None:
+                    progress_callback(i + 1, total)
+            project.shift_selected_checkpoint_if_lost()
+            return
         for i, sentence in enumerate(sentences):
             self.apply_to_sentence(
                 sentence, split_config, keep_existing_timetags, only_noruby,
@@ -1892,6 +1990,8 @@ class AutoCheckService:
 
     def apply_user_dict_to_project(self, project: Project, skip_romanize: bool = False) -> None:
         """对整个项目执行 Phase 5 用户词典覆盖。"""
+        if self._chinese_mode:
+            return
         if not self._dict:
             return
         for sentence in project.sentences:
@@ -2100,6 +2200,8 @@ class AutoCheckService:
             split_config: 拆分配置
             preserve_ruby_segments: 透传到 update_checkpoints_from_rubies。
         """
+        if self._chinese_mode:
+            return
         for sentence in project.sentences:
             self.update_checkpoints_from_rubies(
                 sentence, split_config, preserve_ruby_segments=preserve_ruby_segments

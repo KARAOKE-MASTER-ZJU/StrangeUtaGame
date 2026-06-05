@@ -38,6 +38,33 @@ _cli_args = parser.parse_args()
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.absolute()
+VERSION_FILE = PROJECT_ROOT / "src" / "strange_uta_game" / "__version__.py"
+
+# 让当前 src/ 屏蔽环境中残留的旧 editable install，避免 PyInstaller
+# 错误收集其它工作区的 bytecode。
+_SRC_DIR = str(PROJECT_ROOT / "src")
+while _SRC_DIR in sys.path:
+    sys.path.remove(_SRC_DIR)
+sys.path.insert(0, _SRC_DIR)
+try:
+    import strange_uta_game as _sug_probe
+
+    _sug_path = Path(_sug_probe.__file__).resolve()
+    _expected = (PROJECT_ROOT / "src" / "strange_uta_game" / "__init__.py").resolve()
+    if _sug_path != _expected:
+        raise SystemExit(
+            "✗ 打包前自检失败：import strange_uta_game 命中的不是本仓库源码。\n"
+            f"  期望: {_expected}\n"
+            f"  实际: {_sug_path}\n"
+            "  常见原因：环境里有旧位置的 `pip install -e .`（例如\n"
+            "  E:\\KaraMaker\\StrangeUtaGame\\）。先 `pip uninstall strange-uta-game`\n"
+            "  或确认 sys.path 头部为当前 src/ 后重试。"
+        )
+    print(f"✓ 打包将使用: {_sug_path}")
+    del _sug_probe
+except ImportError:
+    # 还没装/没找到都没关系，sys.path 已经放进去了，PyInstaller 自己也能找到
+    print(f"  (尚未 import strange_uta_game，将走 sys.path 首项: {_SRC_DIR})")
 
 # 检查依赖
 print("检查依赖...")

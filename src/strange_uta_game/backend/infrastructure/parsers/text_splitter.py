@@ -74,7 +74,7 @@ def get_char_type(char: str) -> CharType:
         return CharType.SPACE
 
     # 符号
-    if char in '.,!?。、！？…―・「」『』（）［］｛｝"":;：；/／＼':
+    if char in '.,!?。、！？…―・「」『』（）［］｛｝"":;：；/／＼()[]{}\\\'"':
         return CharType.SYMBOL
 
     return CharType.OTHER

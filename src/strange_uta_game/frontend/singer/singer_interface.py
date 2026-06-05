@@ -1564,6 +1564,15 @@ class SingerManagerInterface(QWidget):
         if not selected_presets:
             return
 
+        # 若项目中仅有一个未命名默认演唱者（软件初始占位符），导入后将其替换
+        unnamed_default_id = None
+        if (
+            len(self._project.singers) == 1
+            and self._project.singers[0].name == "未命名"
+            and self._project.singers[0].is_default
+        ):
+            unnamed_default_id = self._project.singers[0].id
+
         added = 0
         for preset in selected_presets:
             name = preset.get("name", "")
@@ -1577,7 +1586,15 @@ class SingerManagerInterface(QWidget):
                     split_colors=preset.get("split_colors", []),
                     group=preset.get("group", ""),
                 )
-                if preset.get("is_default", False):
+                if added == 0 and unnamed_default_id:
+                    # 第一个导入的演唱者：设为默认，再删除初始占位符（先加后删保证至少有一个）。
+                    # 必须把占位符名下的句子转移给新演唱者，否则原默认演唱者的歌词会被级联删除。
+                    self._singer_service.set_default_singer(singer.id)
+                    self._singer_service.remove_singer(
+                        unnamed_default_id, transfer_to=singer.id
+                    )
+                    unnamed_default_id = None
+                elif preset.get("is_default", False):
                     self._singer_service.set_default_singer(singer.id)
                 added += 1
                 existing_names.add(name)

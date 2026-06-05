@@ -458,21 +458,12 @@ class HomeInterface(QWidget):
                 auto_check_flags = app_settings.get_all().get("auto_check", {})
 
                 if auto_check_flags.get("auto_on_load", True):
-                    # 检测是否为中文歌词（无任何假名/长音字符）
+                    # 检测是否为中文歌词（无任何假名）
+                    from strange_uta_game.backend.application import is_chinese_lyrics
                     chinese_mode = False
                     if auto_check_flags.get("chinese_lyrics_detection", True):
                         all_text = "".join(s.text for s in project.sentences)
-                        _KANA_CHARS = frozenset(
-                            "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞた"
-                            "だちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽ"
-                            "まみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ"
-                            "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタ"
-                            "ダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポ"
-                            "マミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ"
-                            "ーｰ～〜"
-                        )
-                        if not any(c in _KANA_CHARS for c in all_text):
-                            chinese_mode = True
+                        chinese_mode = is_chinese_lyrics(all_text)
 
                     user_dict = app_settings.load_effective_dictionary()
                     annotate_katakana_with_english = app_settings.get(
