@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
 import sys
 import threading
 import time
@@ -42,7 +43,8 @@ if sys.platform == "win32":
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(str(_BASS_DIR))
 elif sys.platform == "darwin":
-    _BASS_DIR = _BASS_ROOT / "macos"
+    _MAC_ARCH_DIR = "arm64" if platform.machine().lower() == "arm64" else "x86_64"
+    _BASS_DIR = _BASS_ROOT / "macos" / _MAC_ARCH_DIR
     _BASS_LIB = _BASS_DIR / "libbass.dylib"
     _BASS_FX_LIB = _BASS_DIR / "libbass_fx.dylib"
     _PLUGIN_PATTERN = "libbass*"

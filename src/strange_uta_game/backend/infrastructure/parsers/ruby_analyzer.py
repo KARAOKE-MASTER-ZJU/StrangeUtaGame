@@ -663,6 +663,29 @@ def _group_reading_for_character(reading: str, checkpoint_count: int) -> List[st
     return split_ruby_for_checkpoints(reading, checkpoint_count)
 
 
+def is_all_katakana(text: str) -> bool:
+    """Return True when text is made only of katakana word characters."""
+    if not text:
+        return False
+    for char in text:
+        code = ord(char)
+        if char in "ー・":
+            continue
+        if not (0x30A1 <= code <= 0x30FF):
+            return False
+    return True
+
+
+def is_english_reading(reading: str) -> bool:
+    """Return True for simple English readings from dictionary/LLM output."""
+    if not reading:
+        return False
+    return any(c.isascii() and c.isalpha() for c in reading) and all(
+        c.isascii() and (c.isalpha() or c in " -'")
+        for c in reading
+    )
+
+
 def analyze_sentence_ruby(
     sentence: Sentence,
     analyzer: Optional[RubyAnalyzer] = None,
