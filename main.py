@@ -42,14 +42,27 @@ if sys.platform == "darwin":
     from qfluentwidgets import setFontFamilies
     setFontFamilies(["PingFang SC", "Helvetica Neue", "Arial"])
 
+def _find_app_icon_path() -> Path:
+    """Return the platform-preferred app icon path."""
+    names = (
+        ("icon_macos.png", "icon.icns", "icon.ico")
+        if sys.platform == "darwin"
+        else ("icon.ico",)
+    )
+    roots = [
+        Path(__file__).parent / "src" / "strange_uta_game" / "resource",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "strange_uta_game" / "resource",
+    ]
+    for root in roots:
+        for name in names:
+            candidate = root / name
+            if candidate.exists():
+                return candidate
+    return roots[0] / names[-1]
+
+
 # 确定图标路径（后续多次使用）
-_icon_path = (
-    Path(__file__).parent / "src" / "strange_uta_game" / "resource" / "icon.ico"
-)
-if not _icon_path.exists():
-    # PyInstaller 打包后的路径
-    _base = getattr(sys, "_MEIPASS", Path(__file__).parent)
-    _icon_path = Path(_base) / "strange_uta_game" / "resource" / "icon.ico"
+_icon_path = _find_app_icon_path()
 
 # 初始化主题管理器（必须在创建主窗口之前）
 from strange_uta_game.frontend.theme import theme

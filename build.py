@@ -85,7 +85,9 @@ args = [
     "--noconfirm",  # 不确认覆盖
     # 数据文件
     f"--add-data=src/strange_uta_game{_DATA_SEP}strange_uta_game",  # 源代码
-    f"--add-data=src/strange_uta_game/resource/icon.ico{_DATA_SEP}strange_uta_game/resource",  # 图标
+    f"--add-data=src/strange_uta_game/resource/icon.ico{_DATA_SEP}strange_uta_game/resource",  # Windows 图标
+    f"--add-data=src/strange_uta_game/resource/icon.icns{_DATA_SEP}strange_uta_game/resource",  # macOS 图标
+    f"--add-data=src/strange_uta_game/resource/icon_macos.png{_DATA_SEP}strange_uta_game/resource",  # macOS 运行时图标
     f"--add-data=src/strange_uta_game/config/config.json{_DATA_SEP}strange_uta_game/config",  # 默认配置
     f"--add-data=src/strange_uta_game/config/dictionary.json{_DATA_SEP}strange_uta_game/config",  # 默认字典
     f"--add-data=src/strange_uta_game/config/singers.json{_DATA_SEP}strange_uta_game/config",  # 默认演唱者
@@ -140,8 +142,9 @@ args = [
     "--collect-all=unidic_lite",
     "--collect-all=qfluentwidgets",
     "--collect-binaries=soundfile",
-    # 图标（macOS 需要 .icns / .png，windows 需要 .ico）
+    # 图标（macOS 需要 .icns，Windows 需要 .ico）
     *([f"--icon=src/strange_uta_game/resource/icon.ico"] if sys.platform == "win32" else []),
+    *([f"--icon=src/strange_uta_game/resource/icon.icns"] if sys.platform == "darwin" else []),
 ]
 
 # --clean 由命令行参数控制（改了 import 或打包配置时使用）

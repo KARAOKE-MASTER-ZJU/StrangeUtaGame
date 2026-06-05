@@ -98,17 +98,26 @@ class MainWindow(MSFluentWindow):
         import sys
         from pathlib import Path
 
+        icon_names = (
+            ("icon_macos.png", "icon.icns", "icon.ico")
+            if sys.platform == "darwin"
+            else ("icon.ico",)
+        )
         candidates = []
         # PyInstaller 打包后
         base = getattr(sys, "_MEIPASS", None)
         if base:
-            candidates.append(Path(base) / "strange_uta_game" / "resource" / "icon.ico")
+            candidates.extend(
+                Path(base) / "strange_uta_game" / "resource" / name
+                for name in icon_names
+            )
         # 开发环境：相对于本文件
-        candidates.append(
-            Path(__file__).resolve().parent.parent / "resource" / "icon.ico"
+        candidates.extend(
+            Path(__file__).resolve().parent.parent / "resource" / name
+            for name in icon_names
         )
         # 项目根目录
-        candidates.append(Path(sys.argv[0]).resolve().parent / "icon.ico")
+        candidates.extend(Path(sys.argv[0]).resolve().parent / name for name in icon_names)
 
         for p in candidates:
             if p.exists():
