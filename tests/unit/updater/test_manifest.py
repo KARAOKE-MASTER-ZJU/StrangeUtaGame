@@ -98,10 +98,12 @@ class TestOverrideAssetUrls:
 
     def test_override_all_when_no_filter(self):
         rel = _parse_release_json(_fake_payload())
-        overridden = override_asset_urls(rel, "fastgit", primary_asset_name=None)
+        overridden = override_asset_urls(rel, "gh-proxy", primary_asset_name=None)
         # 没有 primary_asset_name 过滤 → 所有资产都被重写
         for a in overridden.assets:
-            assert a.download_url.startswith("https://download.fastgit.org/")
+            assert a.download_url.startswith(
+                "https://gh-proxy.com/https://github.com/"
+            )
 
 
 class TestReleaseAssetExt:

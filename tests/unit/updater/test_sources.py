@@ -19,13 +19,23 @@ class TestNormalizeOrder:
         assert normalize_order([]) == list(DEFAULT_ORDER)
 
     def test_keeps_user_order(self):
-        assert normalize_order(["fastgit", "github"]) == ["fastgit", "github", "ghproxy"]
+        assert normalize_order(["gh-proxy", "github"]) == [
+            "gh-proxy",
+            "github",
+            "ghproxy",
+            "ghproxy-net",
+        ]
 
     def test_drops_unknown(self):
-        assert normalize_order(["bad", "github", "x"]) == ["github", "ghproxy", "fastgit"]
+        assert normalize_order(["bad", "github", "x"]) == list(DEFAULT_ORDER)
 
     def test_deduplicates(self):
-        assert normalize_order(["github", "github", "ghproxy"]) == ["github", "ghproxy", "fastgit"]
+        assert normalize_order(["github", "github", "ghproxy"]) == [
+            "github",
+            "ghproxy",
+            "gh-proxy",
+            "ghproxy-net",
+        ]
 
 
 class TestBuildDownloadUrl:
@@ -41,11 +51,10 @@ class TestBuildDownloadUrl:
         assert url.startswith("https://mirror.ghproxy.com/https://github.com/")
         assert url.endswith("/SUGv0.3.2/F.zip")
 
-    def test_fastgit_no_github_nest(self):
-        url = build_download_url("fastgit", "SUGv0.3.2", "F.zip")
-        assert url.startswith("https://download.fastgit.org/")
-        # fastgit 不嵌套 github.com
-        assert "github.com" not in url
+    def test_gh_proxy_wraps_github(self):
+        url = build_download_url("gh-proxy", "SUGv0.3.2", "F.zip")
+        assert url.startswith("https://gh-proxy.com/https://github.com/")
+        assert url.endswith("/SUGv0.3.2/F.zip")
 
     def test_unknown_source_raises(self):
         with pytest.raises(ValueError):
@@ -54,15 +63,17 @@ class TestBuildDownloadUrl:
 
 class TestBuildReleaseUrls:
     def test_default_order(self):
-        urls = build_release_urls(["github", "ghproxy", "fastgit"], "SUGv1", "X.zip")
-        assert len(urls) == 3
-        assert urls[0][0] == "github"
-        assert urls[1][0] == "ghproxy"
-        assert urls[2][0] == "fastgit"
+        urls = build_release_urls(list(DEFAULT_ORDER), "SUGv1", "X.zip")
+        assert [sid for sid, _ in urls] == list(DEFAULT_ORDER)
 
     def test_user_order(self):
-        urls = build_release_urls(["fastgit", "github"], "SUGv1", "X.zip")
-        assert [sid for sid, _ in urls] == ["fastgit", "github", "ghproxy"]
+        urls = build_release_urls(["ghproxy-net", "github"], "SUGv1", "X.zip")
+        assert [sid for sid, _ in urls] == [
+            "ghproxy-net",
+            "github",
+            "ghproxy",
+            "gh-proxy",
+        ]
 
     def test_url_content(self):
         urls = dict(build_release_urls(SOURCE_IDS, "T", "F.zip"))
@@ -71,15 +82,13 @@ class TestBuildReleaseUrls:
 
 
 class TestBuildApiUrls:
-    def test_three_sources(self):
+    def test_all_sources(self):
         api = build_api_urls(list(SOURCE_IDS))
-        assert len(api) == 3
+        assert len(api) == len(SOURCE_IDS)
         # GitHub 官方
         assert api[0][1].startswith("https://api.github.com/repos/")
-        # GHProxy 包装 api.github.com
-        assert api[1][1].startswith("https://mirror.ghproxy.com/https://api.github.com/")
-        # FastGit 镜像 API
-        assert api[2][1].startswith("https://api.fastgit.org/repos/")
+        for _, url in api[1:]:
+            assert "/https://api.github.com/repos/" in url
 
 
 class TestSourceLabels:

@@ -95,7 +95,10 @@ def encode_check_n(
 
 def decode_check_n(n_str: str) -> Tuple[int, bool, bool]:
     """解码 N 字符串到 (check_count, is_line_end, is_sentence_end)。"""
-    is_sentence_end = False
+    # 兼容旧格式的 ``e`` 句尾后缀；新格式将句尾作为字符后的独立 [10] tag。
+    is_sentence_end = n_str.endswith("e")
+    if is_sentence_end:
+        n_str = n_str[:-1]
     is_line_end = False
     if len(n_str) >= 2 and n_str.endswith("0"):
         is_line_end = True
@@ -320,15 +323,15 @@ def _single_char_to_normal_node(char: Character) -> str:
                 return f"{display_char}[10]"
         return display_char
 
+    n_str = encode_check_n(char.check_count, char.is_line_end)
     char_parts: List[str] = []
-
-    # 主时间戳
     _ts_list = _export_timestamps(char)
     if _ts_list:
-        ts = _ts_list[0]
-        char_parts.append(f"[1|{format_timestamp(ts)}]")
+        char_parts.append(f"[{n_str}|{format_timestamp(_ts_list[0])}]")
+        for ts in _ts_list[1 : char.check_count]:
+            char_parts.append(f"[{format_timestamp(ts)}]")
     else:
-        char_parts.append("[1]")
+        char_parts.append(f"[{n_str}]")
 
     # 字符本身
     char_parts.append(display_char)
@@ -413,31 +416,7 @@ def _linked_group_to_normal_node(group: List[Character]) -> str:
     if all(c.check_count == 0 for c in group):
         return "".join(REST_CHAR if c.is_rest else c.char for c in group)
 
-    parts: List[str] = []
-    for i, c in enumerate(group):
-        display_char = REST_CHAR if c.is_rest else c.char
-
-        if c.check_count > 0:
-            # 有 CP 的字符
-            _ts_list = _export_timestamps(c)
-            if _ts_list:
-                ts = _ts_list[0]
-                parts.append(f"[1|{format_timestamp(ts)}]{display_char}")
-            else:
-                parts.append(f"[1]{display_char}")
-        else:
-            # 无 CP 的字符
-            parts.append(display_char)
-
-        # 句尾标记（无论是否有 CP）
-        if c.is_sentence_end:
-            _se = _export_sentence_end_ts(c)
-            if _se is not None:
-                parts.append(f"[10|{format_timestamp(_se)}]")
-            else:
-                parts.append("[10]")
-
-    return "".join(parts)
+    return "".join(_single_char_to_normal_node(c) for c in group)
 
 
 def _linked_group_to_ruby_node(group: List[Character]) -> str:
@@ -824,147 +803,95 @@ def _parse_plain_segment(
     - 有句尾 CP 无时间戳: char[10]
     """
     pos = 0
-    pending_tags: List[Tuple[Optional[str], int]] = []
-
     while pos < len(content):
-        # 尝试匹配带时间戳的 tag: [N|MM:SS:cc] 或 [MM:SS:cc]
-        m = _TAG_RE.match(content, pos)
-        if m:
-            n_str = m.group(1)
-            ts_ms = parse_timestamp(m.group(2))
-            pos = m.end()
+        first_ts = _TAG_RE.match(content, pos)
+        first_no_ts = _TAG_NO_TS_RE.match(content, pos)
+        if first_ts is None and first_no_ts is None:
+            ch = content[pos]
+            characters.append(
+                Character(
+                    char=ch,
+                    check_count=0,
+                    is_rest=ch == REST_CHAR,
+                    singer_id=singer_id,
+                )
+            )
+            pos += 1
+            continue
 
-            # 查看紧跟的文本（可能是多个字符，直到下一个 [ 或 {）
-            if pos < len(content) and content[pos] not in "[{":
-                # 读取所有非 [ 和 { 的字符
-                text_start = pos
-                while pos < len(content) and content[pos] not in "[{":
-                    pos += 1
-                text = content[text_start:pos]
-
-                if n_str is not None:
-                    # 新字符起始
-                    if pending_tags:
-                        _flush_pending(pending_tags, characters, singer_id)
-                        pending_tags = []
-                    pending_tags.append((n_str, ts_ms))
-                    # 检查该字符是否还有后续 checkpoint tag (无 N 前缀)
-                    while pos < len(content):
-                        m2 = _TAG_RE.match(content, pos)
-                        if m2 and m2.group(1) is None:
-                            ts2 = parse_timestamp(m2.group(2))
-                            pending_tags.append((None, ts2))
-                            pos = m2.end()
-                            # 吃掉可能的文本 (不应该有，但安全处理)
-                            if pos < len(content) and content[pos] not in "[{":
-                                text_start2 = pos
-                                while pos < len(content) and content[pos] not in "[{":
-                                    pos += 1
-                        else:
-                            break
-
-                    is_rest = text == REST_CHAR
-                    first_n = pending_tags[0][0]
-                    if first_n is not None:
-                        check_count, is_line_end, is_sentence_end = decode_check_n(
-                            first_n
-                        )
-                    else:
-                        check_count = len(pending_tags)
-                        is_line_end = False
-                        is_sentence_end = False
-
-                    all_timestamps = [ts for _, ts in pending_tags]
-                    timestamps = all_timestamps[:check_count]
-                    sentence_end_ts = None
-                    if is_sentence_end and len(all_timestamps) > check_count:
-                        sentence_end_ts = all_timestamps[check_count]
-
-                    # 为每个字符创建 Character
-                    for ch_idx, ch in enumerate(text):
-                        if ch_idx == 0:
-                            # 第一个字符：有 CP 和时间戳
-                            character = Character(
-                                char=ch,
-                                check_count=check_count,
-                                timestamps=timestamps,
-                                sentence_end_ts=sentence_end_ts if len(text) == 1 else None,
-                                is_line_end=is_line_end if len(text) == 1 else False,
-                                is_sentence_end=is_sentence_end if len(text) == 1 else False,
-                                is_rest=is_rest,
-                                singer_id=singer_id,
-                            )
-                        else:
-                            # 后续字符：无 CP
-                            character = Character(
-                                char=ch,
-                                check_count=0,
-                                is_sentence_end=is_sentence_end if ch_idx == len(text) - 1 else False,
-                                sentence_end_ts=sentence_end_ts if ch_idx == len(text) - 1 else None,
-                                singer_id=singer_id,
-                            )
-                        characters.append(character)
-                    pending_tags = []
-                else:
-                    # 后续 checkpoint（归属前一个字符）
-                    pending_tags.append((None, ts_ms))
-            else:
-                # 没有后续字符
-                if n_str is not None and n_str == "10" and characters:
-                    # [10|ts] 没有后续字符 → 这是句尾时间戳
-                    last_char = characters[-1]
-                    last_char.is_sentence_end = True
-                    last_char.sentence_end_ts = ts_ms
-                else:
-                    pending_tags.append((n_str, ts_ms))
-        else:
-            # 尝试匹配无时间戳的 tag: [N]
+        tags: List[Tuple[Optional[str], Optional[int]]] = []
+        while pos < len(content):
+            m = _TAG_RE.match(content, pos)
+            if m is not None:
+                n_str = m.group(1)
+                if tags and n_str is not None:
+                    break
+                tags.append((n_str, parse_timestamp(m.group(2))))
+                pos = m.end()
+                continue
             m_no_ts = _TAG_NO_TS_RE.match(content, pos)
-            if m_no_ts:
+            if m_no_ts is not None:
                 n_str = m_no_ts.group(1)
+                if tags and n_str is not None:
+                    break
+                tags.append((n_str, None))
                 pos = m_no_ts.end()
+                continue
+            break
 
-                # 查看紧跟的文本字符
-                if pos < len(content) and content[pos] not in "[{":
-                    ch = content[pos]
-                    pos += 1
+        text_start = pos
+        while pos < len(content) and content[pos] not in "[{":
+            pos += 1
+        text = content[text_start:pos]
+        first_n = tags[0][0]
 
-                    check_count, is_line_end, is_sentence_end = decode_check_n(n_str)
-
-                    character = Character(
+        if text and first_n is not None:
+            check_count, is_line_end, is_sentence_end = decode_check_n(first_n)
+            all_timestamps = [ts for _, ts in tags if ts is not None]
+            timestamps = all_timestamps[:check_count]
+            sentence_end_ts = (
+                all_timestamps[check_count]
+                if is_sentence_end and len(all_timestamps) > check_count
+                else None
+            )
+            for ch_idx, ch in enumerate(text):
+                is_first = ch_idx == 0
+                is_last = ch_idx == len(text) - 1
+                characters.append(
+                    Character(
                         char=ch,
-                        check_count=check_count,
-                        timestamps=[],
-                        is_line_end=is_line_end,
-                        is_sentence_end=is_sentence_end,
+                        check_count=check_count if is_first else 0,
+                        timestamps=timestamps if is_first else [],
+                        sentence_end_ts=sentence_end_ts if is_last else None,
+                        is_line_end=is_line_end if is_last else False,
+                        is_sentence_end=is_sentence_end if is_last else False,
+                        is_rest=ch == REST_CHAR,
                         singer_id=singer_id,
                     )
-                    characters.append(character)
-                else:
-                    # [N] 没有后续字符
-                    if n_str == "10" and characters:
-                        # [10] 没有后续字符 → 这是句尾标记
-                        last_char = characters[-1]
-                        last_char.is_sentence_end = True
-            else:
-                # 非 tag 文本 — 可能是无 CP 的空格或其他字符
-                ch = content[pos]
-                if ch in " \t":
-                    # 无 CP 的空格字符，直接添加（check_count=0）
-                    character = Character(
-                        char=ch,
-                        check_count=0,
-                        singer_id=singer_id,
-                    )
-                    characters.append(character)
-                pos += 1
+                )
+            continue
 
-    if pending_tags:
-        _flush_pending(pending_tags, characters, singer_id)
+        if not text and first_n == "10" and characters:
+            last_char = characters[-1]
+            last_char.is_sentence_end = True
+            last_char.sentence_end_ts = tags[0][1]
+            continue
+
+        if not text and first_n is None and characters:
+            extra_timestamps = [ts for _, ts in tags if ts is not None]
+            remaining = max(
+                0, characters[-1].check_count - len(characters[-1].timestamps)
+            )
+            characters[-1].timestamps.extend(extra_timestamps[:remaining])
+            characters[-1]._update_offset_timestamps()
+            characters[-1].push_to_ruby()
+            continue
+
+        _flush_pending(tags, characters, singer_id)
 
 
 def _flush_pending(
-    pending_tags: List[Tuple[Optional[str], int]],
+    pending_tags: List[Tuple[Optional[str], Optional[int]]],
     characters: List[Character],
     singer_id: str,
 ) -> None:
@@ -979,7 +906,7 @@ def _flush_pending(
         is_line_end = False
         is_sentence_end = False
 
-    all_timestamps = [ts for _, ts in pending_tags]
+    all_timestamps = [ts for _, ts in pending_tags if ts is not None]
     timestamps = all_timestamps[:check_count]
     sentence_end_ts = None
     if is_sentence_end and len(all_timestamps) > check_count:

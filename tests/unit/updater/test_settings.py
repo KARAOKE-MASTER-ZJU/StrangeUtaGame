@@ -43,7 +43,7 @@ class TestUpdaterSettingsLoadSave:
         s.enabled = False
         s.check_on_startup = False
         s.min_check_interval_hours = 24
-        s.source_order = ["fastgit", "github", "ghproxy"]
+        s.source_order = ["gh-proxy", "github", "ghproxy", "ghproxy-net"]
         s.proxy_mode = "manual"
         s.proxy_manual_url = "http://127.0.0.1:7890"
         s.skipped_version = "0.3.3"
@@ -56,7 +56,7 @@ class TestUpdaterSettingsLoadSave:
         assert s2.enabled is False
         assert s2.check_on_startup is False
         assert s2.min_check_interval_hours == 24
-        assert s2.source_order == ["fastgit", "github", "ghproxy"]
+        assert s2.source_order == ["gh-proxy", "github", "ghproxy", "ghproxy-net"]
         assert s2.proxy_mode == "manual"
         assert s2.proxy_manual_url == "http://127.0.0.1:7890"
         assert s2.skipped_version == "0.3.3"
@@ -85,7 +85,7 @@ class TestUpdaterSettingsLoadSave:
         s = UpdaterSettings.load(temp_app_settings)
         assert s.enabled is True
         assert s.min_check_interval_hours == 8
-        assert s.source_order == ["github", "ghproxy", "fastgit"]
+        assert s.source_order == list(DEFAULTS["source_order"])
 
 
 class TestUpdaterSettingsToDict:

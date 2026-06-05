@@ -26,7 +26,7 @@ class TestLaunchPlanCommandArgs:
         plan = self._build()
         args = plan.command_args(Path("C:/temp/Updater.exe"), current_pid=1234)
         # 必填项
-        assert args[0] == "C:\\temp\\Updater.exe"
+        assert args[0] == str(Path("C:/temp/Updater.exe"))
         assert "--app-dir" in args
         assert "--app-exe" in args
         assert "--target-version" in args
@@ -49,7 +49,7 @@ class TestLaunchPlanCommandArgs:
             value = args[pos + 1]
             assert "|" in value
             sid, url = value.split("|", 1)
-            assert sid in ("github", "ghproxy", "fastgit")
+            assert sid in ("github", "ghproxy")
             assert url.startswith("https://")
 
     def test_no_proxy_omits_flag(self):
@@ -86,8 +86,6 @@ class TestUpdaterAppArgsParser:
     """``updater_app.main.parse_args`` 与 LaunchPlan 的接口对齐性测试。"""
 
     def test_roundtrip(self):
-        import sys
-        sys.path.insert(0, r"E:\KaraMaker\StrangeUtaGame")
         from updater_app.main import parse_args
 
         plan = LaunchPlan(
@@ -98,7 +96,7 @@ class TestUpdaterAppArgsParser:
             asset_name="StrangeUtaGame-v0.4.0.zip",
             download_urls=[
                 ("github", "https://a.com/x.zip"),
-                ("fastgit", "https://b.com/x.zip"),
+                ("gh-proxy", "https://b.com/x.zip"),
             ],
             proxy_url="http://127.0.0.1:7890",
             expected_sha256="deadbeef",
@@ -114,5 +112,5 @@ class TestUpdaterAppArgsParser:
         assert parsed.launch_after is True
         assert parsed.urls == [
             ("github", "https://a.com/x.zip"),
-            ("fastgit", "https://b.com/x.zip"),
+            ("gh-proxy", "https://b.com/x.zip"),
         ]

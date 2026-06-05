@@ -71,11 +71,12 @@ class TestCheckN:
         assert encode_check_n(2, True) == "20"
 
     def test_encode_sentence_end(self):
-        assert encode_check_n(1, False, True) == "1e"
-        assert encode_check_n(2, False, True) == "2e"
+        # 新格式将句尾编码为字符后的独立 [10] tag，不再写入 N。
+        assert encode_check_n(1, False, True) == "1"
+        assert encode_check_n(2, False, True) == "2"
 
     def test_encode_line_end_and_sentence_end(self):
-        assert encode_check_n(1, True, True) == "10e"
+        assert encode_check_n(1, True, True) == "10"
 
     def test_decode_normal(self):
         assert decode_check_n("1") == (1, False, False)
@@ -95,9 +96,8 @@ class TestCheckN:
     def test_roundtrip(self):
         for count in [1, 2, 3]:
             for le in [True, False]:
-                for se in [True, False]:
-                    encoded = encode_check_n(count, le, se)
-                    assert decode_check_n(encoded) == (count, le, se)
+                encoded = encode_check_n(count, le)
+                assert decode_check_n(encoded) == (count, le, False)
 
 
 # ──────────────────────────────────────────────
@@ -161,10 +161,7 @@ class TestToInlineText:
     def test_simple_chars_no_timetags(self):
         sentence = _make_sentence("abc")
         result = to_inline_text(sentence)
-        # 无 timetag → 时间戳默认 00:00:00
-        assert "[1|00:00:00]a" in result
-        assert "[1|00:00:00]b" in result
-        assert "[1|00:00:00]c" in result
+        assert result == "[1]a[1]b[1]c"
 
     def test_char_with_timetag(self):
         sentence = _make_sentence(
@@ -207,7 +204,7 @@ class TestToInlineText:
             ],
         )
         result = to_inline_text(sentence)
-        assert result == "[1e|00:10:00][00:12:00]x"
+        assert result == "[1|00:10:00]x[10|00:12:00]"
 
     def test_multi_checkpoint_char(self):
         sentence = _make_sentence(

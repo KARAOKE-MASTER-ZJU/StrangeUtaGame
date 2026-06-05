@@ -562,7 +562,13 @@ class TestEnglishWordCheckpoints:
     """
 
     def _apply(self, text: str):
-        service = AutoCheckService(DummyAnalyzer())
+        service = AutoCheckService(
+            DummyAnalyzer(),
+            auto_check_flags={
+                "english_syllable_check": False,
+                "check_english_word_end": True,
+            },
+        )
         sentence = Sentence.from_text(text, "s1")
         service.apply_to_sentence(sentence)
         return sentence.characters
@@ -719,4 +725,3 @@ class TestEnglishWordEndSpaceConflict:
         assert not chars[7].is_sentence_end, (
             f"'o' (idx=7) 不应 is_sentence_end, 实际 {chars[7].is_sentence_end}"
         )
-
